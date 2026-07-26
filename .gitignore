@@ -31,3 +31,8 @@ Thumbs.db
 # Datum local state
 postgres-data/
 valkey-data/
+
+# Claude tooling local state
+.claude-flow/
+.claude/
+.swarm/

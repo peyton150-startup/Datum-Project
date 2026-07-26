@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: datum
+      POSTGRES_USER: datum
+      POSTGRES_PASSWORD: datum
+    ports: ["5544:5432"]          # 5544 host-side to dodge a native Postgres collision
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datum"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8
+    ports: ["6399:6379"]
+    volumes: ["valkey-data:/data"]
+
+  app:
+    build: .
+    environment:
+      POSTGRES_HOST: postgres
+      VALKEY_URL: redis://valkey:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      valkey: {condition: service_started}
+    ports: ["8000:8000"]
+    volumes: [".:/app"]
+
+  worker:
+    build: .
+    command: celery -A datum.celery worker --beat --loglevel=info
+    environment:
+      POSTGRES_HOST: postgres
+      VALKEY_URL: redis://valkey:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      valkey: {condition: service_started}
+    volumes: [".:/app"]
+
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on: [app]
+
+volumes:
+  postgres-data:
+  valkey-data:

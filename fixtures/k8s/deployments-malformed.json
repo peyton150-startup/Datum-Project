@@ -1,0 +1,9 @@
+{
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "metadata": {"name": "web", "namespace": "default", "uid": "uid-web-1"},
+      "spec": {}
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "updatedAt": 1785075085762,
+  "nodeCount": 8,
+  "nodes": {
+    "mem-feedback_auto_push----": {
+      "id": "mem-feedback_auto_push----",
+      "category": "feedback_auto_push",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057822
+    },
+    "mem-feedback_bash_cd_git----": {
+      "id": "mem-feedback_bash_cd_git----",
+      "category": "feedback_bash_cd_git",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057823
+    },
+    "mem-feedback_no_solver_passes----": {
+      "id": "mem-feedback_no_solver_passes----",
+      "category": "feedback_no_solver_passes",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057824
+    },
+    "mem-MEMORY-feedback": {
+      "id": "mem-MEMORY-feedback",
+      "category": "core",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057825
+    },
+    "mem-MEMORY-project": {
+      "id": "mem-MEMORY-project",
+      "category": "core",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057825
+    },
+    "mem-MEMORY-reference": {
+      "id": "mem-MEMORY-reference",
+      "category": "core",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057825
+    },
+    "mem-project_server_deploy_separate_clone----": {
+      "id": "mem-project_server_deploy_separate_clone----",
+      "category": "project_server_deploy_separate_clone",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057826
+    },
+    "mem-reference_supabase_migration_false_success----": {
+      "id": "mem-reference_supabase_migration_false_success----",
+      "category": "reference_supabase_migration_false_success",
+      "confidence": 0.5,
+      "accessCount": 0,
+      "createdAt": 1785075057827
+    }
+  },
+  "edges": [
+    {
+      "sourceId": "mem-MEMORY-feedback",
+      "targetId": "mem-MEMORY-project",
+      "type": "temporal",
+      "weight": 0.5
+    },
+    {
+      "sourceId": "mem-MEMORY-project",
+      "targetId": "mem-MEMORY-reference",
+      "type": "temporal",
+      "weight": 0.5
+    }
+  ],
+  "pageRanks": {
+    "mem-feedback_auto_push----": 0.09594625428503448,
+    "mem-feedback_bash_cd_git----": 0.09594625428503448,
+    "mem-feedback_no_solver_passes----": 0.09594625428503448,
+    "mem-MEMORY-feedback": 0.09594625428503448,
+    "mem-MEMORY-project": 0.1775005713281299,
+    "mem-MEMORY-reference": 0.2468219029616634,
+    "mem-project_server_deploy_separate_clone----": 0.09594625428503448,
+    "mem-reference_supabase_migration_false_success----": 0.09594625428503448
+  }
+}

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "datum"
 version = "0.1.0"
@@ -23,6 +27,11 @@ dev = [
     "django-stubs==5.*",
     "pre-commit==3.*",
 ]
+
+# Only `datum` is a distributable package. Without this, setuptools flat-layout
+# auto-discovery sees `web/` as a second top-level package and refuses to build.
+[tool.setuptools.packages.find]
+include = ["datum*"]
 
 [tool.ruff]
 line-length = 100

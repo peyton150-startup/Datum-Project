@@ -3,7 +3,8 @@ from django.test import Client
 
 from datum.discovery.collector import run_collector
 from datum.enums import DiscrepancyState, DiscrepancyType
-from datum.intent.ingest import InvalidRevision, ingest_revision
+from datum.intent.errors import InvalidRevision
+from datum.intent.ingest import ingest_revision
 from datum.reconcile.models import Discrepancy, Match
 from datum.reconcile.service import run_reconciliation
 

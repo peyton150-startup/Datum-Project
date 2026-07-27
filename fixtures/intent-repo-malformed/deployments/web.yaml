@@ -1,6 +1,8 @@
-apiVersion: apps/v1
+# `replicas` is missing, so `attributes` does not match the Deployment schema.
+# The whole revision must be rejected and the previous one left active.
+apiVersion: datum.dev/v1
 kind: Deployment
 metadata:
   name: web
-  namespace: default
-spec: {}
+  scope: default
+attributes: {}

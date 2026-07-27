@@ -109,7 +109,72 @@ Anything on this list that turns out to be a hard-coded conditional is a defect 
 
 ## 10. Intent ingestion
 
-TO WRITE. Document format with a full example. Validation layers (syntax, schema, referential, policy) and which block versus warn. Webhook or polling, and how ingestion stays idempotent when the same commit arrives twice. Projection: incremental or full rebuild. Error reporting good enough to map a failure to a file and line.
+**Decided (2026-07-27), at the opening of phase 2.** Phase 1 shipped a placeholder that parsed raw Kubernetes manifests; this section replaces it.
+
+### The document format
+
+Intent documents speak **Datum's vocabulary, not a provider's**. A declaration of a Deployment and a declaration of an OCI compute instance have the same envelope and differ only in `kind` and the contents of `attributes`. This is the direct consequence of ADR-001: if a kind is data, the document that declares one cannot be shaped by a provider's API.
+
+```yaml
+apiVersion: datum.dev/v1
+kind: Deployment          # names a Kind row, not a Kubernetes kind
+metadata:
+  name: web
+  scope: default
+attributes:
+  replicas: 3
+```
+
+| Field | Required | Rule |
+|---|---|---|
+| `apiVersion` | yes | Must be a format version this build knows. Currently only `datum.dev/v1`. This is the versioned format field promised in §8; a second version gets a second validator, never a conditional inside the first. |
+| `kind` | yes | Must name an existing `Kind` row. |
+| `metadata.name` | yes | Non-empty, at most 253 characters. |
+| `metadata.scope` | yes | Non-empty, at most 253 characters. The provider-neutral word for a Kubernetes namespace, an OCI compartment, and whatever the third provider calls it. |
+| `attributes` | yes | A mapping, validated against that kind's `attribute_schema`. |
+| `provider_id` | **forbidden** | Intent is authored before the resource exists, so it cannot know the provider's identifier (§12). A document carrying one is rejected rather than ignored, because silently dropping it would let an author believe they had pinned an identity. |
+
+One document declares exactly one resource. Multi-document YAML streams are not accepted in phase 2; a file containing more than one document is rejected. Reconsider when a real repo makes the one-file-per-resource rule annoying, not before.
+
+`attribute_schema` is a flat mapping of attribute name to type name, drawn from a closed table: `int`, `str`, `bool`. Evaluation is a lookup, not an if-chain.
+
+**Known limit, deliberate:** every key in a kind's `attribute_schema` is required, and unknown keys are rejected. Optionality is not yet expressible. This is the same simplification §24 records for null-vs-absent in the diff engine, and it is held for the same reason: one kind with one required integer field cannot motivate the design. Both are revisited together when phase 3 adds a second kind — that is the point at which this stops being a simplification and becomes a correctness bug.
+
+### Validation layers
+
+Four layers, evaluated in order. **All of them block.** Phase 2 has no warn tier, because the quality objective for intent ingestion ranks correctness first and explicitly sacrifices convenience: a bad revision is rejected whole and never half-applies.
+
+| Layer | Checks | On failure |
+|---|---|---|
+| Syntax | The file is parseable YAML and holds exactly one mapping | Reject the revision |
+| Envelope | `apiVersion` is known; `kind`, `metadata.name`, `metadata.scope`, `attributes` are present and correctly typed; `provider_id` absent | Reject the revision |
+| Schema | `attributes` matches the kind's `attribute_schema` exactly — every declared key present, every value the right type, no unknown keys | Reject the revision |
+| Referential | `kind` resolves to a `Kind` row; no two documents in the revision claim the same natural key `(tenant, kind, scope, name)` | Reject the revision |
+| Policy | none in phase 2 | — |
+
+The referential layer is where the barricade is actually load-bearing. Two documents claiming one identity is listed in §6 as a condition that legitimately happens and must be *rejected at intent validation*. Phase 1 did not do this — the Postgres unique constraint caught it instead, raising `IntegrityError` across a module boundary and inverting ADR-008. That defect is CF-2, and it is fixed here rather than in a collector, because this is the layer that owns it.
+
+**Validation is whole-revision, not fail-fast.** Every document is validated and every error is collected before anything is raised, so one push surfaces every problem at once instead of one problem per push. `InvalidRevision` carries the full list.
+
+### Trigger and idempotency
+
+Ingestion has **one entry point and may have several triggers**. Phase 2 builds polling; a Git webhook is deferred to an expansion (1.7) and, when it arrives, calls the same function rather than duplicating the path.
+
+A Celery beat task fetches the configured repository on a schedule and ingests `HEAD` if its SHA differs from the active revision's. No inbound route, no shared secret, and nothing to expose through the free-tier host. The cost is bounded staleness: drift between a push and its revision is at most one poll interval.
+
+Idempotency is keyed on `(tenant_id, commit_sha)`, enforced by a unique constraint and checked before any work is done. The same commit arriving twice returns the existing revision and writes nothing. This holds for a re-poll, a retried task, and a replayed webhook alike, because none of them are trusted to be delivered once.
+
+### Projection: full rebuild
+
+**Resolves open question #3.** Each accepted revision writes a complete new set of `declared_resource` rows keyed to that revision. Rows from prior revisions are retained, keyed to theirs. Queries against the declared plane select through the active revision.
+
+Chosen over incremental diffing because incremental projection would itself be a second diff engine — a second thing that must be correct, determinism-tested, and kernel-reviewed — built to save rows the 10,000-resource ceiling does not require saving. It also makes resource identity across revisions load-bearing well before matching (§12) is built to carry it. Full rebuild makes a revision atomic almost for free: one transaction, one flip of `is_active`, no reachable half-state.
+
+The cost is stated plainly: row count grows with revisions rather than with resources. If that becomes real, the fix is retention on inactive revisions, which is open question #4 and is not answered here.
+
+### Error reporting
+
+A rejection names the file and, where the YAML parser gives a position, the line and column. Duplicate-identity errors name **both** conflicting files, since naming one leaves the author guessing. Messages carry the identifiers §6 requires: tenant, kind, and natural key.
 
 ## 11. Discovery
 
@@ -229,10 +294,12 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 
 **Live, blocks phase 1:** None.
 
+**Resolved:**
+3. ~~Is the declared plane rebuilt wholesale per revision or diffed incrementally?~~ **Wholesale rebuild**, decided 2026-07-27 at the opening of phase 2. Rationale and accepted cost in §10.
+
 **Open, but not needed until phase 4:**
 2. Does a discrepancy attach to a field, a resource, or both?
-3. Is the declared plane rebuilt wholesale per revision or diffed incrementally?
-4. How much drift history is retained, and is it per resource or per discrepancy?
+4. How much drift history is retained, and is it per resource or per discrepancy? *(Phase 2 raises the stakes on this: full-rebuild projection grows rows per revision, so retention is now about the declared plane too, not only drift history.)*
 5. Is the synthetic estate generator a permanent part of the product or a test fixture?
 6. Does a missing precedence rule default to intent-wins, or is it a hard error?
 

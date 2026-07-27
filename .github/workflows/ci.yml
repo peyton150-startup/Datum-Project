@@ -30,6 +30,8 @@ jobs:
         run: mypy datum/reconcile datum/intent datum/graph
       - name: Tests + coverage
         run: pytest
+      - name: Phase 1 smoke test (acceptance slice)
+        run: pytest tests/test_acceptance_slice.py -v
       - name: Kernel branch coverage gate
         run: |
           coverage report --include="datum/reconcile/*,datum/workflow/*" --fail-under=100

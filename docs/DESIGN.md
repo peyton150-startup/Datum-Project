@@ -245,6 +245,14 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 
 Revisit at the end of phase 1 with real code in hand, and again at closure.
 
+### §24 revisited at Phase 1 close (2026-07-26)
+
+- **Schema-defined kind bet: held so far, but untested.** Nothing in the Phase 1 resource tables is Deployment-specific — `attributes` is JSONB and `Kind.attribute_schema` carries the shape. Adding a second kind should be data plus a fixture with no migration to `declared_resource` / `discovered_resource`. This is not yet evidence: one kind cannot falsify a bet about the second. Confirm when Phase 3 adds one.
+- **Matching vs diff difficulty: diff was harder, but not where expected.** The matcher fell out of the natural-key design in one pass and all six corpus cases passed on the first run. The diff engine's own logic also passed first time; the difficulty was in the *determinism invariant*, whose first formulation was itself order-sensitive and failed under Hypothesis. The early warning to watch is therefore sharper than "the corpus keeps growing": it is *the corpus getting harder to state correctly*. Hardest cases so far: absent-key-on-one-side, and the determinism property.
+- **Repo/CI foundation: the Ratchet failure did not recur, but only after a real catch.** CI ran on push from Task 3 onward and caught a packaging defect (setuptools flat-layout discovery breaking the editable install once `web/` appeared) that both the local venv and the Docker build missed. CI earning its place this early is the strongest signal in this list.
+- **null-vs-absent is a live simplification, not a resolved question.** The Phase 1 diff treats an absent key as a discrepancy carrying value `None`, so a field genuinely declared `null` and a field simply missing are indistinguishable downstream. Deliberate for one kind with one required integer field. Revisit the moment a second kind exposes optional fields — that is the point at which this becomes a correctness bug rather than a simplification.
+- **Two-plane model: no strain yet.** Nothing in Phase 1 needed a "pending" state. Untested, since a fixture collector cannot observe an in-flight change.
+
 ---
 
 # Construction Conventions

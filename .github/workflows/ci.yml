@@ -30,8 +30,11 @@ jobs:
         run: mypy datum/reconcile datum/intent datum/graph
       - name: Tests + coverage
         run: pytest
+      # --no-cov is load-bearing: without it this second pytest run overwrites
+      # .coverage with data from the acceptance slice alone, and the kernel
+      # coverage gate below then reads that partial file instead of the full run.
       - name: Phase 1 smoke test (acceptance slice)
-        run: pytest tests/test_acceptance_slice.py -v
+        run: pytest tests/test_acceptance_slice.py -v --no-cov
       - name: Kernel branch coverage gate
         run: |
           coverage report --include="datum/reconcile/*,datum/workflow/*" --fail-under=100

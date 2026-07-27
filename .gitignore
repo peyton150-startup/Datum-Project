@@ -32,6 +32,8 @@ Thumbs.db
 # Datum local state
 postgres-data/
 valkey-data/
+# Local checkout of the intent repo; a cache of the remote, never authored here.
+.intent-worktree/
 
 # Claude tooling local state
 .claude-flow/

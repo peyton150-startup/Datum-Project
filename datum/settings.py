@@ -36,6 +36,14 @@ DATABASES = {
 # Single-tenant constant for Phase 1. Every query is still written tenant-scoped.
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
+# Intent repository (ADR-004). Empty URL means "not configured": the poll task
+# logs and does nothing rather than failing every five minutes.
+INTENT_REPO_URL = os.environ.get("DATUM_INTENT_REPO_URL", "")
+INTENT_REPO_BRANCH = os.environ.get("DATUM_INTENT_REPO_BRANCH", "main")
+INTENT_WORKTREE_DIR = os.environ.get("DATUM_INTENT_WORKTREE", str(BASE_DIR / ".intent-worktree"))
+# Bounded staleness: drift between a push and its revision is at most this long.
+INTENT_POLL_SECONDS = int(os.environ.get("DATUM_INTENT_POLL_SECONDS", "300"))
+
 CELERY_BROKER_URL = os.environ.get("VALKEY_URL", "redis://localhost:6379/0")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

@@ -1,3 +1,5 @@
+import pytest
+
 from datum.enums import Confidence, MatchStrategy
 from datum.reconcile.domain import ResourceSnapshot
 from datum.reconcile.matcher import match_by_natural_key
@@ -54,6 +56,27 @@ def test_same_name_two_scopes_yields_two_distinct_matches():
     assert len(result.pairs) == 2
     scopes = sorted(p.declared.scope for p in result.pairs)
     assert scopes == ["default", "prod"]
+
+
+def test_duplicate_declared_natural_key_is_refused_not_silently_collapsed():
+    """Two declared snapshots claiming one identity is a loader bug.
+
+    Silently keeping the last one would drop data and make the output depend on
+    input order: [d(3), d(99)] and [d(99), d(3)] would disagree.
+    """
+    with pytest.raises(AssertionError):
+        match_by_natural_key([snap("web", replicas=3), snap("web", replicas=99)], [])
+
+
+def test_duplicate_discovered_natural_key_is_refused_not_silently_collapsed():
+    with pytest.raises(AssertionError):
+        match_by_natural_key([], [snap("web", provider_id="u1"), snap("web", provider_id="u2")])
+
+
+def test_distinct_keys_that_merely_share_a_name_are_not_duplicates():
+    """The guard keys on the whole natural key, not the name: scope disambiguates."""
+    result = match_by_natural_key([snap("web", scope="default"), snap("web", scope="prod")], [])
+    assert len(result.declared_orphans) == 2
 
 
 def test_output_is_deterministic_regardless_of_input_order():

@@ -11,6 +11,13 @@ def match_by_natural_key(
     declared_by_key = {snap.natural_key: snap for snap in declared}
     discovered_by_key = {snap.natural_key: snap for snap in discovered}
 
+    # Two snapshots claiming one identity is a loader bug, not a difference to
+    # report. Keeping whichever arrived last would drop the other silently and
+    # make the result depend on input order, breaking determinism. DESIGN 12
+    # rejects this at intent validation; the kernel refuses to paper over it.
+    assert len(declared_by_key) == len(declared), "duplicate natural key in declared input"
+    assert len(discovered_by_key) == len(discovered), "duplicate natural key in discovered input"
+
     shared = sorted(declared_by_key.keys() & discovered_by_key.keys())
     declared_only = sorted(declared_by_key.keys() - discovered_by_key.keys())
     discovered_only = sorted(discovered_by_key.keys() - declared_by_key.keys())

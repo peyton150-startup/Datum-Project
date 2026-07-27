@@ -1,7 +1,8 @@
+# Second revision of the same estate: web changes 3 -> 5, and api is added.
 apiVersion: datum.dev/v1
 kind: Deployment
 metadata:
   name: web
   scope: default
 attributes:
-  replicas: 3
+  replicas: 5

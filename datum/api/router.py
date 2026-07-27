@@ -16,8 +16,7 @@ TENANT = settings.DEFAULT_TENANT_ID
 
 @api.get("/resources", response=PageResources)
 def list_resources(request, plane: str = Plane.DECLARED.value, offset: int = 0):
-    model = DeclaredResource if plane == Plane.DECLARED.value else DiscoveredResource
-    query = model.objects.filter(tenant_id=TENANT).select_related("kind").order_by("name")
+    query = _declared_query() if plane == Plane.DECLARED.value else _discovered_query()
     window = query[offset : offset + PAGE_SIZE]
     items = [
         {
@@ -29,6 +28,25 @@ def list_resources(request, plane: str = Plane.DECLARED.value, offset: int = 0):
         for r in window
     ]
     return {"count": query.count(), "items": items}
+
+
+def _declared_query():
+    """Full-rebuild projection (DESIGN 10) keeps every revision's rows, so the
+    declared plane only means anything read through the active revision. A
+    reader that omits this filter sees every revision at once."""
+    return (
+        DeclaredResource.objects.filter(tenant_id=TENANT, revision__is_active=True)
+        .select_related("kind")
+        .order_by("scope", "name")
+    )
+
+
+def _discovered_query():
+    return (
+        DiscoveredResource.objects.filter(tenant_id=TENANT)
+        .select_related("kind")
+        .order_by("scope", "name")
+    )
 
 
 @api.get("/discrepancies", response=PageDiscrepancies)

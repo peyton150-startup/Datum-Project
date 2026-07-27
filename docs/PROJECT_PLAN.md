@@ -167,7 +167,7 @@ Rejected: Redis and Elasticsearch (relicensed), anything whose free tier is a co
        1.4.2 Kubernetes collector
        1.4.3 Oracle Cloud collector
        1.4.4 Partial-failure and idempotency handling
-       1.4.5 Phase 1 carry-forward remediation (CF-1, CF-2, CF-3)
+       1.4.5 Phase 1 carry-forward remediation (CF-1, CF-3; CF-2 folded into 1.3.1)
    1.5 Phase 4: Reconciliation core
        1.5.1 Identity matching with confidence scoring
        1.5.2 Diff engine and orphan detection
@@ -381,12 +381,18 @@ Two consequences to hold onto, so this is a chosen trade rather than a forgotten
 - **Each fix still lands in the module that owns it, whatever phase does the work.** Scheduling is not the same as layering. CF-2's code belongs in `datum/intent/`; building it inside a collector during Phase 3 would put intent validation in the wrong layer and is not what this decision authorizes.
 - **CF-2 accepts known rework.** Phase 2 builds out 1.3.1, the intent validator — the very module CF-2 patches. Deferring means Phase 2 will construct that validator with this hole knowingly left in it, and Phase 3 will reopen it. That is a real cost, accepted for the sake of not touching closed code now. If Phase 2 ends up rewriting `_parse_all` regardless, fold CF-2 in there and strike it from 1.4.5 rather than doing the work twice.
 
+### Update (2026-07-27, Phase 2 open): CF-2 folded into 1.3.1, struck from 1.4.5
+
+The escape hatch above fired exactly as written. Phase 2 replaces the document format (Datum-native envelope, DESIGN §10) and therefore rewrites `_parse_all` and `documents.py` wholesale. Adding the duplicate-natural-key check to a validator that is being rebuilt anyway costs a check and a test; deferring it would mean deliberately constructing the new validator with a known hole and reopening it one phase later.
+
+**CF-2 is done in 1.3.1 and removed from 1.4.5.** Work package 1.4.5 now carries CF-1 and CF-3 only. This is the cheap outcome the deferral decision was designed to allow, not a reversal of it.
+
 Until 1.4.5 runs, the mitigations below are what stands between these defects and a user.
 
 | ID | Defect | Owning module | Mitigation while deferred |
 |---|---|---|---|
 | CF-1 | Collector drops good records on one bad record | `datum/discovery/collector.py` | Single-record fixture only. Do not point the collector at a multi-record source before 1.4.5. |
-| CF-2 | Duplicate declared identity caught by a DB constraint, not the validator | `datum/intent/documents.py`, `ingest.py` | The constraint does reject it, and the kernel assertion in `match_by_natural_key` is a second net. The exception type is wrong, not the outcome. |
+| CF-2 | ~~Duplicate declared identity caught by a DB constraint, not the validator~~ | `datum/intent/documents.py`, `ingest.py` | **Fixed 2026-07-27 in 1.3.1.** No longer deferred; see the update above. |
 | CF-3 | CI never builds or tests `web/` | `.github/workflows/ci.yml` | `npm run lint`, `npm run build`, and `npm test` all pass locally and must be run by hand before any `web/` change is pushed. |
 
 ### CF-1 → **1.4.4 Partial-failure and idempotency handling** (Phase 3, Discovery) · executed in **1.4.5**

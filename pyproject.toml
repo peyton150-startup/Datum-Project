@@ -52,6 +52,17 @@ plugins = ["mypy_django_plugin.main"]
 module = ["datum.reconcile.*", "datum.intent.*", "datum.graph.*"]
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
+
+# celery's @shared_task carries no annotations, so a strict module that uses it
+# trips disallow_untyped_decorators. Relaxed for this one module rather than
+# across the boundary layer; the task body is still checked strictly.
+[[tool.mypy.overrides]]
+module = ["datum.intent.tasks"]
+disallow_untyped_decorators = false
+
 [tool.django-stubs]
 django_settings_module = "datum.settings"
 

@@ -1,7 +1,7 @@
 apiVersion: datum.dev/v1
 kind: Deployment
 metadata:
-  name: web
+  name: api
   scope: default
 attributes:
-  replicas: 3
+  replicas: 2

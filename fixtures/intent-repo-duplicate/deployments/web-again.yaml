@@ -1,0 +1,9 @@
+# Same natural key as web.yaml (kind=Deployment, scope=default, name=web).
+# CF-2: this must be rejected by the validator, not by a Postgres constraint.
+apiVersion: datum.dev/v1
+kind: Deployment
+metadata:
+  name: web
+  scope: default
+attributes:
+  replicas: 9

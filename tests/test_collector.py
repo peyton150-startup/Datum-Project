@@ -12,7 +12,7 @@ pytestmark = pytest.mark.django_db
 
 
 def test_fixture_normalizes_to_snapshots():
-    snaps = read_deployment_fixture(FIXTURE)
+    snaps = read_deployment_fixture(FIXTURE, TENANT)
     assert len(snaps) == 1
     s = snaps[0]
     assert s.kind == "Deployment"
@@ -30,9 +30,19 @@ def test_run_writes_one_discovered_row_and_records_counts():
     assert DiscoveredResource.objects.filter(tenant_id=TENANT, name="web").count() == 1
 
 
+def test_snapshot_natural_key_carries_the_tenant():
+    """The tenant is one of the four natural-key components, so it must be set.
+
+    A blank tenant makes a snapshot match nothing: the same resource would be
+    reported as one declared orphan plus one discovered orphan.
+    """
+    snap = read_deployment_fixture(FIXTURE, TENANT)[0]
+    assert snap.natural_key == ("Deployment", TENANT, "default", "web")
+
+
 def test_record_missing_replicas_is_rejected_at_the_barricade():
     with pytest.raises(MalformedProviderData):
-        read_deployment_fixture(MALFORMED_FIXTURE)
+        read_deployment_fixture(MALFORMED_FIXTURE, TENANT)
 
 
 def test_malformed_provider_data_yields_partial_run_and_writes_nothing():

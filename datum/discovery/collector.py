@@ -16,7 +16,7 @@ def run_collector(tenant_id: str, fixture_path: str) -> CollectorRun:
     )
     kind = Kind.objects.get(name="Deployment")
     read = written = errors = 0
-    for record in _read(fixture_path):
+    for record in _read(fixture_path, tenant_id):
         read += 1
         if record is None:
             errors += 1
@@ -32,9 +32,9 @@ def run_collector(tenant_id: str, fixture_path: str) -> CollectorRun:
     return run
 
 
-def _read(fixture_path: str) -> list:
+def _read(fixture_path: str, tenant_id: str) -> list:
     try:
-        return list(read_deployment_fixture(fixture_path))
+        return list(read_deployment_fixture(fixture_path, tenant_id))
     except MalformedProviderData:
         return [None]
 

@@ -8,6 +8,19 @@ def match_by_natural_key(
     declared: Sequence[ResourceSnapshot],
     discovered: Sequence[ResourceSnapshot],
 ) -> MatchResult:
+    """Pair declared against discovered resources on identical natural keys.
+
+    The natural key is `(kind, tenant_id, scope, name)`. A key present on both
+    planes yields exactly one pair; anything unmatched becomes an orphan on its
+    own side. Every pair is `NATURAL_KEY` strategy at `HIGH` confidence, because
+    an exact key match admits no doubt — other strategies arrive in Phase 4.
+
+    Deterministic: pairs and both orphan lists are ordered by natural key, so
+    the same inputs in any order produce an identical result.
+
+    Two snapshots sharing one natural key is a caller bug, not a difference to
+    report, and raises AssertionError rather than silently keeping one of them.
+    """
     declared_by_key = {snap.natural_key: snap for snap in declared}
     discovered_by_key = {snap.natural_key: snap for snap in discovered}
 

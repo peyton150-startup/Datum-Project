@@ -14,6 +14,22 @@ _ABSENT = object()
 
 
 def reconcile(match_result: MatchResult) -> DiscrepancySet:
+    """Turn matched pairs and orphans into the set of differences between planes.
+
+    Each pair is compared over the union of both sides' attribute keys, so a key
+    present on only one side is a difference rather than being skipped. Orphans
+    become `DECLARED_MISSING` (declared, never provisioned) or
+    `DISCOVERED_UNDECLARED` (found in the estate, nobody asked for it).
+
+    Deterministic: pairs are walked in natural-key order, attribute keys in
+    sorted order, and orphans in natural-key order within each direction.
+
+    Known Phase 1 simplification: an absent key and an explicit null are
+    *compared* distinctly, but both *report* a value of None, so a reader of the
+    resulting discrepancy cannot tell them apart. Deliberate while one kind has
+    one required integer attribute. See DESIGN.md section 24 -- revisit when a
+    second kind introduces optional fields.
+    """
     field_discrepancies: list[FieldDiscrepancy] = []
     for pair in sorted(match_result.pairs, key=lambda p: p.declared.natural_key):
         field_discrepancies.extend(_field_discrepancies(pair))

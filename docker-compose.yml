@@ -35,6 +35,11 @@ services:
     environment:
       POSTGRES_HOST: postgres
       VALKEY_URL: redis://valkey:6379/0
+      # Intent repository. Unset means "not configured": the poll task logs and
+      # does nothing rather than failing every interval.
+      DATUM_INTENT_REPO_URL: ${DATUM_INTENT_REPO_URL:-}
+      DATUM_INTENT_REPO_BRANCH: ${DATUM_INTENT_REPO_BRANCH:-main}
+      DATUM_INTENT_POLL_SECONDS: ${DATUM_INTENT_POLL_SECONDS:-300}
     depends_on:
       postgres: {condition: service_healthy}
       valkey: {condition: service_started}

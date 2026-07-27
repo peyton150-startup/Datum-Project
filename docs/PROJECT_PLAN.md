@@ -361,3 +361,61 @@ Plus three negative checks:
 ### The one rule that matters most
 
 When in doubt, build less. A working slice that does one kind is worth more than a half-built system that intends to do ten.
+
+---
+
+## Carried forward from Phase 1 close (2026-07-26)
+
+Three defects found while building the Phase 1 slice. All are **invisible at one kind, one collector, one record** — which is exactly why the slice did not fail on them, and exactly why they must not be forgotten. Each is reproduced, not suspected. They are recorded against the work package that owns the fix, not the package that revealed it.
+
+### CF-1 → **1.4.4 Partial-failure and idempotency handling** (Phase 3, Discovery)
+
+**One malformed record discards every good record in the same read, and the run record misreports what was seen.**
+
+`datum/discovery/collector.py:35`. `_read` wraps the whole-file parse in one `try`, so a single `MalformedProviderData` returns `[None]` and every healthy record in that payload is dropped. Reproduced with a 3-record fixture (`api` valid, `broken` missing `spec.replicas`, `worker` valid):
+
+```
+resources_read    = 1      (three records were in the file)
+resources_written = 0      (both healthy resources lost)
+rows in DB        = 0
+status            = partial
+```
+
+Two distinct failures. The data loss is the obvious one. The second is that `resources_read = 1` is false — the run record is the audit trail for what the collector observed, and it under-reports 3 as 1, so an operator cannot detect that this happened.
+
+This is precisely the risk already named against 1.4.4 in the WBS dictionary: *"A partial read read as mass deletion."* Phase 1 could not surface it because the fixture has exactly one record.
+
+It also directly contradicts the stated quality objective for this component. The ranking above says collectors put **robustness** first: *"A cloud API will return junk, time out, and rate-limit. The collector keeps going and records what it could not read. A partial run is a valid outcome."* The current collector does the opposite — one piece of junk and it keeps nothing. This is not merely a defect to schedule; it is the collector failing its first-priority quality attribute.
+
+**Fix direction:** normalize per record rather than per file. Accumulate valid snapshots, count each rejection into `errors`, persist the valid ones, and report `resources_read` as the true item count so `PARTIAL` means what it claims. Requires deciding the policy question 1.4.4 exists to answer: at what error ratio does a partial read become untrustworthy enough to reject wholesale rather than persist?
+
+### CF-2 → **1.3.1 Intent format and validator** (Phase 2, Intent ingestion)
+
+> Note: this one is **not** Phase 3. It was found alongside the others but belongs to intent validation, and doing it in Phase 3 would build it in the wrong layer.
+
+**Duplicate declared identities are caught by a Postgres constraint, not by the validator — inverting the barricade.**
+
+`DESIGN.md §12` states that two declared resources claiming one identity are "rejected at intent validation, not at matching." They are not. `datum/intent/documents.py` validates one document at a time with no cross-document check, and `ingest.py::_project` loops `create()`. A repo declaring `web` twice in one revision produces:
+
+```
+django.db.utils.IntegrityError (not a domain exception)
+duplicate key value violates unique constraint "uq_declared_natural_key_per_revision"
+```
+
+The rejection is real but accidental — it depends on a constraint firing mid-transaction, and it breaks the contract every other malformed-intent path honours. Callers catching `InvalidRevision` (as `tests/test_intent.py` does) will not catch this. ADR-008 inverted: the boundary passed bad data inward and the database caught it.
+
+Related: the Phase 1 kernel now asserts against duplicate natural keys in `match_by_natural_key` (added at Phase 1 close after the non-authoring-model review). That assertion is a last line of defence and should stay, but it is not a substitute for validating at the boundary — by the time the kernel sees it, the loader has already accepted it.
+
+**Fix direction:** a duplicate-natural-key check across the document set in `_parse_all`, raising `InvalidRevision` before anything is written. Pairs naturally with 1.3.4 (line-level validation errors), which should name both conflicting files.
+
+### CF-3 → **1.1.2 Repo, Compose, CI, test harness** (Phase 0 — reopen; not phase-gated)
+
+**CI does not build or test the frontend at all.**
+
+`.github/workflows/ci.yml` contains no Node setup, no `npm ci`, no `npm test`, no `npm run build` — grep for `node|npm|web|vitest` returns nothing. Everything under `web/` therefore has zero automated protection: the review queue, the API client, and the generated `web/src/enums.ts`.
+
+The last of those is the sharp edge. `scripts/gen_ts_enums.py` is the single source of truth binding Python enums to TypeScript, and nothing verifies the generated file still compiles or still matches its Python source. Python and TypeScript can drift silently with CI green.
+
+This is the same failure class as the Ratchet incident named in the WBS risk column for 1.1.2 — the safety net exists but is not covering the thing. It is **not** blocked on any later phase and can be fixed as soon as someone chooses to.
+
+**Fix direction:** a second CI job — `actions/setup-node`, `npm ci`, `npm run build` (which runs `tsc`), `npm test` — plus a step asserting `python scripts/gen_ts_enums.py` leaves no diff, so drift between the two languages fails the build.

@@ -167,6 +167,7 @@ Rejected: Redis and Elasticsearch (relicensed), anything whose free tier is a co
        1.4.2 Kubernetes collector
        1.4.3 Oracle Cloud collector
        1.4.4 Partial-failure and idempotency handling
+       1.4.5 Phase 1 carry-forward remediation (CF-1, CF-2, CF-3)
    1.5 Phase 4: Reconciliation core
        1.5.1 Identity matching with confidence scoring
        1.5.2 Diff engine and orphan detection
@@ -187,6 +188,8 @@ Rejected: Redis and Elasticsearch (relicensed), anything whose free tier is a co
 
 No gaps: every deliverable D1 to D14 traces to a package. No overlaps: UI work appears only under 1.5.5, 1.5.6; auth appears only under 1.6.1. Phase 1.7 is deliberately left at low detail (rolling wave) because those decisions depend on what the core build teaches.
 
+**One deliberate exception to "no overlaps": 1.4.5.** It is a remediation package, so it is scheduled by phase but touches modules owned by other packages — intent validation (1.3.1) and CI (1.1.2). This is a known trade recorded at Phase 1 close, not an accident of decomposition. It carries one hazard worth stating plainly: a package that spans layers invites fixes landing where the work is scheduled rather than where the code belongs. See "Carried forward from Phase 1 close" for what each fix may and may not touch.
+
 ### WBS dictionary
 
 | ID | Work package | Responsible | Duration | Depends on | Top risk |
@@ -205,6 +208,7 @@ No gaps: every deliverable D1 to D14 traces to a package. No overlaps: UI work a
 | 1.4.2 | Kubernetes collector | Bulk model | 1 wk | 1.4.1 | Resource churn creates phantom drift |
 | 1.4.3 | Oracle Cloud collector | Bulk model | 1 wk | 1.4.1 | API rate limits |
 | 1.4.4 | Partial failure and idempotency | Nic + kernel model | 1 wk | 1.4.2 | A partial read read as mass deletion |
+| 1.4.5 | Phase 1 carry-forward remediation | Bulk model | 0.5 wk | 1.4.4 | Fixed in the phase that schedules it rather than the layer that owns it |
 | 1.5.1 | Identity matching | Nic + kernel model | 2 wk | 1.3.3, 1.2.3 | Renames and recreations break matching |
 | 1.5.2 | Diff engine | Nic + kernel model | 2.5 wk | 1.5.1 | Nondeterminism from unordered collections |
 | 1.5.3 | Precedence policy and evaluator | Nic + kernel model | 2 wk | 1.5.2 | Unexplainable policy means operators stop trusting it |
@@ -366,9 +370,26 @@ When in doubt, build less. A working slice that does one kind is worth more than
 
 ## Carried forward from Phase 1 close (2026-07-26)
 
-Three defects found while building the Phase 1 slice. All are **invisible at one kind, one collector, one record** — which is exactly why the slice did not fail on them, and exactly why they must not be forgotten. Each is reproduced, not suspected. They are recorded against the work package that owns the fix, not the package that revealed it.
+Three defects found while building the Phase 1 slice. All are **invisible at one kind, one collector, one record** — which is exactly why the slice did not fail on them, and exactly why they must not be forgotten. Each is reproduced, not suspected.
 
-### CF-1 → **1.4.4 Partial-failure and idempotency handling** (Phase 3, Discovery)
+### Scheduling decision (2026-07-27)
+
+**All three are executed in Phase 3, under work package 1.4.5.** Two of them could be done sooner — CF-2's natural home is Phase 2 and CF-3 is not phase-gated at all — and they are deliberately not being done sooner. The Phase 1 slice is green, reviewed, and closed; the decision is to leave working code alone and batch the remediation into one package rather than reopening closed work piecemeal.
+
+Two consequences to hold onto, so this is a chosen trade rather than a forgotten one:
+
+- **Each fix still lands in the module that owns it, whatever phase does the work.** Scheduling is not the same as layering. CF-2's code belongs in `datum/intent/`; building it inside a collector during Phase 3 would put intent validation in the wrong layer and is not what this decision authorizes.
+- **CF-2 accepts known rework.** Phase 2 builds out 1.3.1, the intent validator — the very module CF-2 patches. Deferring means Phase 2 will construct that validator with this hole knowingly left in it, and Phase 3 will reopen it. That is a real cost, accepted for the sake of not touching closed code now. If Phase 2 ends up rewriting `_parse_all` regardless, fold CF-2 in there and strike it from 1.4.5 rather than doing the work twice.
+
+Until 1.4.5 runs, the mitigations below are what stands between these defects and a user.
+
+| ID | Defect | Owning module | Mitigation while deferred |
+|---|---|---|---|
+| CF-1 | Collector drops good records on one bad record | `datum/discovery/collector.py` | Single-record fixture only. Do not point the collector at a multi-record source before 1.4.5. |
+| CF-2 | Duplicate declared identity caught by a DB constraint, not the validator | `datum/intent/documents.py`, `ingest.py` | The constraint does reject it, and the kernel assertion in `match_by_natural_key` is a second net. The exception type is wrong, not the outcome. |
+| CF-3 | CI never builds or tests `web/` | `.github/workflows/ci.yml` | `npm run lint`, `npm run build`, and `npm test` all pass locally and must be run by hand before any `web/` change is pushed. |
+
+### CF-1 → **1.4.4 Partial-failure and idempotency handling** (Phase 3, Discovery) · executed in **1.4.5**
 
 **One malformed record discards every good record in the same read, and the run record misreports what was seen.**
 
@@ -389,9 +410,9 @@ It also directly contradicts the stated quality objective for this component. Th
 
 **Fix direction:** normalize per record rather than per file. Accumulate valid snapshots, count each rejection into `errors`, persist the valid ones, and report `resources_read` as the true item count so `PARTIAL` means what it claims. Requires deciding the policy question 1.4.4 exists to answer: at what error ratio does a partial read become untrustworthy enough to reject wholesale rather than persist?
 
-### CF-2 → **1.3.1 Intent format and validator** (Phase 2, Intent ingestion)
+### CF-2 → **1.3.1 Intent format and validator** (owning layer: Phase 2) · executed in **1.4.5** (Phase 3)
 
-> Note: this one is **not** Phase 3. It was found alongside the others but belongs to intent validation, and doing it in Phase 3 would build it in the wrong layer.
+> **Layer vs. schedule.** The fix belongs to intent validation and its code lands in `datum/intent/`. The *work* is scheduled into Phase 3 by the decision above. Doing it in Phase 3 must not mean building it in the Discovery layer — if 1.4.5 finds itself adding duplicate detection to a collector, that is the wrong turn.
 
 **Duplicate declared identities are caught by a Postgres constraint, not by the validator — inverting the barricade.**
 
@@ -408,7 +429,7 @@ Related: the Phase 1 kernel now asserts against duplicate natural keys in `match
 
 **Fix direction:** a duplicate-natural-key check across the document set in `_parse_all`, raising `InvalidRevision` before anything is written. Pairs naturally with 1.3.4 (line-level validation errors), which should name both conflicting files.
 
-### CF-3 → **1.1.2 Repo, Compose, CI, test harness** (Phase 0 — reopen; not phase-gated)
+### CF-3 → **1.1.2 Repo, Compose, CI, test harness** (owning layer: Phase 0 infrastructure) · executed in **1.4.5** (Phase 3)
 
 **CI does not build or test the frontend at all.**
 
@@ -416,6 +437,6 @@ Related: the Phase 1 kernel now asserts against duplicate natural keys in `match
 
 The last of those is the sharp edge. `scripts/gen_ts_enums.py` is the single source of truth binding Python enums to TypeScript, and nothing verifies the generated file still compiles or still matches its Python source. Python and TypeScript can drift silently with CI green.
 
-This is the same failure class as the Ratchet incident named in the WBS risk column for 1.1.2 — the safety net exists but is not covering the thing. It is **not** blocked on any later phase and can be fixed as soon as someone chooses to.
+This is the same failure class as the Ratchet incident named in the WBS risk column for 1.1.2 — the safety net exists but is not covering the thing. Nothing blocks it technically; it waits for 1.4.5 by choice, not by dependency. Note the standing cost: every `web/` change made before then is protected only by someone remembering to run `npm run lint`, `npm run build`, and `npm test` locally.
 
 **Fix direction:** a second CI job — `actions/setup-node`, `npm ci`, `npm run build` (which runs `tsc`), `npm test` — plus a step asserting `python scripts/gen_ts_enums.py` leaves no diff, so drift between the two languages fails the build.

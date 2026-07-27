@@ -29,7 +29,7 @@ def sync_worktree(repo_url: str, branch: str, worktree_dir: str) -> str:
         _fetch_and_reset(branch, worktree)
     else:
         _clone(repo_url, branch, worktree)
-    return _head_sha(worktree)
+    return head_sha(worktree)
 
 
 def _clone(repo_url: str, branch: str, worktree: Path) -> None:
@@ -53,8 +53,28 @@ def _fetch_and_reset(branch: str, worktree: Path) -> None:
     _git(worktree, "reset", "--hard", f"origin/{branch}")
 
 
-def _head_sha(worktree: Path) -> str:
-    return _git(worktree, "rev-parse", "HEAD")
+def head_sha(worktree: str | Path) -> str:
+    """The commit checked out in `worktree`, which must be a repository root.
+
+    Public because ingestion needs it too, and there must be exactly one place
+    that shells out to git -- a second copy would answer a git failure with
+    subprocess's abstraction instead of this module's.
+
+    The root check is not ceremony. `git -C <dir> rev-parse HEAD` searches
+    *upward*, so pointing this at a directory that is not a checkout returns
+    some ancestor repository's HEAD instead of failing. Ingestion would then
+    record a revision against a commit from an unrelated repository, and every
+    resource in it would trace to intent that never declared it. Better to
+    refuse than to attribute a revision to the wrong commit.
+    """
+    path = Path(worktree)
+    toplevel = _git(path, "rev-parse", "--show-toplevel")
+    if Path(toplevel).resolve() != path.resolve():
+        raise RepositoryUnavailable(
+            f"{path} is not the root of a git repository; "
+            f"git resolved it to the enclosing repository at {toplevel}"
+        )
+    return _git(path, "rev-parse", "HEAD")
 
 
 def _git(worktree: Path | None, *args: str) -> str:

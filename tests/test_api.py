@@ -44,6 +44,22 @@ def test_list_declared_resources(seeded):
     assert body["items"][0]["name"] == "web"
 
 
+def test_declared_plane_shows_only_the_active_revision(intent_repo):
+    """Full-rebuild projection retains every revision's rows (DESIGN 10).
+
+    Without the active-revision filter this returns 3 rows -- web twice, at two
+    different replica counts -- rather than revision 2's set. The single-revision
+    test above passes either way, so it cannot catch that regression.
+    """
+    ingest_revision(TENANT, intent_repo())
+    ingest_revision(TENANT, intent_repo("fixtures/intent-repo-v2"))
+
+    body = Client().get("/api/resources?plane=declared").json()
+    assert body["count"] == 2
+    by_name = {item["name"]: item["attributes"] for item in body["items"]}
+    assert by_name == {"web": {"replicas": 5}, "api": {"replicas": 2}}
+
+
 def test_list_discovered_resources_shows_the_other_plane(seeded):
     body = Client().get("/api/resources?plane=discovered").json()
     assert body["count"] == 1

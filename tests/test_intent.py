@@ -1,14 +1,21 @@
 """Ingestion at the boundary: Git, the document tree, and projection (WBS 1.3.2, 1.3.3)."""
 
+import subprocess
+
 import pytest
 
 from datum.graph.models import DeclaredResource
 from datum.intent.errors import InvalidRevision
 from datum.intent.ingest import ingest_revision
 from datum.intent.models import IntentRevision
+from datum.intent.repository import RepositoryUnavailable
 
 TENANT = "00000000-0000-0000-0000-000000000001"
 pytestmark = pytest.mark.django_db
+
+
+def git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 
 
 def active_declared(tenant_id=TENANT):
@@ -39,6 +46,43 @@ def test_duplicate_commit_is_idempotent(intent_repo):
     second = ingest_revision(TENANT, repo)
     assert first.id == second.id
     assert DeclaredResource.objects.filter(tenant_id=TENANT).count() == 1
+
+
+def test_a_path_that_is_not_a_repository_raises_this_layers_exception(tmp_path):
+    """ingest_revision raises exactly RepositoryUnavailable or InvalidRevision.
+
+    It is a public entry point -- the poll task is one caller, and DESIGN 10
+    anticipates a webhook as another -- and poll_intent_repository promises it
+    never raises while catching only those two. A raw CalledProcessError
+    escaping here would break that promise.
+    """
+    not_a_repo = tmp_path / "empty"
+    not_a_repo.mkdir()
+    with pytest.raises(RepositoryUnavailable):
+        ingest_revision(TENANT, str(not_a_repo))
+    assert IntentRevision.objects.count() == 0
+
+
+def test_a_directory_inside_another_repository_is_not_mistaken_for_one(tmp_path):
+    """`git -C <dir> rev-parse HEAD` searches upward.
+
+    Without a root check this returns the *enclosing* repository's HEAD, and
+    ingestion records a revision against a commit from a repository that never
+    declared these resources -- silently, with a plausible-looking 40-character
+    SHA. D2 requires every resource to trace to the commit that declared it.
+    """
+    outer = tmp_path / "outer"
+    (outer / "inner").mkdir(parents=True)
+    git(outer, "init", "-q")
+    git(outer, "config", "user.email", "t@t")
+    git(outer, "config", "user.name", "t")
+    (outer / "README").write_text("x", encoding="utf-8")
+    git(outer, "add", "-A")
+    git(outer, "commit", "-qm", "outer repo")
+
+    with pytest.raises(RepositoryUnavailable, match="not the root"):
+        ingest_revision(TENANT, str(outer / "inner"))
+    assert IntentRevision.objects.count() == 0
 
 
 def test_duplicate_identity_is_rejected_by_the_validator_not_the_database(intent_repo):

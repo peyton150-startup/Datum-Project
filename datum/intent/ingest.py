@@ -6,7 +6,6 @@ document is valid -- that is `documents` -- and nothing here talks to a
 provider.
 """
 
-import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from django.db import transaction
 from datum.graph.models import DeclaredResource
 from datum.intent.documents import DocumentSource, KindSchemas, parse_document_set
 from datum.intent.models import IntentRevision
+from datum.intent.repository import head_sha
 from datum.kinds.models import Kind
 from datum.reconcile.domain import ResourceSnapshot
 
@@ -29,8 +29,13 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
     returns the existing revision and writes nothing. That holds for a re-poll,
     a retried task, and a replayed webhook alike, none of which are trusted to
     be delivered exactly once.
+
+    Raises `RepositoryUnavailable` if `repo_path` cannot be read as a Git
+    worktree, and `InvalidRevision` if any document fails validation. Those two
+    are the whole contract, which is what lets the poll task promise it never
+    raises.
     """
-    commit_sha = _head_sha(repo_path)
+    commit_sha = head_sha(repo_path)
     existing = IntentRevision.objects.filter(tenant_id=tenant_id, commit_sha=commit_sha).first()
     if existing is not None:
         return existing
@@ -44,16 +49,6 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
     # Raises InvalidRevision, carrying every error found, before anything is written.
     snapshots = parse_document_set(_read_documents(repo_path), tenant_id, schemas)
     return _project(tenant_id, commit_sha, snapshots, kinds_by_name)
-
-
-def _head_sha(repo_path: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", repo_path, "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
 
 
 def _read_documents(repo_path: str) -> list[DocumentSource]:

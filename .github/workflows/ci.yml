@@ -35,6 +35,9 @@ jobs:
       # coverage gate below then reads that partial file instead of the full run.
       - name: Phase 1 smoke test (acceptance slice)
         run: pytest tests/test_acceptance_slice.py -v --no-cov
+      # datum/intent is gated alongside the kernel: the quality objectives rank
+      # intent ingestion correctness-first, and it is the barricade for the
+      # declared plane. It entered the gate at 100% branch coverage in phase 2.
       - name: Kernel branch coverage gate
         run: |
-          coverage report --include="datum/reconcile/*,datum/workflow/*" --fail-under=100
+          coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*" --fail-under=100

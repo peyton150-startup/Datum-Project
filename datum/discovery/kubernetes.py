@@ -5,22 +5,50 @@ nothing about planes, matching, revisions, or discrepancies. It does not loop
 over its own records and it does not touch a run record -- `collector` owns
 both, which is what keeps CF-1 unreachable from here.
 
-Phase 3 reads a recorded payload. WBS 1.4.2 points `fetch` at a live cluster;
-`normalize` does not change when it does, which is the point of the split.
+**Where the records come from is a source, not a collector.** WBS 1.4.2 points
+this at a live cluster, and the way it does that is by adding a second source
+rather than a second collector. `normalize` is untouched by the change, which
+is the payoff of the fetch/normalize split and the reason the recorded fixtures
+stay honest: `ClusterSource` asks the API server for raw JSON rather than SDK
+model objects, so a recorded payload and a live one are the same shape all the
+way to the normalizer.
+
+DESIGN section 11: the live cluster is how the SDK, real API shapes, and
+pagination get exercised. CI stays on fixtures, because a test that needs a
+cluster is not a unit test and does not gate the build.
 """
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
+from typing import Protocol
 
-from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
+from datum.discovery.errors import (
+    MalformedProviderData,
+    PartialProviderRead,
+    ProviderUnavailable,
+)
+from datum.discovery.retry import with_retry
 from datum.reconcile.domain import ResourceSnapshot
+
+logger = logging.getLogger(__name__)
 
 KIND_NAME = "Deployment"
 
+# How many Deployments to ask for per page. Not a tuning knob so much as a way
+# to make pagination reachable at all: without it the API server returns
+# everything in one response and the paging path is never exercised.
+PAGE_SIZE = 200
+
+# Statuses worth trying again. 429 is the rate limit section 11 names; 5xx is
+# the API server having a bad moment. Everything else -- 401, 403, 404, 422 --
+# will fail identically on the next attempt.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
 # The natural-key components plus the one attribute this kind carries, paired
 # with where they live in a Kubernetes Deployment. A table rather than a chain
-# of `or` conditions so that a rejection can name every field it is missing
-# instead of only the first.
+# of `or` conditions so a rejection can name every field it is missing instead
+# of only the first.
 _REQUIRED_FIELDS = (
     ("metadata.name", ("metadata", "name")),
     ("metadata.namespace", ("metadata", "namespace")),
@@ -29,46 +57,146 @@ _REQUIRED_FIELDS = (
 )
 
 
-class KubernetesCollector:
-    """Reads Deployments from a recorded provider payload.
+class DeploymentSource(Protocol):
+    """Where a collector's records come from, and nothing about what they mean."""
 
-    The payload is a `DeploymentList` as the Kubernetes API returns one, so the
-    normalizer built against it is the normalizer a live cluster will use.
+    def read(self) -> Sequence[object]:
+        """Every Deployment record available, raw.
+
+        Raises `ProviderUnavailable` when nothing could be read, and
+        `PartialProviderRead` when some records were read and the rest were not.
+        """
+        ...
+
+
+class RecordedSource:
+    """A `DeploymentList` recorded from a real cluster and replayed from disk.
+
+    What CI reads. Also what the OCI collector will use until credentials exist.
     """
 
-    name = "kubernetes"
+    def __init__(self, path: str) -> None:
+        self.path = path
 
-    def __init__(self, source_path: str) -> None:
-        self.source_path = source_path
-
-    def fetch(self) -> Sequence[object]:
-        """Every item in the recorded list, raw and unjudged.
-
-        A payload that cannot be read at all is `ProviderUnavailable`: the run
-        observed nothing, so it must not be allowed to imply anything about the
-        estate. That is a different outcome from reading junk, which is one
-        record's problem and is `normalize`'s to report.
-        """
+    def read(self) -> Sequence[object]:
         try:
-            with open(self.source_path, encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8") as handle:
                 payload = json.load(handle)
         except OSError as exc:
             raise ProviderUnavailable(
-                f"could not read the Kubernetes payload at {self.source_path}: {exc}"
+                f"could not read the Kubernetes payload at {self.path}: {exc}"
             ) from exc
         except json.JSONDecodeError as exc:
             raise ProviderUnavailable(
-                f"the Kubernetes payload at {self.source_path} is not valid JSON: {exc}"
+                f"the Kubernetes payload at {self.path} is not valid JSON: {exc}"
             ) from exc
 
-        items = payload.get("items")
-        if not isinstance(items, list):
-            # The envelope is wrong, so there is no record to reject one of.
-            # Nothing was observed: unavailability, not junk.
-            raise ProviderUnavailable(
-                f"the Kubernetes payload at {self.source_path} has no 'items' list"
+        return _items_of(payload, self.path)
+
+
+class ClusterSource:
+    """Reads Deployments from a live cluster, one page at a time.
+
+    Asks for raw JSON (`_preload_content=False`) rather than letting the SDK
+    build model objects. Two reasons, both load-bearing: the normalizer then
+    sees exactly what a recorded fixture holds, so fixtures cannot drift into
+    fiction; and Datum stops depending on the SDK's attribute naming, which is
+    a second vocabulary to track for no benefit.
+    """
+
+    def __init__(self, namespace: str = "", page_size: int = PAGE_SIZE) -> None:
+        # Empty namespace means every namespace, matching the API's own default
+        # and the scope Datum wants: a resource nobody declared is exactly what
+        # discovery exists to find, and namespace-scoping the read would hide it.
+        self.namespace = namespace
+        self.page_size = page_size
+
+    def read(self) -> Sequence[object]:
+        """Every Deployment in scope, following continuation tokens to the end.
+
+        A page that fails after earlier pages succeeded is a `PartialProviderRead`
+        rather than a failure: the records already in hand are real observations
+        and section 11 requires persisting what parsed. A failure on the first
+        page read nothing, so it is `ProviderUnavailable`.
+        """
+        api = self._deployments_api()
+        records: list[object] = []
+        continue_token: str | None = None
+        page = 0
+
+        while True:
+            page += 1
+            try:
+                payload = self._page(api, continue_token, page)
+            except Exception as exc:
+                raise self._read_stopped(records, page, exc) from exc
+
+            records.extend(_items_of(payload, f"page {page}"))
+            continue_token = _continue_token(payload)
+            if not continue_token:
+                return records
+
+    def _deployments_api(self):
+        """Load credentials and return the apps/v1 client.
+
+        In-cluster config first, then a kubeconfig: the first is how this runs in
+        production and the second is how it runs on a developer's laptop against
+        k3s. Credentials come from the environment and are never logged --
+        nothing here formats the config into a message.
+        """
+        from kubernetes import client, config
+        from kubernetes.config.config_exception import ConfigException
+
+        try:
+            config.load_incluster_config()
+        except ConfigException:
+            try:
+                config.load_kube_config()
+            except Exception as exc:
+                raise ProviderUnavailable(
+                    f"no usable Kubernetes credentials: {type(exc).__name__}"
+                ) from exc
+        return client.AppsV1Api()
+
+    def _page(self, api, continue_token: str | None, page: int) -> Mapping[str, object]:
+        """One page, retried on transient failures, parsed from raw JSON."""
+        response = with_retry(
+            lambda: api.list_deployment_for_all_namespaces(
+                limit=self.page_size,
+                _continue=continue_token,
+                _preload_content=False,
             )
-        return items
+            if not self.namespace
+            else api.list_namespaced_deployment(
+                namespace=self.namespace,
+                limit=self.page_size,
+                _continue=continue_token,
+                _preload_content=False,
+            ),
+            is_transient=_is_transient,
+            description=f"Kubernetes Deployment list page {page}",
+        )
+        return json.loads(response.data)
+
+    def _read_stopped(self, records: list[object], page: int, exc: Exception) -> Exception:
+        """Classify a failed page by whether anything had already been read."""
+        reason = f"page {page} failed: {type(exc).__name__}: {exc}"
+        if records:
+            return PartialProviderRead(records, reason)
+        return ProviderUnavailable(f"could not read Deployments from the cluster; {reason}")
+
+
+class KubernetesCollector:
+    """Reads Deployments from whatever source it is given."""
+
+    name = "kubernetes"
+
+    def __init__(self, source: DeploymentSource) -> None:
+        self.source = source
+
+    def fetch(self) -> Sequence[object]:
+        """Delegated wholesale. Nothing here judges a record."""
+        return self.source.read()
 
     def normalize(self, record: object, tenant_id: str) -> ResourceSnapshot:
         """One Deployment to one snapshot, or a rejection.
@@ -104,6 +232,51 @@ class KubernetesCollector:
         )
 
 
+def from_recording(path: str) -> KubernetesCollector:
+    """The recorded-payload collector, which is what tests and CI use."""
+    return KubernetesCollector(RecordedSource(path))
+
+
+def from_cluster(namespace: str = "") -> KubernetesCollector:
+    """The live-cluster collector, which is what a deployment uses."""
+    return KubernetesCollector(ClusterSource(namespace))
+
+
+def _items_of(payload: object, origin: str) -> list[object]:
+    """The `items` list out of a `DeploymentList` envelope.
+
+    An envelope with no items list is not an empty estate: there is no record to
+    reject, so nothing was observed and the caller learns nothing about what
+    exists.
+    """
+    if not isinstance(payload, Mapping):
+        raise ProviderUnavailable(f"{origin} is not a Kubernetes list envelope")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise ProviderUnavailable(f"{origin} has no 'items' list")
+    return items
+
+
+def _continue_token(payload: Mapping[str, object]) -> str | None:
+    """The token for the next page, or None at the end of the list."""
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    token = metadata.get("continue")
+    return token if isinstance(token, str) and token else None
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Whether a failed API call is worth trying again.
+
+    Rate limits and server errors pass; anything else is refused immediately,
+    because retrying a request the server has already judged malformed just
+    repeats the mistake more slowly.
+    """
+    status = getattr(exc, "status", None)
+    return isinstance(status, int) and status in RETRYABLE_STATUSES
+
+
 def _dig(record: Mapping[str, object], path: tuple[str, ...]) -> object | None:
     """Follow a key path, returning None the moment it stops being a mapping.
 
@@ -118,4 +291,13 @@ def _dig(record: Mapping[str, object], path: tuple[str, ...]) -> object | None:
     return current
 
 
-__all__ = ["KIND_NAME", "KubernetesCollector"]
+__all__ = [
+    "KIND_NAME",
+    "PAGE_SIZE",
+    "ClusterSource",
+    "DeploymentSource",
+    "KubernetesCollector",
+    "RecordedSource",
+    "from_cluster",
+    "from_recording",
+]

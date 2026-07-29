@@ -49,6 +49,13 @@ INTENT_POLL_SECONDS = int(os.environ.get("DATUM_INTENT_POLL_SECONDS", "300"))
 # which is the same not-configured contract the intent poller honours.
 # Phase 3 reads a recorded payload; WBS 1.4.2 points this at a live cluster.
 KUBERNETES_SOURCE = os.environ.get("DATUM_K8S_SOURCE", "")
+# "recorded" replays the payload at DATUM_K8S_SOURCE; "cluster" reads a live
+# cluster via in-cluster credentials or a kubeconfig. Recorded is the default
+# so nothing reaches for a cluster that was never configured.
+KUBERNETES_MODE = os.environ.get("DATUM_K8S_MODE", "recorded")
+# Empty means every namespace, which is the scope discovery wants: a resource
+# nobody declared is exactly what it exists to find.
+KUBERNETES_NAMESPACE = os.environ.get("DATUM_K8S_NAMESPACE", "")
 # Bounded staleness for the estate, the discovery-side twin of the poll interval.
 COLLECT_SECONDS = int(os.environ.get("DATUM_COLLECT_SECONDS", "300"))
 

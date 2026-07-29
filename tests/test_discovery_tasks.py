@@ -86,3 +86,32 @@ def test_the_task_is_idempotent_across_ticks(settings):
 
     assert DiscoveredResource.objects.filter(tenant_id=TENANT).count() == 2
     assert CollectorRun.objects.count() == 2
+
+
+def test_cluster_mode_builds_a_live_collector_without_a_source_path(settings, monkeypatch):
+    """Cluster mode takes its credentials from the environment, so an unset
+    source path must not read as "not configured" and skip the run."""
+    settings.KUBERNETES_MODE = "cluster"
+    settings.KUBERNETES_SOURCE = ""
+    settings.KUBERNETES_NAMESPACE = "production"
+
+    built: list[object] = []
+
+    def capture(namespace):
+        built.append(namespace)
+        raise RuntimeError("stop before touching a cluster")
+
+    monkeypatch.setattr("datum.discovery.tasks.from_cluster", capture)
+
+    assert collect_kubernetes() is None
+    assert built == ["production"]
+
+
+def test_recorded_mode_is_the_default(settings):
+    """Nothing reaches for a cluster that was never configured."""
+    settings.KUBERNETES_MODE = "recorded"
+    settings.KUBERNETES_SOURCE = FIXTURE
+
+    run = CollectorRun.objects.get(id=collect_kubernetes())
+
+    assert run.status == CollectorRunStatus.SUCCESS

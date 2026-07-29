@@ -25,7 +25,11 @@ from typing import Protocol
 
 from django.utils import timezone
 
-from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
+from datum.discovery.errors import (
+    MalformedProviderData,
+    PartialProviderRead,
+    ProviderUnavailable,
+)
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
@@ -75,6 +79,7 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
     that is not SUCCESS.
     """
     run = _start(collector, tenant_id)
+    has_gap = False
 
     try:
         # Materialized inside the try on purpose: a lazily-yielded record that
@@ -86,6 +91,19 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
             "collector %s could not read the provider for tenant %s", collector.name, tenant_id
         )
         return _finish(run, read=0, written=0, errors=0, status=CollectorRunStatus.FAILED)
+    except PartialProviderRead as exc:
+        # The records already in hand are real observations, so they are kept
+        # and written. What is lost is the rest of the estate, which is recorded
+        # as a gap rather than counted -- nobody knows how many resources were
+        # in the pages that never arrived.
+        logger.warning(
+            "collector %s read only part of the provider for tenant %s: %s",
+            collector.name,
+            tenant_id,
+            exc.reason,
+        )
+        records = list(exc.records)
+        has_gap = True
 
     kinds_by_name = {kind.name: kind for kind in Kind.objects.all()}
     read = written = errors = 0
@@ -107,7 +125,14 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
         _upsert(tenant_id, kind, snapshot, run)
         written += 1
 
-    return _finish(run, read=read, written=written, errors=errors, status=_status_for(errors))
+    return _finish(
+        run,
+        read=read,
+        written=written,
+        errors=errors,
+        status=_status_for(errors, has_gap),
+        has_gap=has_gap,
+    )
 
 
 def _start(collector: Collector, tenant_id: str) -> CollectorRun:
@@ -181,7 +206,14 @@ def _upsert(tenant_id: str, kind: Kind, snapshot: ResourceSnapshot, run: Collect
     )
 
 
-def _finish(run: CollectorRun, read: int, written: int, errors: int, status: str) -> CollectorRun:
+def _finish(
+    run: CollectorRun,
+    read: int,
+    written: int,
+    errors: int,
+    status: str,
+    has_gap: bool = False,
+) -> CollectorRun:
     """Close the run with its counts and status."""
     # Interior of the barricade: the loop counts every record into exactly one
     # of written or errors, so a violation here is a bug in this module rather
@@ -195,23 +227,36 @@ def _finish(run: CollectorRun, read: int, written: int, errors: int, status: str
     run.resources_written = written
     run.errors = errors
     run.status = status
+    run.has_gap = has_gap
     run.finished_at = timezone.now()
     run.save(
-        update_fields=["resources_read", "resources_written", "errors", "status", "finished_at"]
+        update_fields=[
+            "resources_read",
+            "resources_written",
+            "errors",
+            "status",
+            "has_gap",
+            "finished_at",
+        ]
     )
     return run
 
 
-def _status_for(errors: int) -> str:
-    """A read that happened: PARTIAL if anything was rejected, else SUCCESS.
+def _status_for(errors: int, has_gap: bool) -> str:
+    """A read that happened: PARTIAL if anything was rejected or missed.
 
-    Only reachable once `fetch` returned, so a zero-record run here is a
-    genuinely empty estate rather than an unreachable provider, and SUCCESS is
-    the truthful answer. The unreachable case never arrives here -- it is
-    FAILED at the call site, because absence semantics must never be allowed to
-    read one outage as the deletion of everything.
+    Only reachable once `fetch` produced records, so a zero-record run with no
+    gap is a genuinely empty estate rather than an unreachable provider, and
+    SUCCESS is the truthful answer. The unreachable case never arrives here --
+    it is FAILED at the call site, because absence semantics must never be
+    allowed to read one outage as the deletion of everything.
+
+    A gap forces PARTIAL even when every record that did arrive was clean.
+    Without that, a read which fetched one page of four and rejected nothing
+    would be reported as a complete, successful read of a nearly empty estate,
+    which is the mass-deletion reading in its most convincing disguise.
     """
-    return CollectorRunStatus.PARTIAL if errors else CollectorRunStatus.SUCCESS
+    return CollectorRunStatus.PARTIAL if errors or has_gap else CollectorRunStatus.SUCCESS
 
 
 __all__ = [

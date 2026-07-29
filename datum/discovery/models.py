@@ -11,6 +11,13 @@ class CollectorRun(models.Model):
     resources_read = models.IntegerField(default=0)
     resources_written = models.IntegerField(default=0)
     errors = models.IntegerField(default=0)
+    # Some of the estate was never read -- a page that failed after other pages
+    # had succeeded. Separate from `errors` because a rejection is a record that
+    # was seen and refused, while a gap is an unknown number of resources never
+    # seen at all: there is no honest number to add to a count. Kept distinct
+    # from `status` because it answers a different question. PARTIAL says the
+    # run is imperfect; this says which way, and 1.4.4's absence rules care.
+    has_gap = models.BooleanField(default=False)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 

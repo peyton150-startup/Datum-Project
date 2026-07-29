@@ -233,6 +233,14 @@ A collector run is idempotent on the discovered natural key: running twice again
 
 The mechanism for that exclusion is decided in the next subsection, because it is the same decision three other places in the system already need and none of them have made.
 
+**A skip is counted against the run that caused it, not recorded as a run of its own.** `CollectorRun` carries `skipped_attempts`, incremented by whichever tick loses the lock. Resolves open question 7.
+
+The alternative was a fourth `CollectorRunStatus` member, and it is refused for a specific reason rather than a stylistic one. Every existing status means *a read was attempted*, and absence semantics turns on the rule that **only `SUCCESS` may infer absence**. A `SKIPPED` member adds a status that read nothing, which is safe only as long as every consumer spells that rule as `== SUCCESS` and never as `!= FAILED`. That is a trap laid for a future reader, guarding a case that does not need a run row at all. Growing the enum grows the blast radius of the one bug this section exists to prevent.
+
+Counting instead keeps `CollectorRun` meaning exactly one thing — a read was attempted, here is what it saw — and attributes the skip to the run actually responsible. It is also the more informative record: a run with `skipped_attempts: 11` says the read took long enough to block eleven ticks, which is precisely the permanently-overlapping schedule this rule wants visible. A standalone skipped row would say only that something was blocked, without saying by what.
+
+The counter is written by a process other than the one that owns the run, so it is incremented with an atomic database expression rather than read-modify-write. That is the first new case governed by the concurrency rule below, and it is stated here so the rule has a worked example.
+
 ### Concurrency and isolation
 
 **Decided (2026-07-29), while building 1.4.1.** This subsection is scoped wider than discovery on purpose: the collector lock above cannot be designed without stating the rule, and once stated the rule turns out to indict two paths in already-merged intent code.
@@ -393,9 +401,7 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 
 **Resolved:**
 3. ~~Is the declared plane rebuilt wholesale per revision or diffed incrementally?~~ **Wholesale rebuild**, decided 2026-07-27 at the opening of phase 2. Rationale and accepted cost in §10.
-
-**Open, blocks 1.4.4:**
-7. How is a skipped run recorded? A run that never started because another held the lock is not `FAILED` (nothing was attempted) and not `SUCCESS` (nothing was read, so it must never license an absence inference). Either `CollectorRunStatus` gains a fourth member and every consumer learns it, or skips are counted somewhere that is not a run row. §11 requires only that the skip be visible rather than silent; which of the two satisfies that is undecided.
+7. ~~How is a skipped run recorded?~~ **Counted against the run that caused it**, as `CollectorRun.skipped_attempts`, decided 2026-07-29 during phase 3. A fourth status member was refused because every existing status means a read was attempted, and adding one that read nothing widens the surface for the `!= FAILED` misreading that would license absence inference from a run which never looked. Rationale in §11.
 
 **Open, but not needed until phase 4:**
 2. Does a discrepancy attach to a field, a resource, or both?

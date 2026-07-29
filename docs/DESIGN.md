@@ -178,7 +178,74 @@ A rejection names the file and, where the YAML parser gives a position, the line
 
 ## 11. Discovery
 
-TO WRITE. The collector interface and what a collector is forbidden from doing. Scheduling, concurrency limits, overlapping runs. Idempotency and partial failure: a run that reads 800 of 1,000 resources is a partial success with a recorded gap, never a signal that 200 resources vanished. Rate limits and backoff. Normalization. Collectors are the robustness zone.
+**Decided (2026-07-27), at the opening of phase 3.**
+
+Collectors are the **robustness zone**. The quality objectives rank robustness first here and explicitly sacrifice strict correctness: *"A cloud API will return junk, time out, and rate-limit. The collector keeps going and records what it could not read. A partial run is a valid outcome."* Every rule below follows from that sentence, and the phase 1 collector violated it (CF-1), which is the defect this phase exists to fix.
+
+### What a collector is
+
+One adapter per provider, with one job: **read the provider, normalize what it read into `ResourceSnapshot`s, and record what it could not read.** It is the discovery half of the barricade (ADR-008) — provider dicts are converted to domain types at this edge and never travel inward raw.
+
+A collector is **forbidden** from:
+
+- writing to, provisioning, or changing anything in the estate. Read-only toward the estate is permanent and by design.
+- writing to the declared plane. `declared_resource` is a projection of a commit; a collector that touches it has destroyed the distinction the whole product rests on.
+- deciding what a discrepancy is. Collectors observe; `reconcile` compares. A collector that knows what intent says is coupled to the wrong plane.
+- deleting a discovered row it did not observe *this run*. See absence semantics below.
+- raising on a single bad record. One malformed record is data, not an exception.
+
+### Normalization
+
+Each collector owns a normalizer that turns one provider record into one `ResourceSnapshot`, or rejects it. Rejection is per record and never aborts the read. The natural key is assembled here, and a snapshot missing any of `(kind, tenant, scope, name)` is structurally invalid — it would match nothing — so it is rejected rather than stored.
+
+`provider_id` is recorded on the discovered plane and only there. Intent cannot carry one (§10, §12).
+
+### Partial failure
+
+**Policy: always persist what parsed.** Every valid record is written, every rejection is counted, and the run is recorded as `PARTIAL`. There is no error ratio above which a run is discarded wholesale.
+
+This is the most literal reading of the stated quality objective, and it is chosen over a threshold because a threshold is a number nobody can defend: any value picked for it would be arbitrary, and the failure it guards against (a provider-side format change making everything unparseable) is better handled by absence semantics below, which already refuse to infer deletion from a damaged run.
+
+`resources_read` counts **items observed**, not items successfully parsed. The run record is the audit trail for what the collector saw; under-reporting it hides the fact that anything was dropped. Phase 1 reported `resources_read = 1` for a three-record payload, which is the second half of CF-1 and is arguably worse than the data loss, because it is silent.
+
+| Field | Meaning |
+|---|---|
+| `resources_read` | Items the provider returned, valid or not |
+| `resources_written` | Snapshots persisted |
+| `errors` | Items rejected by normalization |
+| `status` | `SUCCESS` when `errors == 0`, else `PARTIAL`; `FAILED` when the provider could not be reached at all |
+
+`resources_read == resources_written + errors` is an invariant, and is tested as one.
+
+### Absence semantics: the rule that prevents mass deletion
+
+A resource missing from a run means one of two things, and the collector cannot tell them apart: it was deleted, or this run did not manage to read it. Conflating them is the risk the WBS names against 1.4.4 — *"a partial read read as mass deletion."*
+
+The rule: **only a `SUCCESS` run may be used to infer absence.** A `PARTIAL` or `FAILED` run never marks anything absent, because by definition it has a gap and cannot distinguish a gap from a deletion.
+
+Absence is recorded, not destructive. Discovered rows carry `last_seen_run`, and a row not observed by a successful run is marked absent rather than deleted, so history survives and `reconcile` can still produce a "declared, missing" discrepancy for it. Deleting the row would destroy the evidence the review queue exists to show.
+
+### Idempotency and overlapping runs
+
+A collector run is idempotent on the discovered natural key: running twice against an unchanged estate produces the same rows, not duplicates. This is already enforced by `uq_discovered_natural_key` plus upsert.
+
+**One run per collector per tenant at a time.** A second run starting while one is in flight is skipped, not queued: the later run would read the same estate and the two would race on the same rows to no benefit. Skipping is recorded so a permanently-overlapping schedule is visible rather than silent.
+
+### Rate limits and backoff
+
+Provider calls are paginated where the SDK supports it and retried with exponential backoff on 429 and 5xx, up to a bounded number of attempts. Exhausting the attempts ends the run as `PARTIAL` with the gap recorded — never as a success, and never as evidence of deletion.
+
+Credentials are read from the environment, never logged, never returned by the API, and never rendered in the UI. That is a stated non-functional requirement with a test attached.
+
+### Live versus recorded
+
+| Collector | Phase 3 source | Rationale |
+|---|---|---|
+| Kubernetes | A live local k3s cluster | Free, and the only way to exercise the SDK, real API shapes, and pagination. A fixture-only collector proves the parser works, not the collector. |
+| Oracle Cloud | Recorded JSON fixture | Deferred until credentials exist; the normalizer is still fully testable against recorded payloads. |
+| CI | Fixtures for both | The build stays hermetic and offline. A test that needs a cluster is not a unit test and does not gate the build. |
+
+Recorded fixtures are multi-record from the start. The single-record fixture is precisely why phase 1 could not surface CF-1, and it is retired here.
 
 ## 12. Identity matching
 

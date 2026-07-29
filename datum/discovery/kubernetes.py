@@ -207,6 +207,7 @@ class KubernetesCollector:
     """Reads Deployments from whatever source it is given."""
 
     name = "kubernetes"
+    kind = KIND_NAME
 
     def __init__(self, source: DeploymentSource) -> None:
         self.source = source

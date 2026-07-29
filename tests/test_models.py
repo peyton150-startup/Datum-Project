@@ -33,7 +33,7 @@ def test_discovered_natural_key_is_unique_per_tenant():
         scope="default",
         provider_id="uid-1",
         attributes={"replicas": 5},
-        run=run,
+        last_seen_run=run,
     )
     with pytest.raises(IntegrityError), atomic():
         DiscoveredResource.objects.create(
@@ -43,7 +43,7 @@ def test_discovered_natural_key_is_unique_per_tenant():
             scope="default",
             provider_id="uid-2",
             attributes={"replicas": 5},
-            run=run,
+            last_seen_run=run,
         )
 
 

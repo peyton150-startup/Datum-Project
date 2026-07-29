@@ -48,6 +48,29 @@ from datum.intent.models import IntentRevision
 
 TENANT = "00000000-0000-0000-0000-000000000001"
 
+
+def _miss_once(monkeypatch):
+    """Make the pre-insert existence check miss exactly once.
+
+    That is the real shape of the race, and the distinction matters. The check
+    returns nothing because the winner has not committed *yet*; by the time the
+    loser's insert has conflicted, the winner is committed and a fresh look
+    finds it. A patch that made the check permanently blind would also blind the
+    recovery path, and would be testing a database that never commits rather
+    than a race.
+    """
+    from datum.intent import ingest
+
+    real = ingest._existing_revision
+    calls = {"n": 0}
+
+    def once(tenant_id, commit_sha):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real(tenant_id, commit_sha)
+
+    monkeypatch.setattr("datum.intent.ingest._existing_revision", once)
+
+
 pytestmark = pytest.mark.django_db
 
 
@@ -67,11 +90,7 @@ def test_the_same_commit_ingested_twice_concurrently_yields_one_revision(intent_
     ingest_revision(TENANT, repo)
     existing = IntentRevision.objects.get(tenant_id=TENANT)
 
-    # Force the race: the second caller's existence check sees nothing, exactly
-    # as it would if the first had not yet committed.
-    monkeypatch.setattr(
-        "datum.intent.ingest._existing_revision", lambda tenant_id, commit_sha: None
-    )
+    _miss_once(monkeypatch)
 
     revision = ingest_revision(TENANT, repo)
 
@@ -89,9 +108,7 @@ def test_the_losing_writer_does_not_leave_a_half_projected_revision(intent_repo,
     ingest_revision(TENANT, repo)
     rows_before = DeclaredResource.objects.filter(tenant_id=TENANT).count()
 
-    monkeypatch.setattr(
-        "datum.intent.ingest._existing_revision", lambda tenant_id, commit_sha: None
-    )
+    _miss_once(monkeypatch)
     ingest_revision(TENANT, repo)
 
     assert DeclaredResource.objects.filter(tenant_id=TENANT).count() == rows_before
@@ -109,9 +126,7 @@ def test_a_conflict_never_surfaces_as_an_integrity_error(intent_repo, monkeypatc
 
     repo = intent_repo()
     ingest_revision(TENANT, repo)
-    monkeypatch.setattr(
-        "datum.intent.ingest._existing_revision", lambda tenant_id, commit_sha: None
-    )
+    _miss_once(monkeypatch)
 
     try:
         ingest_revision(TENANT, repo)

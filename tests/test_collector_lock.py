@@ -145,11 +145,19 @@ def test_repeated_skips_accumulate(collector_holding_the_lock):
     assert in_flight.skipped_attempts == 3
 
 
+@pytest.mark.django_db(transaction=True)
 def test_the_skip_counter_is_incremented_atomically(collector_holding_the_lock):
     """Written by a process other than the one owning the run, so it must be a
     database-side increment rather than read-modify-write. Two concurrent skips
     that both read 0 and both write 1 would lose one, which is the concurrency
     rule in DESIGN section 11 applied to its first new case.
+
+    `transaction=True` is load-bearing rather than incidental. The default
+    django_db wraps the test in a transaction that is never committed, so the
+    run row would be invisible to the other connections these threads open and
+    they would find nothing to increment -- the test would pass against a
+    read-modify-write implementation for the wrong reason, by never reaching
+    the row at all.
     """
     in_flight = collector_holding_the_lock
     barrier = threading.Barrier(2)
@@ -191,6 +199,7 @@ def test_the_lock_is_free_again_after_a_run_finishes():
 def test_a_run_that_raises_still_frees_the_lock():
     class Exploding:
         name = "kubernetes"
+        kind = "Deployment"
 
         def fetch(self):
             raise RuntimeError("something nobody anticipated")
@@ -209,6 +218,7 @@ def _a_collector():
 
     class Fake:
         name = "kubernetes"
+        kind = "Deployment"
 
         def fetch(self):
             return [{"name": "web"}]

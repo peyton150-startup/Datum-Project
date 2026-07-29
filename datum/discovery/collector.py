@@ -23,13 +23,16 @@ import logging
 from collections.abc import Sequence
 from typing import Protocol
 
+from django.db.models import F
 from django.utils import timezone
 
+from datum.discovery.absence import mark_absent_after
 from datum.discovery.errors import (
     MalformedProviderData,
     PartialProviderRead,
     ProviderUnavailable,
 )
+from datum.discovery.lock import collector_lock
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
@@ -48,6 +51,14 @@ class Collector(Protocol):
     """
 
     name: str
+
+    # The one kind this collector owns. Singular on purpose, and asserted rather
+    # than assumed: absence is scoped by (tenant, collector), which is sound
+    # only while that is true. A collector owning two kinds whose fetch silently
+    # returned records for one of them would still report SUCCESS with no gap,
+    # and absence would then be entitled to mark every resource of the other
+    # kind gone. Multi-kind ownership is DESIGN open question 8.
+    kind: str
 
     def fetch(self) -> Sequence[object]:
         """Every record the provider returned, raw and unvalidated.
@@ -69,8 +80,14 @@ class Collector(Protocol):
         ...
 
 
-def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
+def run_collector(collector: Collector, tenant_id: str) -> CollectorRun | None:
     """Read a provider once and persist everything that normalized.
+
+    Returns None when another run of this collector was already in flight. A
+    second run is skipped rather than queued: it would read the same estate and
+    the two would race on the same rows to no benefit. No run row is written for
+    a skip, because nothing was attempted -- the skip is counted against the run
+    that caused it instead.
 
     Always persists what parsed (DESIGN section 11). There is no error ratio
     above which the run is discarded wholesale, because any such threshold would
@@ -78,6 +95,40 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
     already handled by absence semantics refusing to infer deletion from a run
     that is not SUCCESS.
     """
+    with collector_lock(tenant_id, collector.name) as acquired:
+        if not acquired:
+            _count_skip(tenant_id, collector.name)
+            return None
+        return _read_once(collector, tenant_id)
+
+
+def _count_skip(tenant_id: str, collector_name: str) -> None:
+    """Attribute this skip to the run that is holding the lock.
+
+    An atomic database-side increment, not read-modify-write: the writer is a
+    different process from the one that owns the run, and two skips that both
+    read 0 and both wrote 1 would lose one. First worked example of the
+    concurrency rule in DESIGN section 11.
+    """
+    updated = (
+        CollectorRun.objects.filter(
+            tenant_id=tenant_id, collector_name=collector_name, finished_at__isnull=True
+        )
+        .order_by("-started_at")[:1]
+        .values_list("id", flat=True)
+    )
+    CollectorRun.objects.filter(id__in=list(updated)).update(
+        skipped_attempts=F("skipped_attempts") + 1
+    )
+    logger.info(
+        "collector %s already in flight for tenant %s; skipping this tick",
+        collector_name,
+        tenant_id,
+    )
+
+
+def _read_once(collector: Collector, tenant_id: str) -> CollectorRun:
+    """One held-lock run, from opening the record to inferring absence."""
     run = _start(collector, tenant_id)
     has_gap = False
 
@@ -117,6 +168,15 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
         if snapshot is None:
             errors += 1
             continue
+        # Interior of the barricade: the collector declares one kind and its own
+        # normalizer sets it, so a mismatch is a bug in the adapter rather than
+        # bad provider data. Asserted because absence is scoped by collector and
+        # would otherwise be entitled to mark another kind's resources gone.
+        assert snapshot.kind == collector.kind, (
+            f"collector {collector.name} declares kind {collector.kind!r} "
+            f"but produced {snapshot.kind!r}; absence is scoped per collector "
+            "and multi-kind ownership is DESIGN open question 8"
+        )
         kind = kinds_by_name.get(snapshot.kind)
         if kind is None:
             _log_unknown_kind(collector, snapshot, tenant_id)
@@ -125,7 +185,7 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
         _upsert(tenant_id, kind, snapshot, run)
         written += 1
 
-    return _finish(
+    finished = _finish(
         run,
         read=read,
         written=written,
@@ -133,6 +193,11 @@ def run_collector(collector: Collector, tenant_id: str) -> CollectorRun:
         status=_status_for(errors, has_gap),
         has_gap=has_gap,
     )
+    # Only now, with the status settled: a run that is not a complete read is
+    # not entitled to conclude that anything is gone. `mark_absent_after` makes
+    # that judgement itself rather than trusting this call site to have checked.
+    mark_absent_after(finished)
+    return finished
 
 
 def _start(collector: Collector, tenant_id: str) -> CollectorRun:
@@ -201,7 +266,13 @@ def _upsert(tenant_id: str, kind: Kind, snapshot: ResourceSnapshot, run: Collect
         defaults={
             "provider_id": snapshot.provider_id,
             "attributes": dict(snapshot.attributes),
-            "run": run,
+            "last_seen_run": run,
+            # Direct observation refutes absence immediately, whatever else the
+            # run turns out to be. Inferring absence needs a complete read;
+            # contradicting it does not, and a resource read successfully must
+            # not stay flagged missing because some other record was malformed.
+            "is_absent": False,
+            "absent_since": None,
         },
     )
 

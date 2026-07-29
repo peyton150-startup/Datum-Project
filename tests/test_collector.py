@@ -160,6 +160,7 @@ def test_a_run_that_never_finishes_is_left_failed():
 
     class NeverReturns:
         name = "kubernetes"
+        kind = "Deployment"
 
         def fetch(self):
             raise KeyboardInterrupt("killed mid-read")
@@ -231,23 +232,27 @@ def test_a_changed_attribute_updates_in_place_rather_than_duplicating(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_snapshot_naming_an_unknown_kind_is_counted_not_raised():
+def test_a_collector_whose_declared_kind_was_never_seeded_is_counted_not_raised():
     """Datum's own configuration being wrong is still no reason to lose a run.
 
-    Counted as a rejection so the run keeps going and every other resource it
-    saw is still recorded.
+    Reached differently since 1.4.4 added the one-kind invariant. A collector
+    can no longer produce a kind other than the one it declares -- that is an
+    assertion now -- so the way this path is still reachable is a collector
+    declaring a kind for which no `Kind` row was ever seeded. Counted as a
+    rejection rather than raised, so the run keeps going and records everything
+    else it saw.
     """
 
-    class WrongKind:
+    class UnseededKind:
         name = "kubernetes"
+        kind = "NoSuchKind"
 
         def fetch(self):
             return [{"name": "ghost"}, {"name": "real"}]
 
         def normalize(self, record, tenant_id):
-            kind = "Deployment" if record["name"] == "real" else "NoSuchKind"
             return ResourceSnapshot(
-                kind=kind,
+                kind=self.kind,
                 tenant_id=tenant_id,
                 scope="default",
                 name=record["name"],
@@ -255,11 +260,11 @@ def test_a_snapshot_naming_an_unknown_kind_is_counted_not_raised():
                 attributes={"replicas": 1},
             )
 
-    run = run_collector(WrongKind(), TENANT)
+    run = run_collector(UnseededKind(), TENANT)
 
-    assert (run.resources_read, run.resources_written, run.errors) == (2, 1, 1)
+    assert (run.resources_read, run.resources_written, run.errors) == (2, 0, 2)
     assert run.status == CollectorRunStatus.PARTIAL
-    assert names_written() == {"real"}
+    assert names_written() == set()
 
 
 # ---------------------------------------------------------------------------

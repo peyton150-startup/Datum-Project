@@ -42,6 +42,25 @@ class InvalidDocument(Exception):
         self.path = path
 
 
+class RevisionConflict(Exception):
+    """Another writer claimed this revision identity first (CF-4, CF-5).
+
+    A concurrency condition, not a document one. It exists as its own exception
+    rather than reusing `InvalidRevision` because there is no document to blame:
+    `InvalidRevision` carries a list of `DocumentError`s pointing at bad YAML,
+    and synthesizing a fake one for a lost race would make the error lie about
+    what went wrong.
+
+    Raised in place of the `IntegrityError` a unique constraint would otherwise
+    throw across the module boundary. That the constraint catches the race is
+    correct; letting the database's abstraction escape into callers written
+    against this module's is the defect (DESIGN section 11, ADR-008).
+
+    Not fatal. The revision that won is a valid revision, and the loser's work
+    was redundant by definition -- both were projecting the same repository.
+    """
+
+
 class InvalidRevision(Exception):
     """A revision was rejected whole; no state was written.
 

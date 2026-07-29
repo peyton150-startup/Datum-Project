@@ -16,7 +16,7 @@ ResourceRow = DeclaredResource | DiscoveredResource
 @transaction.atomic
 def run_reconciliation(tenant_id: str) -> None:
     declared_rows = _active_declared(tenant_id)
-    discovered_rows = list(DiscoveredResource.objects.filter(tenant_id=tenant_id))
+    discovered_rows = _present_discovered(tenant_id)
     declared = [_snapshot(row) for row in declared_rows]
     discovered = [_snapshot(row) for row in discovered_rows]
 
@@ -26,6 +26,17 @@ def run_reconciliation(tenant_id: str) -> None:
     _reset(tenant_id)
     _write_matches(tenant_id, match_result, declared_rows, discovered_rows)
     _write_discrepancies(tenant_id, discrepancy_set)
+
+
+def _present_discovered(tenant_id: str) -> list[DiscoveredResource]:
+    """The discovered plane as it stands now, excluding what is known to be gone.
+
+    An absent row is retained as evidence, not as a current observation. Feeding
+    it to the matcher would pair it with its declared counterpart and report no
+    difference at all -- the resource would be missing from the estate and
+    perfectly reconciled at the same time.
+    """
+    return list(DiscoveredResource.objects.filter(tenant_id=tenant_id, is_absent=False))
 
 
 def _active_declared(tenant_id: str) -> list[DeclaredResource]:

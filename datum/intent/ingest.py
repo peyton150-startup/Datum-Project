@@ -9,10 +9,11 @@ provider.
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from datum.graph.models import DeclaredResource
 from datum.intent.documents import DocumentSource, KindSchemas, parse_document_set
+from datum.intent.errors import RevisionConflict
 from datum.intent.models import IntentRevision
 from datum.intent.repository import head_sha
 from datum.kinds.models import Kind
@@ -36,7 +37,7 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
     raises.
     """
     commit_sha = head_sha(repo_path)
-    existing = IntentRevision.objects.filter(tenant_id=tenant_id, commit_sha=commit_sha).first()
+    existing = _existing_revision(tenant_id, commit_sha)
     if existing is not None:
         return existing
 
@@ -48,7 +49,61 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
 
     # Raises InvalidRevision, carrying every error found, before anything is written.
     snapshots = parse_document_set(_read_documents(repo_path), tenant_id, schemas)
-    return _project(tenant_id, commit_sha, snapshots, kinds_by_name)
+
+    try:
+        return _project(tenant_id, commit_sha, snapshots, kinds_by_name)
+    except IntegrityError as exc:
+        # The check above and this insert are two statements, so under READ
+        # COMMITTED another writer can land between them. The constraint holds
+        # the invariant either way; what must not escape is its exception.
+        #
+        # `_project` is atomic, so its work is already rolled back here -- there
+        # is no half-projected revision to clean up.
+        return _resolve_conflict(tenant_id, commit_sha, exc)
+
+
+def _existing_revision(tenant_id: str, commit_sha: str) -> IntentRevision | None:
+    """The revision for this commit, if one is already recorded.
+
+    A named seam rather than an inline query: it is the exact point two triggers
+    interleave at, so a test has somewhere to force the race deterministically.
+    """
+    return IntentRevision.objects.filter(tenant_id=tenant_id, commit_sha=commit_sha).first()
+
+
+def _deactivate_current(tenant_id: str) -> int:
+    """Stand down the active revision, returning how many rows changed.
+
+    The second seam. Under READ COMMITTED this UPDATE cannot see a row another
+    transaction has not yet committed, which is how two revisions can both go
+    active (CF-5).
+    """
+    return IntentRevision.objects.filter(tenant_id=tenant_id, is_active=True).update(
+        is_active=False
+    )
+
+
+def _resolve_conflict(tenant_id: str, commit_sha: str, exc: IntegrityError) -> IntentRevision:
+    """Answer a lost race, or convert it into this module's own exception.
+
+    Idempotency outranks the conflict. If the writer that won was projecting
+    this very commit, the caller asked for a revision at that commit and there
+    now is one -- returning it is the promised answer, not an error. That is
+    CF-4, and under concurrency it is indistinguishable from an ordinary
+    re-poll, which is the whole point of the idempotency promise.
+
+    A genuine disagreement -- another commit claiming active while this one was
+    projecting -- is CF-5, and the caller has to hear about it. It surfaces as
+    `RevisionConflict` rather than `IntegrityError` so callers written against
+    this module keep working.
+    """
+    winner = _existing_revision(tenant_id, commit_sha)
+    if winner is not None:
+        return winner
+    raise RevisionConflict(
+        f"another writer activated a revision for tenant {tenant_id} while "
+        f"commit {commit_sha} was being projected: {exc}"
+    ) from exc
 
 
 def _read_documents(repo_path: str) -> list[DocumentSource]:
@@ -83,7 +138,7 @@ def _project(
     One transaction, so the deactivate/create/write sequence has no reachable
     half-state.
     """
-    IntentRevision.objects.filter(tenant_id=tenant_id, is_active=True).update(is_active=False)
+    _deactivate_current(tenant_id)
     revision = IntentRevision.objects.create(
         tenant_id=tenant_id, commit_sha=commit_sha, is_active=True
     )

@@ -169,6 +169,7 @@ Rejected: Redis and Elasticsearch (relicensed), anything whose free tier is a co
        1.4.4 Partial-failure and idempotency handling
        1.4.5 Phase 1 carry-forward remediation (CF-1, CF-3; CF-2 folded into 1.3.1)
    1.5 Phase 4: Reconciliation core
+       1.5.0 Null-versus-absent resolution (blocks 1.5.3 and 1.5.4)
        1.5.1 Identity matching with confidence scoring
        1.5.2 Diff engine and orphan detection
        1.5.3 Precedence policy model and evaluator
@@ -209,6 +210,7 @@ No gaps: every deliverable D1 to D14 traces to a package. No overlaps: UI work a
 | 1.4.3 | Oracle Cloud collector | Bulk model | 1 wk | 1.4.1 | API rate limits |
 | 1.4.4 | Partial failure and idempotency | Nic + kernel model | 1 wk | 1.4.2 | A partial read read as mass deletion |
 | 1.4.5 | Phase 1 carry-forward remediation | Bulk model | 0.5 wk | 1.4.4 | Fixed in the phase that schedules it rather than the layer that owns it |
+| 1.5.0 | Null-versus-absent resolution | Nic + kernel model | 1 wk | 1.4.3 | Deferred once already; deferring again lands it after records become durable |
 | 1.5.1 | Identity matching | Nic + kernel model | 2 wk | 1.3.3, 1.2.3 | Renames and recreations break matching |
 | 1.5.2 | Diff engine | Nic + kernel model | 2.5 wk | 1.5.1 | Nondeterminism from unordered collections |
 | 1.5.3 | Precedence policy and evaluator | Nic + kernel model | 2 wk | 1.5.2 | Unexplainable policy means operators stop trusting it |
@@ -485,3 +487,35 @@ Each is bound to the work package that needs it. None of them authorizes scope.
 The usability work on 1.5.5 and 1.5.6 must not be the first `web/` change protected by nothing. It will not be: **CF-3 delivers frontend CI in 1.4.5, which is Phase 3, and both UI packages are Phase 4.** The dependency is satisfied by the existing phase order, so nothing needs rescheduling — this paragraph exists to record *why* the order matters, so a later compression pass does not move CF-3 later without noticing what it is holding up.
 
 The standing rule from the CF-3 entry still applies until 1.4.5 runs: any `web/` change before then is protected only by someone running `npm run lint`, `npm run build`, and `npm test` by hand. That is a reason not to open the review queue for polish early, not a reason to move CF-3.
+
+---
+
+## Scheduled at the Phase 3 second-kind decision (2026-07-29): WBS 1.5.0
+
+Adding the second kind in 1.4.3 was the event DESIGN §10 and §24 named as the trigger for two deferred simplifications. Only one of them actually fired, and the reason the other did not is recorded here so the deferral is a decision rather than an omission.
+
+### What was deferred, and the corrected trigger
+
+| Simplification | Where | Status |
+|---|---|---|
+| Every attribute in a kind's `attribute_schema` is required; optionality is not expressible | `datum/intent/documents.py` (§10) | **Still deferred.** The second kind is expressible with required attributes only, so the stated trigger — "a second kind exposes optional fields" — has not fired. |
+| An absent key and an explicit null are compared distinctly but reported identically | `datum/reconcile/diff.py` (§24) | **Scheduled as 1.5.0**, before 1.5.3 and 1.5.4. |
+
+**The doc's trigger for null-versus-absent was the wrong trigger.** "When a second kind exposes optional fields" describes when the ambiguity becomes *reachable*, not when it becomes *expensive*. Two things in Phase 4 set the real deadline:
+
+- **Precedence (1.5.3)** answers which plane is authoritative for a field, and that question is ill-posed when "absent" and "null" are one value. Declared-absent plausibly means intent has no opinion and discovery's value stands; declared-null plausibly means intent requires the field empty. Those demand opposite outcomes, and D6 requires the policy be explainable **for any single field** — a decision whose input is ambiguous cannot be explained.
+- **The lifecycle (1.5.4)** is where discrepancy records stop being disposable. Today `run_reconciliation` deletes and rewrites open discrepancies every run, so the ambiguity is transient — recompute and it is gone. Once suppression carries a reason and an expiry, records persist, and changing the semantics afterwards makes historical records retroactively ambiguous: a suppressed discrepancy would no longer mean what it meant when someone suppressed it.
+
+So the cost curve is not smooth. It is cheap now, cheap through Phase 3, and steps up sharply at 1.5.3. 1.5.0 exists to land before that step.
+
+### Why optionality is safe to leave, and null-versus-absent is not
+
+They were deferred together and are now separated, which needs a reason. **Loosening validation later is not a breaking change.** Making a required attribute optional never invalidates a document that already supplied it, so this deferral creates no migration burden for any intent repository — the asymmetry genuinely favours waiting until a real kind motivates the design, which is what §10 wanted in the first place.
+
+Null-versus-absent has no such reprieve, because it does not loosen a rule; it changes what a discrepancy *means*.
+
+### The condition attached to the second kind
+
+The second kind was chosen with required attributes only, which is what keeps optionality deferred. That choice is only legitimate while it is also honest: **if a realistic provider payload cannot be modelled without an optional attribute, the trigger has fired and optionality is done then, not later.** Recorded so the constraint is testable rather than convenient.
+
+Related limit noticed while choosing the schema, not scheduled: `attribute_schema` is shared by both planes, so an attribute that only discovery can observe — a lifecycle state, a provider-assigned address — cannot be modelled without intent being required to declare it. Not a defect today, since no kind needs one. It belongs with the precedence work if it ever bites, because "this field is observed, never declared" is a precedence statement.

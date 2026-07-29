@@ -19,6 +19,19 @@ where they would have interleaved -- the check that each one performs before the
 other has committed. The window is the defect; forcing it open is how the fix
 gets proven rather than hoped for.
 
+Under READ COMMITTED this is a fair substitute rather than a convenient one:
+the only way this class of race can resolve is one transaction committing and
+the other conflicting against the constraint, so forcing the losing caller's
+check to return the stale value reproduces the database-visible symptom exactly.
+
+**Known gap, named rather than assumed covered.** These prove the
+unique-violation outcome is handled. They say nothing about whether two
+genuinely concurrent transactions taking the update-then-insert path in CF-5
+could deadlock (Postgres 40P01) instead of cleanly hitting the partial unique
+index, which depends on lock acquisition order and cannot be exposed by a
+single-threaded replay. Deferred deliberately; if it happens it is loud and
+retryable, not silent corruption.
+
 ## The API these tests assume
 
 - `datum.intent.errors.RevisionConflict` -- raised when a concurrent write
@@ -29,7 +42,7 @@ gets proven rather than hoped for.
 
 import pytest
 
-from datum.intent.errors import InvalidRevision, RevisionConflict
+from datum.intent.errors import RevisionConflict
 from datum.intent.ingest import ingest_revision
 from datum.intent.models import IntentRevision
 
@@ -117,6 +130,14 @@ def test_two_different_commits_cannot_both_become_active(intent_repo, monkeypatc
     catches it -- as `IntegrityError`, across a module boundary.
 
     Exactly one revision is active afterwards, whichever wins.
+
+    `RevisionConflict` specifically, not `InvalidRevision`. Accepting either
+    would let an implementation synthesize a fake `DocumentError` and raise
+    `InvalidRevision` for a race with no document to blame -- and because
+    `poll_intent_repository` already catches `InvalidRevision`, that lazy branch
+    would pass every test in this file while `tasks.py` never learned the new
+    exception existed. The point of naming the exception is defeated by an
+    assertion loose enough to not require it.
     """
     first = intent_repo()
     ingest_revision(TENANT, first)
@@ -125,7 +146,7 @@ def test_two_different_commits_cannot_both_become_active(intent_repo, monkeypatc
     # would if the other transaction had not yet committed its active row.
     monkeypatch.setattr("datum.intent.ingest._deactivate_current", lambda tenant_id: 0)
 
-    with pytest.raises((RevisionConflict, InvalidRevision)):
+    with pytest.raises(RevisionConflict):
         ingest_revision(TENANT, intent_repo("fixtures/intent-repo-v2"))
 
     assert IntentRevision.objects.filter(tenant_id=TENANT, is_active=True).count() == 1
@@ -141,7 +162,7 @@ def test_the_previously_active_revision_still_stands_after_a_conflict(intent_rep
     winner = ingest_revision(TENANT, first)
 
     monkeypatch.setattr("datum.intent.ingest._deactivate_current", lambda tenant_id: 0)
-    with pytest.raises((RevisionConflict, InvalidRevision)):
+    with pytest.raises(RevisionConflict):
         ingest_revision(TENANT, intent_repo("fixtures/intent-repo-v2"))
 
     winner.refresh_from_db()

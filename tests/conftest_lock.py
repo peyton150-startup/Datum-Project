@@ -37,7 +37,19 @@ def second_connection(django_db_setup, django_db_blocker):
 
         thread = threading.Thread(target=attempt)
         thread.start()
-        thread.join()
+        thread.join(timeout=10)
+
+        # Bounded on purpose. An implementation reaching for the blocking
+        # pg_advisory_lock() instead of pg_try_advisory_lock() would leave this
+        # thread waiting on a lock the main thread cannot release until this
+        # join returns -- a deadlock between the test and its own fixture. With
+        # no timeout that hangs the run instead of failing it, which for a spec
+        # whose principle is "a flaky test is worse than none" is worse than
+        # either: no signal locally, and an unattributed timeout in CI.
+        assert not thread.is_alive(), (
+            "the second connection never returned; collector_lock is probably "
+            "blocking rather than failing fast when the lock is held"
+        )
         return result["acquired"]
 
     return run

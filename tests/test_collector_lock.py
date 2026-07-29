@@ -86,9 +86,16 @@ def test_the_lock_is_released_even_when_the_body_raises():
 
 
 def test_a_holder_that_never_took_the_lock_does_not_release_it(second_connection):
-    """The subtle one. A blocked caller exiting its `with` must not release the
-    lock it never held, or the first overlap silently disables the lock for
-    everyone afterwards."""
+    """A denied caller exiting its `with` must not release anything.
+
+    Kept deliberately modest about what it proves. Postgres advisory locks are
+    session-scoped, so one session *cannot* release another's through
+    `pg_advisory_unlock` however carelessly the caller is written -- the
+    catastrophic version of this bug is structurally impossible as long as each
+    logical caller has its own connection. What this still catches is the
+    mundane version: unlocking with the wrong key, or a connection reused
+    across callers so that two logical holders are one session.
+    """
     with collector_lock(TENANT, "kubernetes"):
         second_connection(collector_lock, TENANT, "kubernetes")  # denied, then exits
         assert second_connection(collector_lock, TENANT, "kubernetes") is False

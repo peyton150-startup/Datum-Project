@@ -21,6 +21,12 @@ mostly exists to prevent.
 - `datum.discovery.absence.mark_absent_after(run)` -- called at the end of a
   run. Marks rows the run should have seen but did not.
 
+**Do not write `last_seen_run` outside `_upsert`.** A stored flag can fall out
+of step with the field it was derived from in a way a computed one cannot, and
+the only way that happens here is something else -- a data migration, an admin
+fix, a future bulk reassignment -- moving `last_seen_run` without re-running the
+absence rule. Raised in review as the real cost of the decision below.
+
 **Why `is_absent` is stored rather than derived.** Absence could be computed as
 `last_seen_run != <latest successful run>`, saving a column. That is rejected
 for the same reason a fourth run status was rejected: it makes every reader
@@ -149,6 +155,47 @@ def test_a_collector_may_not_mark_another_collectors_resources_absent():
     assert oci_resource.is_absent is False
 
 
+def test_a_collector_may_only_produce_the_one_kind_it_declares():
+    """The invariant that makes collector-scoped absence safe.
+
+    Absence is scoped by `(tenant, collector_name)`, which is correct only while
+    a collector owns exactly one kind. If a collector owned two and its `fetch`
+    silently returned records for only one of them -- a bug in the adapter's own
+    dispatch, invisible to the framework -- the run would still report
+    `errors=0`, `has_gap=False`, `SUCCESS`, and absence would then be entitled
+    to mark every resource of the other kind absent. That is the section 11
+    mass-deletion failure relocated one level down, from provider to kind.
+
+    Rather than build multi-kind ownership that nothing yet needs, the
+    single-kind assumption is made explicit and loud: a collector declares its
+    kind, and producing any other is a bug in the adapter, not bad provider
+    data. Whoever builds the first two-kind collector hits this assertion
+    instead of the silent hole. The wider question is DESIGN open question 8,
+    to be answered when a second kind actually arrives.
+    """
+    from datum.reconcile.domain import ResourceSnapshot
+
+    class WrongKind:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return [{"name": "impostor"}]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind="Service",  # not the kind this collector declares
+                tenant_id=tenant_id,
+                scope="default",
+                name=record["name"],
+                provider_id="uid-impostor",
+                attributes={"replicas": 1},
+            )
+
+    with pytest.raises(AssertionError):
+        run_collector(WrongKind(), TENANT)
+
+
 def test_a_run_may_not_mark_another_tenants_resources_absent():
     """Tenant isolation is not enforced until phase 5, but every query is
     written tenant-scoped from day one, and this is a query."""
@@ -187,6 +234,33 @@ def test_a_resource_that_reappears_stops_being_absent():
 
     run_collector(_collector_returning(["flapping"]), TENANT)
 
+    resource.refresh_from_db()
+    assert resource.is_absent is False
+    assert resource.absent_since is None
+
+
+def test_direct_observation_clears_absence_even_in_a_partial_run():
+    """Inferring absence needs SUCCESS. *Refuting* it does not.
+
+    The asymmetry is the point, and it is a decision rather than an oversight.
+    Absence is inferred from silence, and only a complete read makes silence
+    mean anything. But a resource that was actually read is direct evidence
+    that it exists, and evidence does not become less true because a different
+    record in the same batch was malformed.
+
+    Without this, a resource would stay marked absent while being successfully
+    read on every single run, for as long as any one record in the payload kept
+    failing -- reported missing by a collector that can see it.
+    """
+    old = a_run(CollectorRunStatus.SUCCESS)
+    resource = a_resource("flapping", old)
+    mark_absent_after(a_run(CollectorRunStatus.SUCCESS))
+    resource.refresh_from_db()
+    assert resource.is_absent is True, "precondition: it starts out absent"
+
+    run = run_collector(_collector_returning(["flapping"], with_bad_record=True), TENANT)
+
+    assert run.status == CollectorRunStatus.PARTIAL
     resource.refresh_from_db()
     assert resource.is_absent is False
     assert resource.absent_since is None

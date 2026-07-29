@@ -11,7 +11,7 @@ import logging
 from celery import shared_task
 from django.conf import settings
 
-from datum.intent.errors import InvalidRevision
+from datum.intent.errors import InvalidRevision, RevisionConflict
 from datum.intent.ingest import ingest_revision
 from datum.intent.repository import RepositoryUnavailable, sync_worktree
 
@@ -41,6 +41,12 @@ def poll_intent_repository() -> str | None:
     except RepositoryUnavailable:
         # Transient by nature. The next poll retries; the active revision stands.
         logger.exception("intent repository unavailable for tenant %s", tenant_id)
+        return None
+    except RevisionConflict:
+        # Another trigger got there first, which is the ordinary outcome when a
+        # poll and a webhook fire together rather than a failure. The winner's
+        # revision stands and there is nothing to retry.
+        logger.info("intent revision already claimed by another writer for tenant %s", tenant_id)
         return None
     except InvalidRevision as exc:
         # Not transient: retrying will not fix malformed YAML. Log every error

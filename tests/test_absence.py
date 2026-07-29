@@ -349,6 +349,7 @@ def _collector_returning(names, with_bad_record=False):
 
     class Fake:
         name = "kubernetes"
+        kind = "Deployment"
 
         def fetch(self):
             return records

@@ -2,6 +2,7 @@ import pytest
 from django.test import Client
 
 from datum.discovery.collector import run_collector
+from datum.discovery.kubernetes import KubernetesCollector
 from datum.enums import DiscrepancyState, DiscrepancyType
 from datum.intent.errors import InvalidRevision
 from datum.intent.ingest import ingest_revision
@@ -13,12 +14,22 @@ FIXTURE = "fixtures/k8s/deployments.json"
 pytestmark = pytest.mark.django_db
 
 
+def collect(tenant_id: str = TENANT, source: str = FIXTURE):
+    """The phase 1 slice's collector run, expressed against the phase 3 framework.
+
+    The acceptance criteria are unchanged -- one Deployment, `replicas: 5` -- so
+    this fixture stays single-record. The multi-record payloads that retire it
+    for CF-1's sake live in the collector tests, where the counts are the point.
+    """
+    return run_collector(KubernetesCollector(source), tenant_id)
+
+
 def test_phase1_slice_end_to_end(intent_repo):
     # 1-2: declare web replicas=3, ingest, traceable to commit
     revision = ingest_revision(TENANT, intent_repo())
     assert revision.is_active and len(revision.commit_sha) == 40
     # 3-4: collector reports replicas=5 into discovered plane
-    run = run_collector(TENANT, FIXTURE)
+    run = collect()
     assert run.resources_written == 1
     # 5-6: match + diff -> exactly one field discrepancy, no orphans
     run_reconciliation(TENANT)
@@ -58,7 +69,7 @@ def test_negative_malformed_document_keeps_previous_revision(intent_repo):
 
 def test_negative_discovered_undeclared_is_one_orphan(intent_repo):
     # no intent at all; only discovery
-    run_collector(TENANT, FIXTURE)
+    collect()
     run_reconciliation(TENANT)
     orphans = Discrepancy.objects.filter(
         tenant_id=TENANT, discrepancy_type=DiscrepancyType.DISCOVERED_UNDECLARED

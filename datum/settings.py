@@ -44,6 +44,14 @@ INTENT_WORKTREE_DIR = os.environ.get("DATUM_INTENT_WORKTREE", str(BASE_DIR / ".i
 # Bounded staleness: drift between a push and its revision is at most this long.
 INTENT_POLL_SECONDS = int(os.environ.get("DATUM_INTENT_POLL_SECONDS", "300"))
 
+# Discovery (DESIGN section 11). Empty source means "no cluster to read": the
+# collection task logs and does nothing rather than failing every interval,
+# which is the same not-configured contract the intent poller honours.
+# Phase 3 reads a recorded payload; WBS 1.4.2 points this at a live cluster.
+KUBERNETES_SOURCE = os.environ.get("DATUM_K8S_SOURCE", "")
+# Bounded staleness for the estate, the discovery-side twin of the poll interval.
+COLLECT_SECONDS = int(os.environ.get("DATUM_COLLECT_SECONDS", "300"))
+
 CELERY_BROKER_URL = os.environ.get("VALKEY_URL", "redis://localhost:6379/0")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

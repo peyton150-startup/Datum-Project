@@ -43,6 +43,16 @@ PAGE_SIZE = 200
 # Statuses worth trying again. 429 is the rate limit section 11 names; 5xx is
 # the API server having a bad moment. Everything else -- 401, 403, 404, 422 --
 # will fail identically on the next attempt.
+#
+# 410 Gone is deliberately absent. A continuation token encodes the
+# resourceVersion the list began at, so paging is a consistent snapshot rather
+# than a series of independent reads -- which is why a resource cannot be
+# double-counted across pages, and why a slow read fails instead: the snapshot
+# ages out and the API server answers 410. Retrying the expired token cannot
+# help, and restarting the whole list from page one is not obviously right
+# either, since a read slow enough to expire once will tend to expire again.
+# Treating it as permanent gives a partial read with a recorded gap, which is
+# honest and, being PARTIAL, can never license an absence inference.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 # The natural-key components plus the one attribute this kind carries, paired
@@ -126,13 +136,20 @@ class ClusterSource:
 
         while True:
             page += 1
+            # Parsing the page is inside the guard, not only fetching it. A page
+            # that arrives malformed has failed just as surely as one that never
+            # arrived, and classifying only transport failures would throw away
+            # every earlier page whenever a later envelope was junk -- the same
+            # whole-collection abort as CF-1, one layer further down.
             try:
                 payload = self._page(api, continue_token, page)
+                items = _items_of(payload, f"page {page}")
+                next_token = _continue_token(payload)
             except Exception as exc:
                 raise self._read_stopped(records, page, exc) from exc
 
-            records.extend(_items_of(payload, f"page {page}"))
-            continue_token = _continue_token(payload)
+            records.extend(items)
+            continue_token = next_token
             if not continue_token:
                 return records
 

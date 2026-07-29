@@ -303,6 +303,71 @@ def test_a_single_attempt_is_permitted_and_does_not_retry():
 # ---------------------------------------------------------------------------
 
 
+def test_a_malformed_envelope_after_a_good_page_keeps_that_page():
+    """Regression: a page that arrives malformed has failed as surely as one
+    that never arrived.
+
+    Found in review. `_items_of` ran outside the guard that classifies a failed
+    page, so a valid-JSON response with no `items` list -- a proxy error body, a
+    truncated response -- raised straight past the classifier and discarded
+    every page already read. The run then reported FAILED with zero counts
+    while real, readable records had been in hand: the same whole-collection
+    abort as CF-1, one layer further down.
+    """
+    good = page(["a", "b"], "token-1")
+    malformed = {"kind": "Status", "metadata": {}}
+    source, _ = source_over([good, malformed])
+
+    with pytest.raises(PartialProviderRead) as caught:
+        source.read()
+
+    assert len(caught.value.records) == 2
+
+
+@pytest.mark.django_db
+def test_a_malformed_envelope_after_a_good_page_persists_and_marks_a_gap():
+    """The same defect seen from the run record, which is what an operator reads."""
+    good = page(["a", "b"], "token-1")
+    malformed = {"kind": "Status", "metadata": {}}
+    source, _ = source_over([good, malformed])
+
+    run = run_collector(KubernetesCollector(source), TENANT)
+
+    assert run.status == CollectorRunStatus.PARTIAL
+    assert run.has_gap is True
+    assert (run.resources_read, run.resources_written) == (2, 2)
+    assert DiscoveredResource.objects.filter(tenant_id=TENANT).count() == 2
+
+
+def test_a_malformed_envelope_on_the_first_page_is_still_unavailable():
+    """The nearby case the fix must NOT change.
+
+    Nothing had been read, so there is nothing to keep and no basis for any
+    claim about the estate. A fix that turned this into a partial read would
+    have made an unreachable provider look like a tiny estate.
+    """
+    source, _ = source_over([{"kind": "Status", "metadata": {}}])
+
+    with pytest.raises(ProviderUnavailable):
+        source.read()
+
+
+def test_metadata_that_is_not_a_mapping_after_a_good_page_ends_the_read_cleanly():
+    """The other nearby case: unreadable metadata is the end of the list, not a
+    failure. There is no token to follow, which is the same answer as the last
+    page, so the records already read are returned rather than raised over."""
+    source, _ = source_over(
+        [
+            page(["a"], "token-1"),
+            {"kind": "DeploymentList", "metadata": None, "items": [deployment("b")]},
+        ]
+    )
+
+    records = source.read()
+
+    assert [r["metadata"]["name"] for r in records] == ["a", "b"]
+
+
 def test_a_response_with_no_items_list_is_unavailable_not_an_empty_estate():
     source, _ = source_over([{"kind": "DeploymentList", "metadata": {}}])
 

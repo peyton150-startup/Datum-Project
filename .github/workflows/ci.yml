@@ -38,6 +38,13 @@ jobs:
       # datum/intent is gated alongside the kernel: the quality objectives rank
       # intent ingestion correctness-first, and it is the barricade for the
       # declared plane. It entered the gate at 100% branch coverage in phase 2.
+      #
+      # datum/discovery joined in phase 3. Collectors are the robustness zone
+      # rather than the kernel, so this is not a claim that they are kernel
+      # code. It is gated because the framework owns the counts and their
+      # invariant, and because CF-1 was a defect in exactly the branch an
+      # untested collector never takes: the one where a record is bad and the
+      # run has to keep going.
       - name: Kernel branch coverage gate
         run: |
-          coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*" --fail-under=100
+          coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100

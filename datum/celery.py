@@ -13,4 +13,8 @@ app.conf.beat_schedule = {
         "task": "datum.intent.poll_intent_repository",
         "schedule": settings.INTENT_POLL_SECONDS,
     },
+    "collect-kubernetes": {
+        "task": "datum.discovery.collect_kubernetes",
+        "schedule": settings.COLLECT_SECONDS,
+    },
 }

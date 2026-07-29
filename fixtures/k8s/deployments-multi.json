@@ -1,0 +1,17 @@
+{
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "metadata": {"name": "api", "namespace": "default", "uid": "uid-api-1"},
+      "spec": {"replicas": 2}
+    },
+    {
+      "metadata": {"name": "broken", "namespace": "default", "uid": "uid-broken-1"},
+      "spec": {}
+    },
+    {
+      "metadata": {"name": "worker", "namespace": "default", "uid": "uid-worker-1"},
+      "spec": {"replicas": 4}
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import pytest
 
 from datum.discovery.collector import run_collector
+from datum.discovery.kubernetes import KubernetesCollector
 from datum.enums import DiscrepancyState, DiscrepancyType
 from datum.intent.ingest import ingest_revision
 from datum.reconcile.models import Discrepancy, Match
@@ -13,7 +14,7 @@ pytestmark = pytest.mark.django_db
 
 def test_reconciliation_writes_one_match_and_one_field_discrepancy(intent_repo):
     ingest_revision(TENANT, intent_repo())
-    run_collector(TENANT, FIXTURE)
+    run_collector(KubernetesCollector(FIXTURE), TENANT)
     run_reconciliation(TENANT)
 
     assert Match.objects.filter(tenant_id=TENANT).count() == 1
@@ -28,7 +29,7 @@ def test_reconciliation_writes_one_match_and_one_field_discrepancy(intent_repo):
 
 def test_rerun_is_idempotent(intent_repo):
     ingest_revision(TENANT, intent_repo())
-    run_collector(TENANT, FIXTURE)
+    run_collector(KubernetesCollector(FIXTURE), TENANT)
     run_reconciliation(TENANT)
     run_reconciliation(TENANT)
     assert Discrepancy.objects.filter(tenant_id=TENANT, state=DiscrepancyState.OPEN).count() == 1
@@ -37,7 +38,7 @@ def test_rerun_is_idempotent(intent_repo):
 
 def test_discovered_resource_with_no_declared_plane_is_undeclared():
     """No active revision at all: every discovered resource is an orphan, not a crash."""
-    run_collector(TENANT, FIXTURE)
+    run_collector(KubernetesCollector(FIXTURE), TENANT)
     run_reconciliation(TENANT)
 
     assert not Match.objects.filter(tenant_id=TENANT).exists()

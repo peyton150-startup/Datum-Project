@@ -225,6 +225,10 @@ The rule: **only a `SUCCESS` run may be used to infer absence.** A `PARTIAL` or 
 
 Absence is recorded, not destructive. Discovered rows carry `last_seen_run`, and a row not observed by a successful run is marked absent rather than deleted, so history survives and `reconcile` can still produce a "declared, missing" discrepancy for it. Deleting the row would destroy the evidence the review queue exists to show.
 
+**Inferring absence requires a `SUCCESS` run. Refuting it does not.** The asymmetry is deliberate. Absence is inferred from silence, and only a complete read makes silence mean anything; but a resource that was actually read is direct evidence that it exists, and that evidence is not weakened by a different record in the same payload being malformed. So a `PARTIAL` run clears the absence flag on everything it observed, while marking nothing new absent. Without the asymmetry a resource could stay flagged missing while being read successfully on every run, for as long as any one unrelated record kept failing.
+
+**Absence is scoped by `(tenant, collector_name)`, which is sound only while a collector owns exactly one kind.** That is true today and is now enforced rather than assumed: a collector declares its kind, and producing a snapshot of any other kind is an assertion failure — a bug in the adapter, not bad provider data. The hole this closes is narrow but severe. A collector owning two kinds whose `fetch` silently returned records for only one of them would report `errors=0`, `has_gap=False`, `SUCCESS`, because nothing in the framework can distinguish "read everything I own" from "read everything I happened to return" — and absence would then be entitled to mark every resource of the other kind absent. That is this section's own mass-deletion failure relocated one level down, from provider to kind. Multi-kind ownership is not built, because nothing yet needs it; see open question 8.
+
 ### Idempotency and overlapping runs
 
 A collector run is idempotent on the discovered natural key: running twice against an unchanged estate produces the same rows, not duplicates. This is already enforced by `uq_discovered_natural_key` plus upsert.
@@ -402,6 +406,9 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 **Resolved:**
 3. ~~Is the declared plane rebuilt wholesale per revision or diffed incrementally?~~ **Wholesale rebuild**, decided 2026-07-27 at the opening of phase 2. Rationale and accepted cost in §10.
 7. ~~How is a skipped run recorded?~~ **Counted against the run that caused it**, as `CollectorRun.skipped_attempts`, decided 2026-07-29 during phase 3. A fourth status member was refused because every existing status means a read was attempted, and adding one that read nothing widens the surface for the `!= FAILED` misreading that would license absence inference from a run which never looked. Rationale in §11.
+
+**Open, answered when a second kind arrives:**
+8. How does a collector that owns more than one kind scope absence? Today one collector owns one kind, enforced by assertion, and absence is scoped by `(tenant, collector_name)`. A multi-kind collector needs the `Collector` protocol to declare the set of kinds it is responsible for, and absence scoped by `(tenant, collector_name, kind)` — so a run producing zero records for a kind it owns can still correctly infer absence for that kind, while never touching a kind it does not own. This joins the null-vs-absent simplification (§24) and the all-attributes-required limit (§10) in the cluster of things a second kind forces; they are revisited together, because a second kind is the event that turns each of them from a simplification into a defect.
 
 **Open, but not needed until phase 4:**
 2. Does a discrepancy attach to a field, a resource, or both?

@@ -2,7 +2,7 @@ import pytest
 from django.test import Client
 
 from datum.discovery.collector import run_collector
-from datum.discovery.kubernetes import KubernetesCollector
+from datum.discovery.kubernetes import from_recording
 from datum.enums import DiscrepancyState
 from datum.intent.ingest import ingest_revision
 from datum.reconcile.models import Discrepancy
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.django_db
 @pytest.fixture
 def seeded(intent_repo):
     ingest_revision(TENANT, intent_repo())
-    run_collector(KubernetesCollector(FIXTURE), TENANT)
+    run_collector(from_recording(FIXTURE), TENANT)
     run_reconciliation(TENANT)
 
 

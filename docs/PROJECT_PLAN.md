@@ -446,3 +446,42 @@ The last of those is the sharp edge. `scripts/gen_ts_enums.py` is the single sou
 This is the same failure class as the Ratchet incident named in the WBS risk column for 1.1.2 — the safety net exists but is not covering the thing. Nothing blocks it technically; it waits for 1.4.5 by choice, not by dependency. Note the standing cost: every `web/` change made before then is protected only by someone remembering to run `npm run lint`, `npm run build`, and `npm test` locally.
 
 **Fix direction:** a second CI job — `actions/setup-node`, `npm ci`, `npm run build` (which runs `tsc`), `npm test` — plus a step asserting `python scripts/gen_ts_enums.py` leaves no diff, so drift between the two languages fails the build.
+
+---
+
+## Found in Phase 3 (2026-07-29): the concurrency defect class
+
+Found while designing the collector lock for 1.4.4, not by a failing test. Both are in **already-merged Phase 2 code**, and neither is a data-loss defect: in both cases a Postgres constraint holds the invariant. What fails is the *contract*. The conflict reaches the caller as `IntegrityError`, wearing the database's abstraction rather than the module's, so no caller can be written to expect it.
+
+That is the same inversion as CF-2, which is why these are recorded as a class rather than two more one-off entries. The rule they violate, and the mechanism decisions that fix them, are in DESIGN §11 under "concurrency and isolation". Both are stated relative to Postgres's default READ COMMITTED, which DESIGN now names explicitly.
+
+| ID | Defect | Owning module | Scheduled | Mitigation while deferred |
+|---|---|---|---|---|
+| CF-4 | Check-then-insert on `(tenant, commit_sha)` in `ingest_revision` races with itself | `datum/intent/ingest.py` | 1.4.4 | Run exactly one Celery beat worker. Do not add the §10 webhook trigger before this is fixed. |
+| CF-5 | `_project` deactivates then inserts, so two revisions can both become active | `datum/intent/ingest.py` | 1.4.4 | As above. |
+
+**Why 1.4.4 rather than a Phase 2 reopen.** 1.4.4 is already the package that owes the collector lock, and all three races share one mechanism decision. Fixing the intent pair anywhere else would mean making that decision twice. This is the same trade the CF-1/CF-2/CF-3 deferral made, with the same condition attached: **the code lands in the module that owns it.** CF-4 and CF-5 are fixed in `datum/intent/`, not in a collector, whatever package does the work.
+
+**The standing cost, stated plainly.** Until 1.4.4 runs, the mitigation is operational rather than structural — it depends on nobody scaling the worker to two replicas and nobody landing the webhook. Neither is enforced by anything in the repository. The webhook is the one to watch: it is listed in §10 as calling the same entry point deliberately, which is correct design and is exactly what makes simultaneous delivery certain rather than unlikely.
+
+---
+
+## Construction practice: usability and visualization references
+
+Three reference skills are available to the build. They are recorded here rather than remembered, for the same reason the defect-removal plan is a table: a practice that depends on someone recalling it at the right moment is not a practice.
+
+Each is bound to the work package that needs it. None of them authorizes scope.
+
+| Package | Reference | What it is for |
+|---|---|---|
+| 1.5.5 Review queue UI | `dont-make-me-think-ui` | The named risk against this package is *"authoritative side visually ambiguous"*, and D8 requires a fifty-item backlog clearable without leaving the keyboard. Both are usability claims, and neither is settled by taste. |
+| 1.5.6 Resource explorer UI | `dont-make-me-think-ui` | Navigation and information scent across the graph. Also a guard on this package's own risk, *"scope sprawl into a general admin tool"*: the discipline of one obvious path is what keeps an explorer from growing into an admin console. |
+| 1.7.1 Drift timeline visualization | `big-book-dashboard-design`, `Information Dashboard Design` | The only charting work anywhere in this project. Chart selection, colour, and whether the thing can be read accurately rather than merely looks informative. |
+
+**Why the dashboard references appear once, against an expansion.** The exclusions forbid monitoring, metrics, and health alerting, and nothing in D1–D14 is a dashboard. The resource explorer is search, filter, detail, and history — applying dashboard design to it would mean inventing a KPI screen the scope statement rules out. Recording them against 1.7.1 keeps them available for the one case that is genuinely data visualization, and keeps them from justifying a case that is not.
+
+### The ordering that already holds, stated so it is not disturbed
+
+The usability work on 1.5.5 and 1.5.6 must not be the first `web/` change protected by nothing. It will not be: **CF-3 delivers frontend CI in 1.4.5, which is Phase 3, and both UI packages are Phase 4.** The dependency is satisfied by the existing phase order, so nothing needs rescheduling — this paragraph exists to record *why* the order matters, so a later compression pass does not move CF-3 later without noticing what it is holding up.
+
+The standing rule from the CF-3 entry still applies until 1.4.5 runs: any `web/` change before then is protected only by someone running `npm run lint`, `npm run build`, and `npm test` by hand. That is a reason not to open the review queue for polish early, not a reason to move CF-3.

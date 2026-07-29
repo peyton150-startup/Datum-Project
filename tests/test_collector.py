@@ -12,7 +12,7 @@ import pytest
 
 from datum.discovery.collector import run_collector
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
-from datum.discovery.kubernetes import KubernetesCollector
+from datum.discovery.kubernetes import RecordedSource, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.reconcile.domain import ResourceSnapshot
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db
 
 
 def collect(source: str = FIXTURE, tenant_id: str = TENANT) -> CollectorRun:
-    return run_collector(KubernetesCollector(source), tenant_id)
+    return run_collector(from_recording(source), tenant_id)
 
 
 def names_written() -> set[str]:
@@ -268,7 +268,7 @@ def test_a_snapshot_naming_an_unknown_kind_is_counted_not_raised():
 
 
 def test_normalize_builds_the_full_natural_key():
-    collector = KubernetesCollector(FIXTURE)
+    collector = from_recording(FIXTURE)
     record = collector.fetch()[0]
 
     snapshot = collector.normalize(record, TENANT)
@@ -294,14 +294,14 @@ def test_each_missing_required_field_is_rejected_and_named(record, missing):
     back to the provider to guess.
     """
     with pytest.raises(MalformedProviderData) as caught:
-        KubernetesCollector(FIXTURE).normalize(record, TENANT)
+        from_recording(FIXTURE).normalize(record, TENANT)
 
     assert missing in str(caught.value)
 
 
 def test_a_rejection_names_every_missing_field_not_only_the_first():
     with pytest.raises(MalformedProviderData) as caught:
-        KubernetesCollector(FIXTURE).normalize({"metadata": {}}, TENANT)
+        from_recording(FIXTURE).normalize({"metadata": {}}, TENANT)
 
     message = str(caught.value)
     assert "metadata.name" in message
@@ -313,14 +313,14 @@ def test_a_rejection_names_every_missing_field_not_only_the_first():
 @pytest.mark.parametrize("record", [None, "a string", 7, ["a", "list"]])
 def test_a_record_that_is_not_a_mapping_is_rejected(record):
     with pytest.raises(MalformedProviderData):
-        KubernetesCollector(FIXTURE).normalize(record, TENANT)
+        from_recording(FIXTURE).normalize(record, TENANT)
 
 
 def test_a_record_whose_metadata_is_not_a_mapping_is_rejected():
     """The parent of a required field being the wrong type reads the same as the
     field being absent, and must not surface as an AttributeError."""
     with pytest.raises(MalformedProviderData):
-        KubernetesCollector(FIXTURE).normalize(
+        from_recording(FIXTURE).normalize(
             {"metadata": "not-a-mapping", "spec": {"replicas": 1}}, TENANT
         )
 
@@ -331,7 +331,7 @@ def test_replicas_of_zero_is_a_value_not_a_missing_field():
     A Deployment scaled to zero is a real, readable state, and rejecting it
     would report a scaled-down service as unreadable junk.
     """
-    snapshot = KubernetesCollector(FIXTURE).normalize(
+    snapshot = from_recording(FIXTURE).normalize(
         {"metadata": {"name": "n", "namespace": "d", "uid": "u"}, "spec": {"replicas": 0}},
         TENANT,
     )
@@ -346,7 +346,7 @@ def test_replicas_of_zero_is_a_value_not_a_missing_field():
 
 def test_fetch_on_a_missing_file_is_provider_unavailable(tmp_path):
     with pytest.raises(ProviderUnavailable):
-        KubernetesCollector(str(tmp_path / "absent.json")).fetch()
+        RecordedSource(str(tmp_path / "absent.json")).read()
 
 
 def test_fetch_on_invalid_json_is_provider_unavailable(tmp_path):
@@ -354,7 +354,7 @@ def test_fetch_on_invalid_json_is_provider_unavailable(tmp_path):
     path.write_text("{not json at all", encoding="utf-8")
 
     with pytest.raises(ProviderUnavailable):
-        KubernetesCollector(str(path)).fetch()
+        RecordedSource(str(path)).read()
 
 
 def test_fetch_on_a_payload_with_no_items_list_is_provider_unavailable(tmp_path):
@@ -364,7 +364,7 @@ def test_fetch_on_a_payload_with_no_items_list_is_provider_unavailable(tmp_path)
     path.write_text(json.dumps({"kind": "DeploymentList"}), encoding="utf-8")
 
     with pytest.raises(ProviderUnavailable):
-        KubernetesCollector(str(path)).fetch()
+        RecordedSource(str(path)).read()
 
 
 def test_fetch_does_not_judge_records():
@@ -373,6 +373,6 @@ def test_fetch_does_not_judge_records():
     An adapter never sees the collection it would have to abort, so a payload
     full of junk still fetches cleanly and fails one record at a time.
     """
-    records = KubernetesCollector(MULTI_FIXTURE).fetch()
+    records = from_recording(MULTI_FIXTURE).fetch()
 
     assert len(records) == 3

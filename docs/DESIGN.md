@@ -231,6 +231,44 @@ A collector run is idempotent on the discovered natural key: running twice again
 
 **One run per collector per tenant at a time.** A second run starting while one is in flight is skipped, not queued: the later run would read the same estate and the two would race on the same rows to no benefit. Skipping is recorded so a permanently-overlapping schedule is visible rather than silent.
 
+The mechanism for that exclusion is decided in the next subsection, because it is the same decision three other places in the system already need and none of them have made.
+
+**A skip is counted against the run that caused it, not recorded as a run of its own.** `CollectorRun` carries `skipped_attempts`, incremented by whichever tick loses the lock. Resolves open question 7.
+
+The alternative was a fourth `CollectorRunStatus` member, and it is refused for a specific reason rather than a stylistic one. Every existing status means *a read was attempted*, and absence semantics turns on the rule that **only `SUCCESS` may infer absence**. A `SKIPPED` member adds a status that read nothing, which is safe only as long as every consumer spells that rule as `== SUCCESS` and never as `!= FAILED`. That is a trap laid for a future reader, guarding a case that does not need a run row at all. Growing the enum grows the blast radius of the one bug this section exists to prevent.
+
+Counting instead keeps `CollectorRun` meaning exactly one thing — a read was attempted, here is what it saw — and attributes the skip to the run actually responsible. It is also the more informative record: a run with `skipped_attempts: 11` says the read took long enough to block eleven ticks, which is precisely the permanently-overlapping schedule this rule wants visible. A standalone skipped row would say only that something was blocked, without saying by what.
+
+The counter is written by a process other than the one that owns the run, so it is incremented with an atomic database expression rather than read-modify-write. That is the first new case governed by the concurrency rule below, and it is stated here so the rule has a worked example.
+
+### Concurrency and isolation
+
+**Decided (2026-07-29), while building 1.4.1.** This subsection is scoped wider than discovery on purpose: the collector lock above cannot be designed without stating the rule, and once stated the rule turns out to indict two paths in already-merged intent code.
+
+**The assumed isolation level is Postgres's default, READ COMMITTED.** Stating it is the point — every race below is a race *relative to that level*, and a reader who assumes SERIALIZABLE will conclude, wrongly, that the database already prevents them. Datum does not raise the isolation level; see the accepted cost at the end.
+
+**The rule: a concurrency conflict is a domain condition, and must surface as a domain exception.** A conflict that reaches the caller as `IntegrityError` has inverted the barricade exactly as CF-2 did — the boundary passed a condition inward and the database caught it. That the database *does* catch it is not the defect. The defect is that the rejection depends on a constraint firing mid-transaction and arrives wearing a lower module's abstraction, so no caller can be written to expect it. CF-2 was one instance of this. It is a class.
+
+Three instances exist today, all reachable, none currently honouring the rule:
+
+| Where | The race, under READ COMMITTED | What holds integrity | What the caller sees |
+|---|---|---|---|
+| `intent/ingest.py::ingest_revision` | Check-then-insert on `(tenant, commit_sha)`. Two triggers carrying the same commit both read "no existing revision", both project. | `uq_revision_tenant_commit` | `IntegrityError` |
+| `intent/ingest.py::_project` | `UPDATE ... WHERE is_active` then `INSERT is_active=True`. T2's scan cannot see the row T1 has not yet committed, so both may insert an active revision. | `uq_one_active_revision_per_tenant` | `IntegrityError` |
+| `discovery/collector.py::_upsert` | `update_or_create` is a read followed by a write, not one statement. Two overlapping runs may both find no row and both insert. | `uq_discovered_natural_key` | `IntegrityError` |
+
+None of these is hypothetical. The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. The third is what the collector lock exists to prevent.
+
+**Decisions:**
+
+- **Exclusion for collector runs is a Postgres advisory lock** keyed on `(tenant_id, collector_name)`, taken for the duration of the run and released by the connection. Chosen over a row lock because there is no natural row to lock — the run being excluded does not exist yet — and over a broker-level lock because the database is already the thing both workers agree on, and adding a second coordination authority means two things that can disagree about who holds the lock.
+- **Idempotent insertion states the conflict rather than reading around it.** Where a unique constraint already expresses the invariant, the write attempts and handles the conflict, rather than checking first and hoping the gap is narrow. The check-then-insert shape is not made safe by narrowing its window; it is made safe by not being that shape.
+- **Every one of the three converts to a domain exception at its own boundary.** `ingest` raises its own; `collector` counts the loser as a skipped write rather than a rejection, because nothing was malformed.
+
+**Explicitly not done: raising the isolation level to SERIALIZABLE.** It would close all three races generically, and it is refused because it trades a small number of named, locally-fixable races for serialization failures that can surface on *any* transaction and must be retried everywhere. That is a system-wide obligation bought to solve three known problems, and it would also quietly become load-bearing — a later contributor would have no way to know which code depends on it. The named fixes are legible; the isolation level is not.
+
+**Accepted cost.** Every new path that writes must ask this question for itself, because nothing in the type system asks it for you. The mitigation is the rule stated at the top of this subsection plus its line on the review checklist.
+
 ### Rate limits and backoff
 
 Provider calls are paginated where the SDK supports it and retried with exponential backoff on 429 and 5xx, up to a bounded number of attempts. Exhausting the attempts ends the run as `PARTIAL` with the gap recorded — never as a success, and never as evidence of deletion.
@@ -363,6 +401,7 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 
 **Resolved:**
 3. ~~Is the declared plane rebuilt wholesale per revision or diffed incrementally?~~ **Wholesale rebuild**, decided 2026-07-27 at the opening of phase 2. Rationale and accepted cost in §10.
+7. ~~How is a skipped run recorded?~~ **Counted against the run that caused it**, as `CollectorRun.skipped_attempts`, decided 2026-07-29 during phase 3. A fourth status member was refused because every existing status means a read was attempted, and adding one that read nothing widens the surface for the `!= FAILED` misreading that would license absence inference from a run which never looked. Rationale in §11.
 
 **Open, but not needed until phase 4:**
 2. Does a discrepancy attach to a field, a resource, or both?
@@ -472,6 +511,7 @@ One page, applied to every kernel PR, amended from the project's own defect log.
 - [ ] Fewer than about seven collaborators?
 - [ ] Guards on everything crossing the barricade; assertions for the impossible cases
 - [ ] No empty except blocks; exceptions at the right abstraction level
+- [ ] If it writes: what happens when two of these run at once? A conflict a constraint catches must still surface as a domain exception, never as `IntegrityError` (§11, concurrency and isolation)
 - [ ] Cyclomatic complexity under 10 in kernel modules
 - [ ] Names from the domain; no magic values; one purpose per variable
 - [ ] Tests cover both branches of every condition, boundaries above/at/below, and at least one case designed to break it

@@ -2,7 +2,7 @@ import pytest
 from django.test import Client
 
 from datum.discovery.collector import run_collector
-from datum.discovery.kubernetes import KubernetesCollector
+from datum.discovery.kubernetes import from_recording
 from datum.enums import DiscrepancyState, DiscrepancyType
 from datum.intent.errors import InvalidRevision
 from datum.intent.ingest import ingest_revision
@@ -21,7 +21,7 @@ def collect(tenant_id: str = TENANT, source: str = FIXTURE):
     this fixture stays single-record. The multi-record payloads that retire it
     for CF-1's sake live in the collector tests, where the counts are the point.
     """
-    return run_collector(KubernetesCollector(source), tenant_id)
+    return run_collector(from_recording(source), tenant_id)
 
 
 def test_phase1_slice_end_to_end(intent_repo):

@@ -53,5 +53,21 @@ def poll_intent_repository() -> str | None:
         # so the author can see all of them, and wait for the next commit.
         logger.error("intent revision rejected for tenant %s:\n%s", tenant_id, exc, exc_info=False)
         return None
+    except Exception:
+        # The promise is "never raises", and three named exceptions did not make
+        # that true -- the deadlock variant of the CF-5 race escaped all of them
+        # until it was answered at the boundary that owns it, and a dropped
+        # connection still would. The discovery task has carried this catch-all
+        # from the start for the same reason; the asymmetry between the two was
+        # itself the defect.
+        #
+        # Last on purpose. Every condition with a considered answer is answered
+        # above, so this only ever catches something nobody anticipated.
+        logger.exception(
+            "intent poll failed unexpectedly for tenant %s; the schedule continues "
+            "and the next poll retries",
+            tenant_id,
+        )
+        return None
 
     return revision.commit_sha

@@ -263,6 +263,12 @@ Three instances exist today, all reachable, none currently honouring the rule:
 
 None of these is hypothetical. The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. The third is what the collector lock exists to prevent.
 
+**A race has two ways to lose, and the table above only listed one.** Found in review of the first implementation, and worth stating here because the omission was in the design rather than the code. A conflicting write is rejected either by a **constraint** — `IntegrityError`, SQLSTATE class 23 — or by the **transaction manager**, when the database rolls one side back to break a deadlock (`40P01`) or to preserve serializability (`40001`). Those arrive as different exception types: the second is an `OperationalError` and is invisible to any handler watching for `IntegrityError`.
+
+The rule stated above therefore reads too narrowly. It is not "never as `IntegrityError`" but **never as the database's exception, whichever one it is.** Both losses mean the same thing — another writer was doing this at the same time — so both get the same answer, including the idempotency check that may make the loss a non-event.
+
+What must *not* be swallowed with them is an `OperationalError` that is not a race at all: a dropped connection, an exhausted pool. Answering one of those as a lost race would report a database outage as a successful no-op, which is worse than the defect it was closing. The discrimination is on the SQLSTATE class, not the exception type.
+
 **Decisions:**
 
 - **Exclusion for collector runs is a Postgres advisory lock** keyed on `(tenant_id, collector_name)`, taken for the duration of the run and released by the connection. Chosen over a row lock because there is no natural row to lock — the run being excluded does not exist yet — and over a broker-level lock because the database is already the thing both workers agree on, and adding a second coordination authority means two things that can disagree about who holds the lock.
@@ -518,7 +524,7 @@ One page, applied to every kernel PR, amended from the project's own defect log.
 - [ ] Fewer than about seven collaborators?
 - [ ] Guards on everything crossing the barricade; assertions for the impossible cases
 - [ ] No empty except blocks; exceptions at the right abstraction level
-- [ ] If it writes: what happens when two of these run at once? A conflict a constraint catches must still surface as a domain exception, never as `IntegrityError` (§11, concurrency and isolation)
+- [ ] If it writes: what happens when two of these run at once? A conflict must surface as a domain exception, never as the database's -- and a race loses two ways, by constraint (`IntegrityError`) *and* by transaction rollback (`OperationalError`, SQLSTATE class 40). Watching for only one leaves the hole half-closed (§11, concurrency and isolation)
 - [ ] Cyclomatic complexity under 10 in kernel modules
 - [ ] Names from the domain; no magic values; one purpose per variable
 - [ ] Tests cover both branches of every condition, boundaries above/at/below, and at least one case designed to break it

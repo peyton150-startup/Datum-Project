@@ -40,7 +40,9 @@ retryable, not silent corruption.
   concurrency, which is a stronger promise than the one it makes today.
 """
 
+import psycopg
 import pytest
+from django.db import OperationalError
 
 from datum.intent.errors import RevisionConflict
 from datum.intent.ingest import ingest_revision
@@ -225,3 +227,98 @@ def test_re_ingesting_the_same_commit_is_still_a_no_op(intent_repo):
     first = ingest_revision(TENANT, repo)
 
     assert ingest_revision(TENANT, repo).pk == first.pk
+
+
+# ---------------------------------------------------------------------------
+# The deadlock variant, found in review of the first pass
+# ---------------------------------------------------------------------------
+
+
+def _rollback_error(sqlstate: str) -> OperationalError:
+    """A Django OperationalError wrapping a driver error, as Django raises them.
+
+    The SQLSTATE lives on the cause because Django re-raises its own exception
+    type around the driver's, which is exactly why the first pass missed this
+    whole class -- catching `IntegrityError` never sees it.
+    """
+    driver_error = psycopg.errors.lookup(sqlstate)("simulated")
+    wrapped = OperationalError("simulated")
+    wrapped.__cause__ = driver_error
+    return wrapped
+
+
+@pytest.mark.parametrize("sqlstate", ["40P01", "40001"])
+def test_a_concurrency_rollback_is_answered_like_any_other_lost_race(
+    intent_repo, monkeypatch, sqlstate
+):
+    """A deadlock and a serialization failure are the same condition as the
+    constraint violation, wearing a different code: the transaction was rolled
+    back because another writer was doing this at the same time.
+
+    Both SQLSTATEs, because handling one and not the other would leave the same
+    hole half-closed.
+    """
+    repo = intent_repo()
+    ingest_revision(TENANT, repo)
+    existing = IntentRevision.objects.get(tenant_id=TENANT)
+
+    _miss_once(monkeypatch)
+    monkeypatch.setattr(
+        "datum.intent.ingest._project",
+        lambda *args: (_ for _ in ()).throw(_rollback_error(sqlstate)),
+    )
+
+    assert ingest_revision(TENANT, repo).pk == existing.pk
+
+
+def test_a_concurrency_rollback_with_no_winner_raises_revision_conflict(intent_repo, monkeypatch):
+    """Rolled back by a writer projecting a *different* commit. Nothing to be
+    idempotent about, so the caller has to hear about it -- in this module's
+    vocabulary rather than the database's."""
+    ingest_revision(TENANT, intent_repo())
+    monkeypatch.setattr(
+        "datum.intent.ingest._project",
+        lambda *args: (_ for _ in ()).throw(_rollback_error("40P01")),
+    )
+
+    with pytest.raises(RevisionConflict):
+        ingest_revision(TENANT, intent_repo("fixtures/intent-repo-v2"))
+
+
+def test_a_database_error_that_is_not_a_race_still_propagates(intent_repo, monkeypatch):
+    """The nearby case the fix must not swallow.
+
+    A dropped connection or an exhausted pool arrives as the same exception type
+    and is not a race. Answering it as one would report a database outage as a
+    successful no-op, which is worse than the defect being fixed.
+    """
+    repo = intent_repo()
+    monkeypatch.setattr(
+        "datum.intent.ingest._project",
+        lambda *args: (_ for _ in ()).throw(OperationalError("connection dropped")),
+    )
+
+    with pytest.raises(OperationalError):
+        ingest_revision(TENANT, repo)
+
+
+def test_the_poll_task_survives_a_database_error_it_cannot_classify(
+    intent_repo, monkeypatch, settings
+):
+    """ "Never raises" has to mean never, not never-for-three-named-exceptions.
+
+    The deadlock escaping every clause is what exposed this; a dropped
+    connection would have done the same. The discovery task has always had this
+    catch-all, and the asymmetry between the two was itself the defect.
+    """
+    from datum.intent.tasks import poll_intent_repository
+
+    settings.INTENT_REPO_URL = "file:///irrelevant"
+    settings.INTENT_WORKTREE_DIR = intent_repo()
+    monkeypatch.setattr("datum.intent.tasks.sync_worktree", lambda *args: "sha")
+    monkeypatch.setattr(
+        "datum.intent.tasks.ingest_revision",
+        lambda *args: (_ for _ in ()).throw(OperationalError("connection dropped")),
+    )
+
+    assert poll_intent_repository() is None

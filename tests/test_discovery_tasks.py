@@ -8,7 +8,7 @@ rather than an exception.
 import pytest
 
 from datum.discovery.models import CollectorRun
-from datum.discovery.tasks import collect_kubernetes
+from datum.discovery.tasks import collect_kubernetes, collect_oci
 from datum.enums import CollectorRunStatus
 
 TENANT = "00000000-0000-0000-0000-000000000001"
@@ -115,3 +115,78 @@ def test_recorded_mode_is_the_default(settings):
     run = CollectorRun.objects.get(id=collect_kubernetes())
 
     assert run.status == CollectorRunStatus.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# The Oracle Cloud task (WBS 1.4.3)
+# ---------------------------------------------------------------------------
+
+OCI_FIXTURE = "fixtures/oci/instances.json"
+
+
+def test_oci_unconfigured_skips_without_running_anything(settings):
+    settings.OCI_SOURCE = ""
+
+    assert collect_oci() is None
+    assert not CollectorRun.objects.filter(collector_name="oci").exists()
+
+
+def test_oci_configured_runs_the_collector(settings):
+    settings.OCI_SOURCE = OCI_FIXTURE
+
+    run = CollectorRun.objects.get(id=collect_oci())
+
+    assert run.collector_name == "oci"
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+
+
+def test_oci_unreachable_payload_does_not_raise(settings, tmp_path):
+    settings.OCI_SOURCE = str(tmp_path / "absent.json")
+
+    run = CollectorRun.objects.get(id=collect_oci())
+
+    assert run.status == CollectorRunStatus.FAILED
+
+
+def test_oci_unexpected_failure_is_swallowed(settings, monkeypatch):
+    """Same contract as the Kubernetes task: a bug in Datum must not take the
+    schedule down with it."""
+    settings.OCI_SOURCE = OCI_FIXTURE
+    monkeypatch.setattr(
+        "datum.discovery.tasks.run_collector",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("nobody anticipated this")),
+    )
+
+    assert collect_oci() is None
+
+
+# ---------------------------------------------------------------------------
+# A skipped run has no id to return
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "task_name, setting, source",
+    [
+        ("collect_kubernetes", "KUBERNETES_SOURCE", FIXTURE),
+        ("collect_oci", "OCI_SOURCE", OCI_FIXTURE),
+    ],
+)
+def test_a_skipped_run_returns_none_rather_than_raising(
+    settings, monkeypatch, task_name, setting, source
+):
+    """Regression, found while writing the second task.
+
+    1.4.4 gave `run_collector` a None return for a run skipped by the lock, and
+    the Kubernetes task still dereferenced it -- outside its own try, so the
+    first overlapping tick would have raised AttributeError straight out of a
+    task whose contract is that it never raises. Parametrized over both tasks so
+    the third collector cannot reintroduce it.
+    """
+    import datum.discovery.tasks as tasks
+
+    setattr(settings, setting, source)
+    settings.KUBERNETES_MODE = "recorded"
+    monkeypatch.setattr(tasks, "run_collector", lambda *args: None)
+
+    assert getattr(tasks, task_name)() is None

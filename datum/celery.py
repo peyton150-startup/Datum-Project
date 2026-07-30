@@ -17,4 +17,8 @@ app.conf.beat_schedule = {
         "task": "datum.discovery.collect_kubernetes",
         "schedule": settings.COLLECT_SECONDS,
     },
+    "collect-oci": {
+        "task": "datum.discovery.collect_oci",
+        "schedule": settings.COLLECT_SECONDS,
+    },
 }

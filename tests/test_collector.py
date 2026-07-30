@@ -12,8 +12,9 @@ import pytest
 
 from datum.discovery.collector import run_collector
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
-from datum.discovery.kubernetes import RecordedSource, from_recording
+from datum.discovery.kubernetes import ENVELOPE_KEY, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
+from datum.discovery.recorded import RecordedSource
 from datum.enums import CollectorRunStatus
 from datum.reconcile.domain import ResourceSnapshot
 
@@ -351,7 +352,7 @@ def test_replicas_of_zero_is_a_value_not_a_missing_field():
 
 def test_fetch_on_a_missing_file_is_provider_unavailable(tmp_path):
     with pytest.raises(ProviderUnavailable):
-        RecordedSource(str(tmp_path / "absent.json")).read()
+        RecordedSource(str(tmp_path / "absent.json"), ENVELOPE_KEY).read()
 
 
 def test_fetch_on_invalid_json_is_provider_unavailable(tmp_path):
@@ -359,7 +360,7 @@ def test_fetch_on_invalid_json_is_provider_unavailable(tmp_path):
     path.write_text("{not json at all", encoding="utf-8")
 
     with pytest.raises(ProviderUnavailable):
-        RecordedSource(str(path)).read()
+        RecordedSource(str(path), ENVELOPE_KEY).read()
 
 
 def test_fetch_on_a_payload_with_no_items_list_is_provider_unavailable(tmp_path):
@@ -369,7 +370,7 @@ def test_fetch_on_a_payload_with_no_items_list_is_provider_unavailable(tmp_path)
     path.write_text(json.dumps({"kind": "DeploymentList"}), encoding="utf-8")
 
     with pytest.raises(ProviderUnavailable):
-        RecordedSource(str(path)).read()
+        RecordedSource(str(path), ENVELOPE_KEY).read()
 
 
 def test_fetch_does_not_judge_records():

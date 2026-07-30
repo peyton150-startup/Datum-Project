@@ -1,0 +1,8 @@
+apiVersion: datum.dev/v1
+kind: ComputeInstance
+metadata:
+  name: web-1
+  scope: ocid1.compartment.oc1..aaaaprod
+attributes:
+  shape: VM.Standard.A1.Flex
+  ocpus: 2

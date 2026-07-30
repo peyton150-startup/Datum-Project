@@ -28,12 +28,16 @@ from datum.discovery.errors import (
     PartialProviderRead,
     ProviderUnavailable,
 )
+from datum.discovery.recorded import RecordedSource, records_in
 from datum.discovery.retry import with_retry
 from datum.reconcile.domain import ResourceSnapshot
 
 logger = logging.getLogger(__name__)
 
 KIND_NAME = "Deployment"
+
+# Where Kubernetes puts the list in a DeploymentList response.
+ENVELOPE_KEY = "items"
 
 # How many Deployments to ask for per page. Not a tuning knob so much as a way
 # to make pagination reachable at all: without it the API server returns
@@ -79,31 +83,6 @@ class DeploymentSource(Protocol):
         ...
 
 
-class RecordedSource:
-    """A `DeploymentList` recorded from a real cluster and replayed from disk.
-
-    What CI reads. Also what the OCI collector will use until credentials exist.
-    """
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-
-    def read(self) -> Sequence[object]:
-        try:
-            with open(self.path, encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except OSError as exc:
-            raise ProviderUnavailable(
-                f"could not read the Kubernetes payload at {self.path}: {exc}"
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise ProviderUnavailable(
-                f"the Kubernetes payload at {self.path} is not valid JSON: {exc}"
-            ) from exc
-
-        return _items_of(payload, self.path)
-
-
 class ClusterSource:
     """Reads Deployments from a live cluster, one page at a time.
 
@@ -143,7 +122,7 @@ class ClusterSource:
             # whole-collection abort as CF-1, one layer further down.
             try:
                 payload = self._page(api, continue_token, page)
-                items = _items_of(payload, f"page {page}")
+                items = records_in(payload, ENVELOPE_KEY, f"page {page}")
                 next_token = _continue_token(payload)
             except Exception as exc:
                 raise self._read_stopped(records, page, exc) from exc
@@ -252,27 +231,12 @@ class KubernetesCollector:
 
 def from_recording(path: str) -> KubernetesCollector:
     """The recorded-payload collector, which is what tests and CI use."""
-    return KubernetesCollector(RecordedSource(path))
+    return KubernetesCollector(RecordedSource(path, ENVELOPE_KEY))
 
 
 def from_cluster(namespace: str = "") -> KubernetesCollector:
     """The live-cluster collector, which is what a deployment uses."""
     return KubernetesCollector(ClusterSource(namespace))
-
-
-def _items_of(payload: object, origin: str) -> list[object]:
-    """The `items` list out of a `DeploymentList` envelope.
-
-    An envelope with no items list is not an empty estate: there is no record to
-    reject, so nothing was observed and the caller learns nothing about what
-    exists.
-    """
-    if not isinstance(payload, Mapping):
-        raise ProviderUnavailable(f"{origin} is not a Kubernetes list envelope")
-    items = payload.get("items")
-    if not isinstance(items, list):
-        raise ProviderUnavailable(f"{origin} has no 'items' list")
-    return items
 
 
 def _continue_token(payload: Mapping[str, object]) -> str | None:
@@ -311,6 +275,7 @@ def _dig(record: Mapping[str, object], path: tuple[str, ...]) -> object | None:
 
 __all__ = [
     "KIND_NAME",
+    "ENVELOPE_KEY",
     "PAGE_SIZE",
     "ClusterSource",
     "DeploymentSource",

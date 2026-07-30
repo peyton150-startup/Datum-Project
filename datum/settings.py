@@ -56,6 +56,12 @@ KUBERNETES_MODE = os.environ.get("DATUM_K8S_MODE", "recorded")
 # Empty means every namespace, which is the scope discovery wants: a resource
 # nobody declared is exactly what it exists to find.
 KUBERNETES_NAMESPACE = os.environ.get("DATUM_K8S_NAMESPACE", "")
+
+# Oracle Cloud. Recorded payloads only until credentials exist (DESIGN section
+# 11), so there is no mode switch yet -- an unset source means "no OCI estate to
+# read" and the task logs and does nothing, the same not-configured contract the
+# other two schedules honour.
+OCI_SOURCE = os.environ.get("DATUM_OCI_SOURCE", "")
 # Bounded staleness for the estate, the discovery-side twin of the poll interval.
 COLLECT_SECONDS = int(os.environ.get("DATUM_COLLECT_SECONDS", "300"))
 

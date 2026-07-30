@@ -35,16 +35,6 @@ T = "t1"
 ABSENT = PlaneValue.absent()
 
 
-def value_of(plane_value):
-    """Read a PlaneValue's value in a test, stating what absence means here.
-
-    There is deliberately no shorter way. `resolve` is the only accessor, and
-    it cannot be called without an on_absent branch -- that is the guarantee
-    under test, so the tests live under it rather than around it.
-    """
-    return plane_value.resolve(on_absent=lambda: ABSENT, on_present=lambda v: v)
-
-
 def declared(**attributes):
     return ResourceSnapshot("Deployment", T, "default", "web", None, attributes)
 
@@ -80,28 +70,58 @@ def no_discrepancy(declared_snapshot, discovered_snapshot):
 # --- The guarantee the interface exists to provide ---------------------------
 
 
-def test_absence_cannot_be_read_without_being_handled():
+def test_the_public_surface_is_exactly_three_names():
     """The boundary claim in DESIGN section 13, made executable.
 
-    A hostile-implementer test in the sense named at Phase 3 close: it is the
-    review act of "try to reintroduce the fixed defect" turned into something
-    that runs on every push instead of once.
+    A hostile-implementer test in the sense named at Phase 3 close: the review
+    act of "try to reintroduce the fixed defect", turned into something that
+    runs on every push instead of once.
 
-    The defect being guarded is `declared_value=fd.declared.value` in
-    service.py -- the minimal edit that writes JSON null for both states and
-    puts the collapse back at the database layer. If a public value accessor
-    ever appears, this test fails and the boundary claim in section 13 becomes
-    false and must be rewritten rather than quietly relied upon.
+    A whitelist, not a blacklist. The first draft asserted `not hasattr` over
+    four guessed names -- value, val, unwrap, get -- which is a list of things
+    somebody thought of, and misses raw, inner, payload, contents, get_value,
+    value_or, unwrap_or, or_none, to_json. Asserting the surface IS a known set
+    catches every name nobody thought of, which is the set that matters.
+
+    The `_value` bypass is not caught here and is not catchable here: it is a
+    convention, so it is held by a rule instead -- ruff's SLF is enabled by
+    this package, making `fd.declared._value` a lint failure. A test cannot
+    police what other modules do; a linter can.
+    """
+    surface = {name for name in dir(PlaneValue) if not name.startswith("_")}
+    assert surface == {"absent", "of", "resolve", "as_columns"}
+
+
+def test_absence_cannot_be_read_without_being_handled():
+    """resolve makes the absent branch visible; it does not make it correct.
+
+    Stated carefully because the first draft of section 13 overclaimed. No
+    total eliminator can prevent being instantiated to the collapsing
+    function -- resolve(on_absent=lambda: None, on_present=lambda v: v) is
+    exactly the old defect, and at the database layer it is the CORRECT code,
+    because the check constraint requires NULL there. The guarantee is that a
+    reviewer sees an on_absent branch and can judge it, not that the branch is
+    always right.
     """
     absent = PlaneValue.absent()
     present = PlaneValue.of("nginx")
 
-    for name in ("value", "val", "unwrap", "get"):
-        assert not hasattr(absent, name), f"public accessor {name!r} reintroduces the collapse"
-        assert not hasattr(present, name), f"public accessor {name!r} reintroduces the collapse"
-
     assert present.resolve(on_absent=lambda: "ABSENT", on_present=lambda v: v) == "nginx"
     assert absent.resolve(on_absent=lambda: "ABSENT", on_present=lambda v: v) == "ABSENT"
+
+
+def test_the_storage_pair_enforces_absent_implies_null():
+    """as_columns is the DB destination's barricade, defined once.
+
+    The alternative is four resolve calls per row in _write_discrepancies, two
+    of them with lambdas discarding their argument. Putting the rule here
+    means the absent-implies-NULL invariant is stated in the same place it is
+    enforced at construction, rather than hand-written at the call site.
+    """
+    assert PlaneValue.absent().as_columns() == (False, None)
+    assert PlaneValue.of(None).as_columns() == (True, None)
+    assert PlaneValue.of("nginx").as_columns() == (True, "nginx")
+    assert PlaneValue.of(0).as_columns() == (True, 0)
 
 
 def test_an_absent_value_carrying_a_value_is_unconstructible():
@@ -199,18 +219,28 @@ def test_a_real_value_against_discovered_null():
 
 def test_absent_and_null_are_different_values_of_the_same_type():
     assert ABSENT != PlaneValue.of(None)
-    assert value_of(PlaneValue.of(None)) is None
+    assert PlaneValue.of(None).resolve(on_absent=lambda: "ABSENT", on_present=lambda v: v) is None
 
 
-def test_flipping_absent_to_null_updates_a_record_rather_than_creating_one():
-    """The property that matters for the section 23.2 identity rule.
+def test_a_plane_value_never_equals_a_non_plane_value():
+    """The NotImplemented branch of a custom __eq__, which the 100% gate needs."""
+    assert PlaneValue.of(1) != "not a plane value"
+    assert PlaneValue.absent() != None  # noqa: E711
+
+
+def test_flipping_absent_to_null_keeps_field_identity_and_changes_content():
+    """Presence is content, not identity.
 
     A discrepancy's durable identity is (tenant, kind, scope, name, type,
-    field_name). Presence is content, not identity -- so a field flipping from
-    absent to null must produce a *different* discrepancy at the *same*
-    identity. If presence ever leaks into identity, the flip creates a second
-    record and silently drops any suppression made against the first, which is
-    the failure the identity rule exists to prevent.
+    field_name), so a field flipping from absent to null must be a *different*
+    discrepancy at the *same* identity -- an update, not a second record that
+    silently drops the first one's suppression.
+
+    Named for what it actually asserts. This layer has no Discrepancy row and
+    no discrepancy_type -- service.py supplies that -- so the identity property
+    itself is 1.5.4's to test against the write path. What is held here is the
+    half that lives in the domain: the key fields do not move when presence
+    does.
     """
     absent_side = only_discrepancy(declared(replicas=3), discovered(replicas=3, image="nginx"))
     null_side = only_discrepancy(
@@ -282,8 +312,22 @@ def test_a_declared_payload_shaped_like_a_sentinel_is_also_just_a_value():
 # Determinism (D5) is NOT re-tested here with a same-process double call. That
 # proves nothing beyond "reconcile does not mutate its input or read a clock",
 # and tests/kernel/test_diff.py already holds the real invariant under
-# Hypothesis by varying input order. The implementation extends that generator
-# to produce absent and null attributes rather than adding a weaker test here.
+# Hypothesis by varying input order.
+#
+# Extending that generator to produce absent and explicitly-null attributes is
+# a named deliverable of this package in DESIGN section 13 -- not a promise in
+# this comment, because comments do not fail. The placeholder below is the
+# executable form of the same reminder.
+
+
+@pytest.mark.skip(reason="1.5.0 deliverable: extend the test_diff.py Hypothesis generator")
+def test_determinism_holds_over_absent_and_null_attributes():
+    """Placeholder for the D5 invariant over the new representation.
+
+    Lives in test_diff.py, on the existing generator, rather than as a second
+    weaker test here. Skipped rather than absent so that shipping the package
+    without it is visible in the test report.
+    """
 
 
 def test_every_differing_field_is_reported_in_canonical_order():

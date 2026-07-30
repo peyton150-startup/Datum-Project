@@ -37,6 +37,26 @@ Quality attributes trade off against each other, so they get ranked rather than 
 
 Stating these matters because people build what they are told to build. Unstated quality goals do not emerge on their own, and this project has one developer, so nobody else will supply the missing objective.
 
+### What enforces each of them
+
+**Added at Phase 3 close (2026-07-29), because stating an objective turned out not to be enough.** The collectors' robustness objective was stated plainly in the table above from Phase 0 onward, and the Phase 1 collector violated it anyway: one malformed record and it discarded every healthy record beside it (CF-1). The sentence was necessary and insufficient.
+
+This column exists so an objective with nothing behind it is visible *before* it becomes a defect rather than after. "Intent only" is a permitted answer. It is not a permitted surprise.
+
+| Objective | Enforced by |
+|---|---|
+| Diff determinism | A property-based test asserting identical inputs produce an identical discrepancy set, plus canonical ordering inside the engine |
+| Diff and matcher correctness | The adversarial corpus in DESIGN §12, branch coverage gated at 100% in CI, complexity capped at 10, and non-authoring model review before merge |
+| Collector robustness | **Structural.** The `fetch`/`normalize` split means an adapter never receives the collection it would have to abort, so per-record failure is not a rule to remember. Plus the `read == written + errors` invariant, asserted in code and tested across clean, all-bad, and mixed payloads |
+| Collectors never infer absence from an incomplete read | `may_infer_absence` as a positive whitelist (`== SUCCESS`, never `!= FAILED`), and `has_gap` forcing PARTIAL even when every record that arrived was clean |
+| Intent correctness | Whole-revision validation that accumulates every error before rejecting, four blocking layers, and branch coverage gated at 100% |
+| A conflict never surfaces as the database's exception | Conversion at the intent boundary for both ways a race loses — constraint and transaction rollback — and a review-checklist line |
+| Read-only toward the estate | **Intent only.** No mechanism prevents a collector from issuing a write; ADR-007 and the `Collector` protocol's documented prohibitions are all that stand there. The protocol gives an adapter no writing tool, which is weak enforcement rather than none |
+| Precedence explainability (D6) | **Nothing yet.** Phase 4 work. See the Phase 4 entry condition at the end of this document |
+| Review queue usability (D8) | **Nothing yet.** `dont-make-me-think-ui` is bound to 1.5.5, and the keyboard path is the only part with a test |
+| Whole-system understandability | The construction conventions, the two-tier review rule, and CI refusing unformatted or lint-failing code |
+| Performance | Nothing, deliberately. Nothing here is tuned until measured, and the benchmark is scheduled per phase close rather than enforced per commit |
+
 ---
 
 ## Step 1: Scope statement
@@ -519,3 +539,81 @@ Null-versus-absent has no such reprieve, because it does not loosen a rule; it c
 The second kind was chosen with required attributes only, which is what keeps optionality deferred. That choice is only legitimate while it is also honest: **if a realistic provider payload cannot be modelled without an optional attribute, the trigger has fired and optionality is done then, not later.** Recorded so the constraint is testable rather than convenient.
 
 Related limit noticed while choosing the schema, not scheduled: `attribute_schema` is shared by both planes, so an attribute that only discovery can observe — a lifecycle state, a provider-assigned address — cannot be modelled without intent being required to declare it. Not a defect today, since no kind needs one. It belongs with the precedence work if it ever bites, because "this field is observed, never declared" is a precedence statement.
+
+---
+
+## Phase 3 close (2026-07-29)
+
+Walked rather than declared. Each clause is matched to the test that holds it, because "we did that" and "there is a test that fails if we stop doing that" are different claims, and only the second survives the next phase.
+
+### D3, clause by clause
+
+> *Kubernetes and Oracle Cloud collectors run on a schedule, are idempotent, record run counts and errors, and degrade to a partial run rather than a failed one on single-resource failure.*
+
+| Clause | Status | Held by |
+|---|---|---|
+| Two collectors | Met | `discovery/kubernetes.py` and `discovery/oci.py`, each one adapter over the shared framework |
+| Run on a schedule | Met for Kubernetes; qualified for OCI, below | Beat entries `collect-kubernetes` and `collect-oci`; `test_configured_source_runs_the_collector_and_returns_the_run_id`, `test_oci_configured_runs_the_collector` |
+| Idempotent | Met | `test_running_twice_is_idempotent` in both collector suites, `test_running_twice_over_a_partial_payload_is_also_idempotent`, `test_the_task_is_idempotent_across_ticks` |
+| Record run counts and errors | Met | `test_read_equals_written_plus_errors`, parametrized over clean, all-bad, and mixed payloads in both suites; `test_resources_read_counts_what_the_provider_returned_not_what_survived` |
+| Degrade to partial, not failed, on single-resource failure | Met | `test_one_malformed_record_does_not_discard_the_good_ones`, `test_a_partial_run_is_reported_as_partial`, `test_one_bad_record_does_not_take_the_good_ones_with_it` |
+
+**The qualification, stated rather than glossed: the Oracle Cloud collector reads a recorded payload, not a live estate.** §11 authorised this explicitly — the live read waits for credentials that do not exist, and the normalizer is the part that can be wrong, which is fully testable against a captured response. A deliberate deferral, not an oversight.
+
+But "runs on a schedule" is a weaker claim for OCI than the words suggest. What is scheduled and proven is the task, the framework, the normalizer, and the run record. What is unproven is the SDK call, its pagination, and its error shapes — exactly the three things the Kubernetes collector's live path exists to exercise. **D3 is met end to end for Kubernetes and met-minus-the-live-read for OCI.** Recording it as unqualified would be redefining the criterion instead of meeting it.
+
+### Packages
+
+| Package | Status |
+|---|---|
+| 1.4.1 Collector framework, scheduling, run records | Complete. CF-1 folded in rather than patched. |
+| 1.4.2 Kubernetes collector | Complete, including the live path, pagination, bounded retry, and partial-read gaps. |
+| 1.4.3 Oracle Cloud collector | Complete against recorded payloads. Added the second kind. |
+| 1.4.4 Partial-failure and idempotency handling | Complete. Absence semantics, run exclusion, CF-4 and CF-5. |
+| 1.4.5 Phase 1 carry-forward remediation | Complete. CF-3 closed; CF-1 closed earlier, in 1.4.1. |
+
+**All five carry-forwards are closed** — the three from Phase 1 close (CF-1 in 1.4.1, CF-2 in 1.3.1, CF-3 in 1.4.5) and the two this phase found in Phase 2 code (CF-4 and CF-5 in 1.4.4).
+
+### Measurements, per the Step 3 plan
+
+| Measure | Phase 3 |
+|---|---|
+| Tests | 124 at Phase 2 close, 268 now, plus 2 skipped that require a live cluster |
+| Branch coverage on gated modules | 100% on `reconcile`, `workflow`, `intent`, and now `discovery` |
+| Defects found by review | Three, all by the non-authoring model. Two were coding defects; the third was a design error, which is the more valuable catch. |
+| Defects found after a phase closed | Two, both in Phase 2 code, found while designing the collector lock (CF-4, CF-5) |
+| Worst kernel routine complexity | Unchanged. No kernel routine was touched this phase. |
+
+### Three changes to how the work is done
+
+Each comes from something that happened this phase, not from a principle.
+
+**1. A boundary tier, named.** The review rule had two tiers: kernel gets non-authoring review, bulk does not. But CI's coverage gate covers `reconcile`, `workflow`, `intent`, *and* `discovery` — Phase 2 and Phase 3 each concluded those modules were too consequential to leave ungated. The instinct was encoded in coverage and not in review, and **CF-1 lived in exactly that gap**: `discovery/collector.py` is bulk by module and kernel by consequence.
+
+Boundary code — the interfaces bulk code is written against, and the barricades — now gets non-authoring review like the kernel. Today that is `discovery/collector.py`, `discovery/errors.py`, `intent/documents.py`, and `reconcile/domain.py`. The adapters written against them stay bulk. This aligns the review rule with what CI already enforced.
+
+The reasoning is the strongest finding of the phase: **for code nobody reads line by line, the protection is the interface it is written against, not the review it does not get.** CF-1 was fixed by making the mistake unavailable rather than by making the collector careful, and the evidence that this is a different class of fix is that the OCI collector — a second adapter, written later — inherited the behaviour without knowing the rule, and the reviewer tried to write an adapter that reintroduces CF-1 and could not.
+
+**2. An enforcement column on the quality objectives.** Added above, in the quality objectives section. The collectors' robustness objective was stated from Phase 0 and violated anyway; the column makes an objective with nothing behind it visible before it becomes a defect. Two entries currently read "nothing yet" and one reads "intent only", which is the point of writing it down.
+
+**3. Hostile-implementer tests, named as a category.** The reviewer's most valuable single action was attempting to write an adapter that reintroduces CF-1 and reporting it impossible. That was a review activity, so it happened once and left nothing behind. Several tests of this shape already exist without a name — the collector that dies mid-`fetch`, the one declaring a kind it does not produce, the one naming an unseeded kind. Naming the category means the next framework gets asked where its hostile-implementer tests are.
+
+### Process facts, recorded rather than buried
+
+**1.4.4 was merged before its review ran, and the review then found a real defect.** The reviewer hit a session limit and the code was merged to clear a red CI rather than wait. The defect — a deadlock escaping as `OperationalError` where only `IntegrityError` was caught — was fixed in a follow-up. Nothing was lost. The sequence is named because it worked here and is not a precedent to lean on.
+
+**The 1.4.4 specification was written and reviewed before its implementation, and that order earned its cost once.** The review found that absence scoped by `(tenant, collector)` was sound only while a collector owns one kind — a hole in the *rule*, not the code. Under the usual order that hole would have been implemented, confirmed by tests written to match it, and handed over as a self-consistent package. Worth repeating for packages where a wrong rule is expensive; not worth it generally, because it is slower and most packages do not earn it.
+
+**1.4.5 shipped a commit whose message described work that was not in it.** Both `ci.yml` edits were uncommitted when a `git reset --hard` discarded them, and `git add -A` then captured only the PROJECT_PLAN edit claiming CF-3 was fixed. CI went green on main **because the missing job could not fail** — this project's own named failure class, the safety net existing but not covering the thing, reproduced in the act of closing it. Caught by reading the workflow on main, not by any gate, because no gate inspects the workflow.
+
+The transferable lesson is not about `git reset`: **verification has to run after the last edit, and a config change has to be read back out of the commit.** `pytest`, `ruff`, `mypy`, and the coverage gate all passed on a commit that did nothing it claimed to do.
+
+---
+
+## Phase 4 entry condition (set at Phase 3 close)
+
+**Build the interfaces before the bulk work that sits on them.** Phase 4 carries two UI packages and a resource explorer, all bulk, all written against the API and the precedence evaluator. Those interfaces are where kernel-level care multiplies across code nobody will read line by line — the reallocation Phase 3's finding argues for, stated as a sequencing rule rather than an aspiration.
+
+The specific instance, and the reason this is a condition rather than advice: **the precedence evaluator returns the deciding rule as part of its result type.** D6 requires the policy be explainable for any single field. A log line satisfies the words and not the requirement; a return type makes an unexplainable decision unrepresentable. That is the structural version of the objective, and the enforcement column currently reads "nothing yet" against it.
+
+1.5.0 (null-versus-absent) already blocks 1.5.3 and 1.5.4 for a related reason: precedence cannot answer which plane is authoritative for a field while "absent" and "null" are one value.

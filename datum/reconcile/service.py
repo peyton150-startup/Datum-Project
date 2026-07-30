@@ -6,7 +6,7 @@ from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import DiscrepancySet, MatchResult, NaturalKey, ResourceSnapshot
-from datum.reconcile.matcher import match_by_natural_key
+from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
 
 # Either plane's row: both carry the natural-key columns and an attributes blob.
@@ -20,10 +20,15 @@ def run_reconciliation(tenant_id: str) -> None:
     declared = [_snapshot(row) for row in declared_rows]
     discovered = [_snapshot(row) for row in discovered_rows]
 
-    match_result = match_by_natural_key(declared, discovered)
+    decisions = _stored_decisions(tenant_id)
+    match_result = match_resources(declared, discovered, decisions)
     discrepancy_set = reconcile(match_result)
 
     _reset(tenant_id)
+    # Before writing, not after. A decision whose anchor vanished frees that
+    # resource to be matched some other way this run, and the new row would
+    # collide with the stale one on the active-state unique index.
+    _invalidate_unanchored(tenant_id, declared, discovered)
     _write_matches(tenant_id, match_result, declared_rows, discovered_rows)
     _write_discrepancies(tenant_id, discrepancy_set)
 
@@ -57,9 +62,64 @@ def _snapshot(row: ResourceRow) -> ResourceSnapshot:
     )
 
 
+def _stored_decisions(tenant_id: str) -> list[MatchDecision]:
+    """Every standing human decision, as the matcher's domain view of it.
+
+    Terminal states are excluded: an invalidated decision is history, and
+    reading it back would resurrect a binding whose resource is gone.
+    """
+    rows = Match.objects.filter(tenant_id=tenant_id, state__in=HUMAN_MATCH_STATES)
+    return [
+        MatchDecision(
+            declared_key=(row.declared_kind, str(tenant_id), row.declared_scope, row.declared_name),
+            # The check constraint guarantees a human decision has one.
+            provider_id=assert_provider_id(row.discovered_provider_id),
+            is_confirmed=row.state == MatchState.CONFIRMED,
+        )
+        for row in rows
+    ]
+
+
+def assert_provider_id(provider_id: str | None) -> str:
+    assert provider_id is not None, "a confirmed or rejected match must carry a provider id"
+    return provider_id
+
+
 def _reset(tenant_id: str) -> None:
-    Match.objects.filter(tenant_id=tenant_id).delete()
+    """Clear what a run rebuilds, and nothing a human authored.
+
+    Proposals and open discrepancies are recomputed from the two planes every
+    run. Confirmed and rejected matches are inputs to that computation, and
+    deleting them was CF-6.
+    """
+    Match.objects.filter(tenant_id=tenant_id, state=MatchState.PROPOSED).delete()
     Discrepancy.objects.filter(tenant_id=tenant_id, state=DiscrepancyState.OPEN).delete()
+
+
+def _invalidate_unanchored(
+    tenant_id: str,
+    declared: list[ResourceSnapshot],
+    discovered: list[ResourceSnapshot],
+) -> None:
+    """Retire every human decision whose subject no longer exists.
+
+    Terminal and one-way: a resource that comes back is proposed afresh rather
+    than inheriting a decision made about the instance that left (DESIGN 12).
+    `INVALIDATED` is kept rather than deleted because it is the audit record of
+    why a confirmed match stopped holding.
+    """
+    declared_keys = {snap.natural_key for snap in declared}
+    provider_ids = {snap.provider_id for snap in discovered}
+    stale = [
+        row.pk
+        for row in Match.objects.filter(tenant_id=tenant_id, state__in=HUMAN_MATCH_STATES)
+        if (row.declared_kind, str(tenant_id), row.declared_scope, row.declared_name)
+        not in declared_keys
+        or row.discovered_provider_id not in provider_ids
+    ]
+    Match.objects.filter(pk__in=stale).update(
+        state=MatchState.INVALIDATED, invalidated_at=timezone.now()
+    )
 
 
 def _write_matches(

@@ -109,6 +109,31 @@ class ResourceSnapshot:
 
 
 @dataclass(frozen=True)
+class MatchDecision:
+    """A human's standing decision about one pairing, as the matcher sees it.
+
+    Anchored on durable facts rather than row identity, because neither plane's
+    rows are durable: `DeclaredResource` is rebuilt per intent revision, so a
+    foreign key to one binds a decision to a commit rather than to a resource
+    (CF-6). The declared side is anchored on its natural key as of the decision;
+    the discovered side on the provider's own identifier, which survives the
+    rename that breaks the natural key -- which is the whole reason a stored
+    binding outranks one.
+
+    `is_confirmed` False means rejected: a human said these are not the same
+    resource, and the matcher must not propose the pairing again.
+    """
+
+    declared_key: NaturalKey
+    provider_id: str
+    is_confirmed: bool
+
+    @property
+    def pairing(self) -> tuple[NaturalKey, str]:
+        return (self.declared_key, self.provider_id)
+
+
+@dataclass(frozen=True)
 class MatchedPair:
     declared: ResourceSnapshot
     discovered: ResourceSnapshot
@@ -148,6 +173,7 @@ __all__ = [
     "PlaneValue",
     "canonical",
     "ResourceSnapshot",
+    "MatchDecision",
     "MatchedPair",
     "MatchResult",
     "FieldDiscrepancy",

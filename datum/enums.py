@@ -17,6 +17,18 @@ class MatchState(TextChoices):
     PROPOSED = "proposed"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
+    # System-closed, and deliberately distinct from REJECTED: a human said
+    # "these are not the same resource", the system says "the resource this
+    # decision was about is gone". Terminal, and never revived -- a re-created
+    # resource is re-proposed and re-decided (DESIGN 12, cross-run semantics).
+    INVALIDATED = "invalidated"
+
+
+# A match that still binds two live resources. Terminal states are excluded:
+# they are history, and several may exist for one resource over time.
+ACTIVE_MATCH_STATES = (MatchState.PROPOSED, MatchState.CONFIRMED)
+# States a human authored, which a run must never delete or rebuild.
+HUMAN_MATCH_STATES = (MatchState.CONFIRMED, MatchState.REJECTED)
 
 
 class DiscrepancyType(TextChoices):

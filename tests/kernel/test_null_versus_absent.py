@@ -28,7 +28,7 @@ import pytest
 
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import PlaneValue, ResourceSnapshot
-from datum.reconcile.matcher import match_by_natural_key
+from datum.reconcile.matcher import match_resources
 
 T = "t1"
 
@@ -44,7 +44,7 @@ def discovered(**attributes):
 
 
 def only_discrepancy(declared_snapshot, discovered_snapshot):
-    match_result = match_by_natural_key([declared_snapshot], [discovered_snapshot])
+    match_result = match_resources([declared_snapshot], [discovered_snapshot])
     assert len(match_result.pairs) == 1, "snapshots did not pair; the comparison never ran"
     diff = reconcile(match_result)
     assert not diff.orphans
@@ -60,7 +60,7 @@ def no_discrepancy(declared_snapshot, discovered_snapshot):
     package -- turns every negative test in this file into two orphans, zero
     field discrepancies, and a green pass asserting nothing about comparison.
     """
-    match_result = match_by_natural_key([declared_snapshot], [discovered_snapshot])
+    match_result = match_resources([declared_snapshot], [discovered_snapshot])
     assert len(match_result.pairs) == 1, "snapshots did not pair; the comparison never ran"
     diff = reconcile(match_result)
     assert not diff.orphans
@@ -342,7 +342,7 @@ def test_every_differing_field_is_reported_in_canonical_order():
     """Ordering is a stated determinism requirement, so assert the list."""
     d = declared(replicas=3, image=None)
     x = discovered(replicas=5, region="uk-london-1")
-    diff = reconcile(match_by_natural_key([d], [x]))
+    diff = reconcile(match_resources([d], [x]))
     assert [fd.field_name for fd in diff.field_discrepancies] == ["image", "region", "replicas"]
 
 
@@ -353,6 +353,6 @@ def test_presence_is_reported_for_orphans_by_not_being_reported_at_all():
     fields are all 'absent on the other side' -- which would turn one resource
     orphan into one discrepancy per field and flood the queue.
     """
-    diff = reconcile(match_by_natural_key([declared(replicas=3)], []))
+    diff = reconcile(match_resources([declared(replicas=3)], []))
     assert len(diff.orphans) == 1
     assert not diff.field_discrepancies

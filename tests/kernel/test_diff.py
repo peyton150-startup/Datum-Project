@@ -4,7 +4,7 @@ from hypothesis import strategies as st
 from datum.enums import DiscrepancyType
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import PlaneValue, ResourceSnapshot, canonical
-from datum.reconcile.matcher import match_by_natural_key
+from datum.reconcile.matcher import match_resources
 
 T = "t1"
 
@@ -14,7 +14,7 @@ def snap(name, replicas, scope="default", provider_id=None):
 
 
 def test_single_field_discrepancy_replicas_3_vs_5():
-    result = match_by_natural_key([snap("web", 3)], [snap("web", 5, provider_id="u1")])
+    result = match_resources([snap("web", 3)], [snap("web", 5, provider_id="u1")])
     diff = reconcile(result)
     assert len(diff.field_discrepancies) == 1
     fd = diff.field_discrepancies[0]
@@ -25,20 +25,20 @@ def test_single_field_discrepancy_replicas_3_vs_5():
 
 
 def test_identical_attributes_produce_no_discrepancy():
-    result = match_by_natural_key([snap("web", 3)], [snap("web", 3, provider_id="u1")])
+    result = match_resources([snap("web", 3)], [snap("web", 3, provider_id="u1")])
     diff = reconcile(result)
     assert not diff.field_discrepancies and not diff.orphans
 
 
 def test_declared_orphan_is_declared_missing():
-    result = match_by_natural_key([snap("web", 3)], [])
+    result = match_resources([snap("web", 3)], [])
     diff = reconcile(result)
     assert len(diff.orphans) == 1
     assert diff.orphans[0].discrepancy_type == DiscrepancyType.DECLARED_MISSING.value
 
 
 def test_discovered_orphan_is_discovered_undeclared():
-    result = match_by_natural_key([], [snap("ghost", 2, provider_id="u9")])
+    result = match_resources([], [snap("ghost", 2, provider_id="u9")])
     diff = reconcile(result)
     assert len(diff.orphans) == 1
     assert diff.orphans[0].discrepancy_type == DiscrepancyType.DISCOVERED_UNDECLARED.value
@@ -47,20 +47,20 @@ def test_discovered_orphan_is_discovered_undeclared():
 def test_absent_key_on_one_side_is_a_discrepancy():
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": 3, "paused": True})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {"replicas": 3})
-    diff = reconcile(match_by_natural_key([d], [x]))
+    diff = reconcile(match_resources([d], [x]))
     fields = {fd.field_name for fd in diff.field_discrepancies}
     assert fields == {"paused"}
 
 
 def test_nothing_on_either_plane_is_an_empty_discrepancy_set():
-    diff = reconcile(match_by_natural_key([], []))
+    diff = reconcile(match_resources([], []))
     assert not diff.field_discrepancies and not diff.orphans
 
 
 def test_every_field_differing_is_reported_not_just_the_first():
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": 3, "paused": False})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {"replicas": 5, "paused": True})
-    diff = reconcile(match_by_natural_key([d], [x]))
+    diff = reconcile(match_resources([d], [x]))
     reported = [(fd.field_name, fd.declared, fd.discovered) for fd in diff.field_discrepancies]
     assert reported == [
         ("paused", PlaneValue.of(False), PlaneValue.of(True)),
@@ -71,7 +71,7 @@ def test_every_field_differing_is_reported_not_just_the_first():
 def test_pair_sharing_no_attribute_keys_reports_every_key_from_both_sides():
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": 3})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {"paused": True})
-    diff = reconcile(match_by_natural_key([d], [x]))
+    diff = reconcile(match_resources([d], [x]))
     assert [fd.field_name for fd in diff.field_discrepancies] == ["paused", "replicas"]
     assert [(fd.declared, fd.discovered) for fd in diff.field_discrepancies] == [
         (PlaneValue.absent(), PlaneValue.of(True)),  # paused: absent on declared
@@ -83,7 +83,7 @@ def test_explicit_null_differs_from_a_missing_key_in_the_comparison():
     """Absent and null are compared distinctly, and now reported distinctly too."""
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": None})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {})
-    diff = reconcile(match_by_natural_key([d], [x]))
+    diff = reconcile(match_resources([d], [x]))
     assert len(diff.field_discrepancies) == 1
     fd = diff.field_discrepancies[0]
     assert fd.field_name == "replicas"
@@ -92,7 +92,7 @@ def test_explicit_null_differs_from_a_missing_key_in_the_comparison():
 
 
 def test_rerun_on_same_input_is_identical():
-    result = match_by_natural_key([snap("web", 3)], [snap("web", 5, provider_id="u1")])
+    result = match_resources([snap("web", 3)], [snap("web", 5, provider_id="u1")])
     assert reconcile(result) == reconcile(result)
 
 
@@ -111,8 +111,8 @@ def test_determinism_invariant_input_order_does_not_matter(decl, disc):
     # genuinely different inputs rather than the same input in another order.
     declared = build(decl)
     discovered = build(disc)
-    forward = reconcile(match_by_natural_key(declared, discovered))
-    reversed_ = reconcile(match_by_natural_key(declared[::-1], discovered[::-1]))
+    forward = reconcile(match_resources(declared, discovered))
+    reversed_ = reconcile(match_resources(declared[::-1], discovered[::-1]))
     assert forward == reversed_
 
 
@@ -156,8 +156,8 @@ def test_determinism_holds_over_absent_and_null_attributes(declared_attrs, disco
     shuffled_declared = build_snapshot("web", list(reversed(declared_attrs)))
     shuffled_discovered = build_snapshot("web", list(reversed(discovered_attrs)), provider_id="u1")
 
-    forward = reconcile(match_by_natural_key([declared], [discovered]))
-    permuted = reconcile(match_by_natural_key([shuffled_declared], [shuffled_discovered]))
+    forward = reconcile(match_resources([declared], [discovered]))
+    permuted = reconcile(match_resources([shuffled_declared], [shuffled_discovered]))
 
     # Same content either way: reversing the pairs changes which duplicate wins
     # under dict "last wins", so only compare when both sides built the same map.

@@ -6,7 +6,7 @@ from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import DiscrepancySet, MatchResult, NaturalKey, ResourceSnapshot
-from datum.reconcile.matcher import match_by_natural_key
+from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
 
 # Either plane's row: both carry the natural-key columns and an attributes blob.
@@ -20,7 +20,10 @@ def run_reconciliation(tenant_id: str) -> None:
     declared = [_snapshot(row) for row in declared_rows]
     discovered = [_snapshot(row) for row in discovered_rows]
 
-    match_result = match_by_natural_key(declared, discovered)
+    # No stored decisions are passed yet: persistence of confirmed and rejected
+    # matches is the rest of WBS 1.5.1, and until it lands `_reset` still
+    # deletes every Match each run (CF-6). Behaviour here is unchanged.
+    match_result = match_resources(declared, discovered)
     discrepancy_set = reconcile(match_result)
 
     _reset(tenant_id)

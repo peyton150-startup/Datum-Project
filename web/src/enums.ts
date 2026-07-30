@@ -27,6 +27,7 @@ export enum MatchState {
   PROPOSED = "proposed",
   CONFIRMED = "confirmed",
   REJECTED = "rejected",
+  INVALIDATED = "invalidated",
 }
 
 export enum MatchStrategy {

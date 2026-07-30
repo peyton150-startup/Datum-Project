@@ -377,6 +377,7 @@ TO WRITE. Deployment topology, migration strategy, backup and a **tested** resto
 | Boundaries | Just below, exactly at, and just above every limit. Plus compound boundaries. |
 | Bad data classes | No data, too much data, wrong type, uninitialized. |
 | Collectors | Fault injection: timeout, partial page, malformed resource, duplicate ID |
+| Boundary interfaces | **Hostile-implementer tests.** Write the adapter that abuses the contract and assert the framework contains it -- one that dies mid-read, one that produces a kind it did not declare, one that returns junk where a record belongs. Named at Phase 3 close: the most valuable single act of that phase's review was attempting to reintroduce CF-1 through a new adapter and finding it impossible, and a review does that once while a test does it on every push. |
 | Tenancy | A test that attempts a cross-tenant read and asserts it fails |
 
 Prefer round numbers that can be hand-verified. Write the test before the code where the requirement is unclear. Deliberately write more tests that try to break the code. Aim for branch coverage, not statement coverage.
@@ -438,6 +439,25 @@ Revisit at the end of phase 1 with real code in hand, and again at closure.
 - **Repo/CI foundation: the Ratchet failure did not recur, but only after a real catch.** CI ran on push from Task 3 onward and caught a packaging defect (setuptools flat-layout discovery breaking the editable install once `web/` appeared) that both the local venv and the Docker build missed. CI earning its place this early is the strongest signal in this list.
 - **null-vs-absent is a live simplification, not a resolved question.** The Phase 1 diff treats an absent key as a discrepancy carrying value `None`, so a field genuinely declared `null` and a field simply missing are indistinguishable downstream. Deliberate for one kind with one required integer field. Revisit the moment a second kind exposes optional fields — that is the point at which this becomes a correctness bug rather than a simplification.
 - **Two-plane model: no strain yet.** Nothing in Phase 1 needed a "pending" state. Untested, since a fixture collector cannot observe an in-flight change.
+
+### §24 revisited at Phase 3 close (2026-07-29)
+
+Two of the four failure modes now have real evidence rather than speculation, and one of the phase's findings is not on the original list at all.
+
+- **Schema-defined kinds: the bet holds, and this is the first evidence rather than an opinion.** The named early warning was *"the second kind requires a migration."* Adding `ComputeInstance` cost a `Kind` row and a fixture; `makemigrations --check` reports no changes to `declared_resource` or `discovered_resource`, no index, and no constraint. Both kinds share the same two tables, distinguished by a foreign key rather than by a schema, and the same name in two kinds is two resources because the natural key carries the kind. One kind could not falsify this claim; two can, and did not. Confidence raised from untested to supported — a third kind is still where a per-kind column would first be *tempting*, since two kinds with two attributes each is a thin test of a data model meant to carry twelve.
+
+- **Matching versus diff difficulty: no new evidence, and none was available.** Neither was touched this phase. The Phase 1 finding stands unamended: the difficulty was in stating the determinism invariant, not in the matcher.
+
+- **Precedence becoming unexplainable: not yet reachable, but now guarded before it starts.** The early warning was *"a rule needs a rule to explain it."* Phase 3 adds a second guard ahead of the work: the evaluator must return the deciding rule as part of its result type, so an unexplainable decision is unrepresentable rather than discouraged. Recorded as a Phase 4 entry condition.
+
+- **The two-plane model being one plane too few: still no strain, and still untested for the same reason.** Nothing this phase needed a "pending" state. Absence semantics came close — a resource marked absent is neither declared-only nor discovered-now — but it fits inside the discovered plane as a flag rather than demanding a third plane. Worth watching: if `is_absent` accumulates companions (`is_pending`, `is_terminating`), that is the two-plane model failing one flag at a time rather than all at once.
+
+**The failure mode that was missing from the list.** §24 asks how the *design* could fail and lists four structural bets. It does not ask how the *method* could fail, and that is what Phase 3 actually caught: **a quality objective can be stated plainly, in a table, from Phase 0 onward, and be violated anyway.** The collectors' robustness objective was stated and CF-1 did the exact opposite of it. Stating an objective is necessary and insufficient; it needs a mechanism, and the mechanism should make the violation unavailable rather than discouraged.
+
+That is now tracked outside this section, as an enforcement column on the quality objectives in PROJECT_PLAN — where two entries read "nothing yet" and one reads "intent only". Those three are this list's real open risks, and they are more concrete than anything the original four could say.
+
+**Revisit again at Phase 4 close**, when precedence and the lifecycle exist and the third and fourth bets become testable for the first time.
+
 
 ---
 

@@ -222,6 +222,17 @@ def test_absent_and_null_are_different_values_of_the_same_type():
     assert PlaneValue.of(None).resolve(on_absent=lambda: "ABSENT", on_present=lambda v: v) is None
 
 
+def test_a_plane_value_reads_as_the_call_that_would_build_it():
+    """repr states presence, since a bare value in a traceback would not.
+
+    A failing assertion that prints `None` for both states reproduces the
+    original defect in the one place someone is already confused.
+    """
+    assert repr(PlaneValue.absent()) == "PlaneValue.absent()"
+    assert repr(PlaneValue.of(None)) == "PlaneValue.of(None)"
+    assert repr(PlaneValue.of(3)) == "PlaneValue.of(3)"
+
+
 def test_a_plane_value_never_equals_a_non_plane_value():
     """The NotImplemented branch of a custom __eq__, which the 100% gate needs."""
     assert PlaneValue.of(1) != "not a plane value"
@@ -320,14 +331,11 @@ def test_a_declared_payload_shaped_like_a_sentinel_is_also_just_a_value():
 # executable form of the same reminder.
 
 
-@pytest.mark.skip(reason="1.5.0 deliverable: extend the test_diff.py Hypothesis generator")
-def test_determinism_holds_over_absent_and_null_attributes():
-    """Placeholder for the D5 invariant over the new representation.
-
-    Lives in test_diff.py, on the existing generator, rather than as a second
-    weaker test here. Skipped rather than absent so that shipping the package
-    without it is visible in the test report.
-    """
+# Delivered: tests/kernel/test_diff.py::
+# test_determinism_holds_over_absent_and_null_attributes extends the existing
+# Hypothesis generator to produce absent, null, integer, and boolean
+# attributes, and permutes attribute insertion order -- which is where an
+# unsorted set union would leak, since presence lives in the attribute mapping.
 
 
 def test_every_differing_field_is_reported_in_canonical_order():

@@ -346,9 +346,15 @@ The correctness kernel. Highest review standard, reviewed by the model that did 
 - Orphan detection: declared-not-discovered and discovered-not-declared are different discrepancy types.
 - **Complexity ceiling:** no routine exceeds cyclomatic complexity 10, enforced in CI. If comparison logic needs more branching, it is a table.
 
-### Null versus absent — the WBS 1.5.0 specification
+### Null versus absent — WBS 1.5.0, specified then built
 
-Written before the implementation, 2026-07-30. This is one of §13's five comparison-semantics questions, answered early because it gates 1.5.3 and 1.5.4.
+Written before the implementation and **delivered 2026-07-30**. This is one of §13's five comparison-semantics questions, answered early because it gates 1.5.3 and 1.5.4.
+
+**Two things the specification got wrong, found by building it.** Both are recorded because a spec that is quietly corrected during implementation teaches nothing the next time.
+
+*The fixtures could not produce the case the contract test needed.* The spec named "extend the fixtures so ingestion yields a declared-absent field" as a deliverable. It cannot be done in this package: §10's all-attributes-required limit means a declared document cannot omit an attribute in its kind's schema, so **declared-absent is unreachable through intent ingestion today** — which the "which layer the guarantee is made at" paragraph below already said, one section away from a deliverable that contradicted it. The wire-contract test builds its rows directly, which is the honest level for an API serialization contract. The end-to-end version becomes writable when §10's limit lifts and belongs with that work.
+
+*The determinism test's own guard was lossy in the way this package exists to fix.* It compared two attribute maps with `==` to check they were the same input. Hypothesis found `[("a", 0), ("a", False)]`: last-wins yields `{"a": False}` one way and `{"a": 0}` the other, and `{"a": 0} == {"a": False}` is `True` in Python while the canonical forms differ. The guard admitted two genuinely different inputs and blamed the engine. **The 0-versus-`False` conflation that motivated `PlaneValue`'s custom equality reappeared inside the test written to check it** — which is the most useful thing this package produced, because it shows the hazard is not confined to the type that was hardened against it.
 
 **The defect being closed.** `reconcile` already *compares* an absent key and an explicit null distinctly, via a sentinel. It then *reports* both as `None`, so a reader of the resulting discrepancy cannot tell "intent does not mention this field" from "intent requires this field empty". The comparison was never wrong; the reporting throws away the answer.
 

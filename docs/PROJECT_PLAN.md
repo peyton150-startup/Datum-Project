@@ -746,3 +746,55 @@ So the largest package in the phase, which this design calls the correctness ker
 The two gates set at Phase 3 close stand unchanged and needed no new decision: 1.5.0 completes before 1.5.3 and 1.5.4, and interfaces are built before the bulk work sitting on them. DESIGN §23.8 (multi-kind collector absence) remains open and not due; its trigger is still unfired, since each collector owns exactly one kind.
 
 Nothing here schedules work. The next act is 1.5.0's specification.
+
+---
+
+# WBS 1.5.0 close (2026-07-30): null versus absent
+
+The first Phase 4 package, and the first one built spec-first under the order decided above. Complete: `PlaneValue` in the domain, presence columns and check constraints in Postgres, the nested shape through the API and TypeScript, and the review queue rendering three states where it rendered one.
+
+## What the gates say
+
+| Gate | Result |
+|---|---|
+| Backend tests | 299 passing, 2 skipped (both require a live cluster) |
+| Branch coverage on gated modules | 100% on `reconcile`, `workflow`, `intent`, `discovery` |
+| `mypy --strict` on kernel modules | Clean |
+| `ruff` | Clean, with `SLF` newly enabled |
+| Frontend lint, typecheck, build, tests | Clean; 5 tests, 3 of them new and about presence |
+
+## The review found the boundary was not one, twice
+
+The specification was reviewed by a non-authoring model before implementation, revised, and reviewed again. Both passes were load-bearing, and the second retracted two of its own first-pass prescriptions — which is the part worth keeping, because a reviewer that only ever adds findings is not reading its own advice.
+
+**Pass one.** `PlaneValue` was specified with a public `.value`. The reviewer performed the Phase 3 exercise — write the code that reintroduces the fixed defect — and found it was not merely possible but was what the shipped downstream code already did unedited: `declared_value=fd.declared.value` writes JSON `null` for both states and restores the defect at the database layer with every kernel test green. The claim "makes the mistake unavailable" was false as written.
+
+**Pass two, on the fix for pass one.** Three corrections, all verified against the code before being accepted:
+
+- **The migration would have deleted every human decision in the system.** The revised spec said "delete existing rows, nothing durable depends on them until 1.5.4". False: `_reset` deletes only `state=OPEN`, `resolve_discrepancy` writes `RESOLVED` when a human clears an item, and `DiscrepancyState` has exactly two members — so resolved rows are the *entire* durable human-authored state. An operator clears forty discrepancies, the migration runs, and the week never happened, with no error. It also contradicted §23.4, written the same morning.
+- **"Three call sites become three compile errors" was true of one.** `PlaneValue` reaches `service.py` and nothing else: `_serialize` reads off the Django model, and `api.ts` is hand-written with an unchecked cast. The boundary guarded domain-to-database while everything downstream — where the reader is — was guarded by nothing, under a sentence claiming otherwise. Worse than leaving it open.
+- **The headline claim was still overstated.** `resolve` cannot make the collapse unavailable, because no total eliminator can: `on_absent=lambda: None` reproduces it exactly, and at the database layer that is the *correct* code, since the check constraint requires `NULL` there. What it does is make the decision visible at the call site. The load-bearing protection is that plus the destination shapes, neither alone.
+
+## The finding, which is not about this package
+
+**A boundary interface protects the call sites that import it, and nothing else.** `PlaneValue` is a real boundary for `service.py` and irrelevant to `_serialize`, which reads the same data from the ORM. The instinct that a well-designed type protects "downstream" is wrong wherever downstream re-reads from storage rather than receiving the type — and that is most of a web application.
+
+The generalisation for the packages ahead: **ask which call sites import the type, and protect the rest by their own destination contracts.** For 1.5.3 and 1.5.4, whose results reach the same API and the same UI, this is the difference between a precedence decision that is explainable in the kernel and one that is explainable to the operator reading it.
+
+A second finding, smaller and sharper: the 0-versus-`False` conflation that motivated `PlaneValue`'s custom equality **reappeared inside the determinism test written to check it**, and was caught by Hypothesis rather than by review. Hardening a type does not harden the code that reasons about it.
+
+## Process facts
+
+**`makemigrations` ran in the background and silently overwrote the hand-written migration**, replacing it with schema operations only and dropping the `RunPython` step whose `WHERE` clause is the entire safety property. Caught by reading the file, not by any gate — the suite passes either way, because the deleted step only matters to data that exists in production and not in a test database. This is the project's own named failure class, from the 1.4.5 empty commit, recurring in the package that closes a defect about silent collapse. **A generated file that overwrites a hand-written one is a merge, not a regeneration, and nothing in the toolchain says so.**
+
+**The spec-first order earned its cost here, for a reason specific to it.** The two review passes happened against claims with no implementation making them look correct. The public-`.value` defect in particular would have been invisible in a normal-order review: the code would have compiled, passed, and shipped, and the reviewer would have been reading a green diff.
+
+## Carried forward
+
+- **CF-6 remains open**, scheduled to 1.5.1, and is untouched by this package.
+- **§10's all-attributes-required limit now has a second consequence**, recorded in DESIGN §13: it makes declared-absent unreachable through intent ingestion, so the end-to-end version of the wire-contract test cannot be written until that limit lifts.
+- **`present: boolean | null` is a three-state type in TypeScript**, and the third state exists only for rows predating this package. It empties under §23.4's retention policy and the type does not.
+
+## Next
+
+1.5.1, identity matching, in the normal order — §12 is marked Decided and already carries the strategy table, confidence, error bias, and a corpus with expected outcomes. **CF-6 is that package's first item**, because a confirmed match that does not survive a run makes strategy 1 unimplementable.

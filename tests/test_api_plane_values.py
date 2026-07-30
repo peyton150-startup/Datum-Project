@@ -19,25 +19,28 @@ defect is *felt* -- is guarded by these tests and nothing else.
 
 Every test here fails until the API carries the new shape.
 
-One of them needs data that does not exist yet, and that is a deliverable
-rather than an oversight: `test_declared_absent_and_declared_null_are_
-distinguishable_over_the_wire` requires the intent fixture and the recorded
-Kubernetes payload to disagree about a field intent omits AND a field intent
-sets to null. Today's fixtures produce exactly one discrepancy, on `replicas`,
-with both sides present -- so the fixtures cannot currently express the
-distinction this package exists to make. Extending them is part of 1.5.0.
+The spec anticipated extending the fixtures so that ingestion could produce a
+declared-absent field, and implementation showed that cannot be done here.
+Section 10's all-attributes-required limit means a declared document cannot
+omit an attribute in its kind's schema, so **declared-absent is unreachable
+through intent ingestion today** -- which section 13's "which layer the
+guarantee is made at" paragraph already says in as many words. Extending the
+fixtures would have meant relaxing that limit, which is a different package's
+decision and explicitly deferred.
 
-Stated here because a test whose fixture cannot produce its precondition fails
-for a reason that looks like the feature is missing, and an implementer who
-"fixes" it by weakening the assertion has removed the only check on the thing
-the package is for.
+So the wire-contract test builds its rows directly. That is the honest level
+for it: this is an API serialization contract, not an ingestion test. When
+section 10's limit lifts, the end-to-end version becomes writable and belongs
+with that work.
 """
 
 import pytest
+from django.db.utils import IntegrityError
 from django.test import Client
 
 from datum.discovery.collector import run_collector
 from datum.discovery.kubernetes import from_recording
+from datum.enums import DiscrepancyType, Plane
 from datum.intent.ingest import ingest_revision
 from datum.reconcile.models import Discrepancy
 from datum.reconcile.service import run_reconciliation
@@ -78,24 +81,60 @@ def test_the_collapsed_keys_are_gone_from_the_payload(seeded):
     assert "discovered_value" not in item
 
 
-def test_declared_absent_and_declared_null_are_distinguishable_over_the_wire(seeded):
+def a_discrepancy(field_name, declared_present, declared_value):
+    return Discrepancy.objects.create(
+        tenant_id=TENANT,
+        discrepancy_type=DiscrepancyType.FIELD,
+        kind_name="Deployment",
+        scope="default",
+        name="web",
+        field_name=field_name,
+        declared_present=declared_present,
+        declared_value=declared_value,
+        discovered_present=True,
+        discovered_value="nginx",
+        authoritative_plane=Plane.DECLARED,
+    )
+
+
+def test_declared_absent_and_declared_null_are_distinguishable_over_the_wire():
     """The one test that catches the defect where a reader sees it.
 
-    Two discrepancies on one resource: a field intent never mentions, and a
-    field intent explicitly sets to null. Before 1.5.0 both serialize as
-    `"declared_value": null` and the review queue renders both as the string
-    "null" -- the exact confusion DESIGN section 13 opens by naming.
+    Two discrepancies: a field the declared plane never states, and a field it
+    states as null. Before 1.5.0 both serialized as `"declared_value": null`
+    and the review queue rendered both as the string "null" -- the exact
+    confusion DESIGN section 13 opens by naming.
+
+    Rows are built directly rather than driven through intent ingestion, and
+    that is not a shortcut. Section 10's all-attributes-required limit means a
+    declared document CANNOT currently omit an attribute in its kind's schema,
+    so declared-absent is unreachable through ingestion today -- which section
+    13's "which layer the guarantee is made at" paragraph states outright.
+    This is an API serialization contract, so it is asserted at the layer it
+    describes. When section 10's limit lifts, the end-to-end version becomes
+    writable and belongs with it.
     """
-    absent_field = Discrepancy.objects.get(tenant_id=TENANT, field_name="image")
-    null_field = Discrepancy.objects.get(tenant_id=TENANT, field_name="strategy")
+    absent = a_discrepancy("image", declared_present=False, declared_value=None)
+    null = a_discrepancy("strategy", declared_present=True, declared_value=None)
 
     items = {
         i["field_name"]: i for i in Client().get("/api/discrepancies?state=open").json()["items"]
     }
 
-    assert items[absent_field.field_name]["declared"] == {"present": False, "value": None}
-    assert items[null_field.field_name]["declared"] == {"present": True, "value": None}
-    assert items[absent_field.field_name]["declared"] != items[null_field.field_name]["declared"]
+    assert items[absent.field_name]["declared"] == {"present": False, "value": None}
+    assert items[null.field_name]["declared"] == {"present": True, "value": None}
+    assert items[absent.field_name]["declared"] != items[null.field_name]["declared"]
+
+
+def test_the_database_refuses_an_absent_plane_that_carries_a_value():
+    """The check constraint, asserted rather than assumed.
+
+    The domain makes this state unconstructible, so this can only be reached
+    by writing the ORM directly -- which is exactly what a future migration or
+    a bulk fix-up script does.
+    """
+    with pytest.raises(IntegrityError):
+        a_discrepancy("image", declared_present=False, declared_value="nginx")
 
 
 def test_a_pre_migration_row_reports_undetermined_presence(seeded):

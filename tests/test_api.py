@@ -25,8 +25,8 @@ def test_list_open_discrepancies(seeded):
     assert body["count"] == 1
     item = body["items"][0]
     assert item["field_name"] == "replicas"
-    assert item["declared_value"] == 3
-    assert item["discovered_value"] == 5
+    assert item["declared"] == {"present": True, "value": 3}
+    assert item["discovered"] == {"present": True, "value": 5}
     assert item["authoritative_plane"] == "declared"
 
 

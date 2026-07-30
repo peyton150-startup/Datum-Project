@@ -76,8 +76,8 @@ def _serialize(d: Discrepancy) -> dict:
         "scope": d.scope,
         "name": d.name,
         "field_name": d.field_name,
-        "declared_value": d.declared_value,
-        "discovered_value": d.discovered_value,
+        "declared": {"present": d.declared_present, "value": d.declared_value},
+        "discovered": {"present": d.discovered_present, "value": d.discovered_value},
         "authoritative_plane": d.authoritative_plane,
         "state": d.state,
     }

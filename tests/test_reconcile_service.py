@@ -23,8 +23,8 @@ def test_reconciliation_writes_one_match_and_one_field_discrepancy(intent_repo):
     d = open_.get()
     assert d.discrepancy_type == DiscrepancyType.FIELD
     assert d.field_name == "replicas"
-    assert d.declared_value == 3
-    assert d.discovered_value == 5
+    assert (d.declared_present, d.declared_value) == (True, 3)
+    assert (d.discovered_present, d.discovered_value) == (True, 5)
 
 
 def test_rerun_is_idempotent(intent_repo):

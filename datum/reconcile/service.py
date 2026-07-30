@@ -87,6 +87,8 @@ def _write_matches(
 def _write_discrepancies(tenant_id: str, discrepancy_set: DiscrepancySet) -> None:
     for fd in discrepancy_set.field_discrepancies:
         kind, _tenant, scope, name = fd.natural_key
+        declared_present, declared_value = fd.declared.as_columns()
+        discovered_present, discovered_value = fd.discovered.as_columns()
         Discrepancy.objects.create(
             tenant_id=tenant_id,
             discrepancy_type=DiscrepancyType.FIELD,
@@ -94,8 +96,10 @@ def _write_discrepancies(tenant_id: str, discrepancy_set: DiscrepancySet) -> Non
             scope=scope,
             name=name,
             field_name=fd.field_name,
-            declared_value=fd.declared_value,
-            discovered_value=fd.discovered_value,
+            declared_present=declared_present,
+            declared_value=declared_value,
+            discovered_present=discovered_present,
+            discovered_value=discovered_value,
             authoritative_plane=Plane.DECLARED,
         )
     for orphan in discrepancy_set.orphans:

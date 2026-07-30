@@ -1,5 +1,18 @@
 import { useEffect, useState } from "react";
-import { Discrepancy, fetchOpenDiscrepancies, resolveDiscrepancy } from "./api";
+import { Discrepancy, PlaneValue, fetchOpenDiscrepancies, resolveDiscrepancy } from "./api";
+
+/** Render a plane's statement so the three cases stay three cases.
+ *
+ * "not declared" and "null" must not both render as the string "null" -- that
+ * collapse is the defect WBS 1.5.0 exists to remove, and it is felt here, in
+ * front of the person deciding what to do about the drift.
+ */
+function planeText(pv: PlaneValue): string {
+  if (pv.present === null) return "—";
+  if (!pv.present) return "not stated";
+  if (pv.value === null) return "null";
+  return String(pv.value);
+}
 
 export function ReviewQueue() {
   const [items, setItems] = useState<Discrepancy[]>([]);
@@ -43,10 +56,10 @@ export function ReviewQueue() {
                       className="mb-1 inline-block rounded bg-blue-600 px-2 text-xs text-white">
                   {d.authoritative_plane} — authoritative
                 </span>
-                <div>declared: <b data-testid="declared-value">{String(d.declared_value)}</b></div>
+                <div>declared: <b data-testid="declared-value">{planeText(d.declared)}</b></div>
               </div>
               <div className="rounded bg-gray-50 p-3">
-                <div>discovered: <b data-testid="discovered-value">{String(d.discovered_value)}</b></div>
+                <div>discovered: <b data-testid="discovered-value">{planeText(d.discovered)}</b></div>
               </div>
             </div>
           </li>

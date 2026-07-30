@@ -3,7 +3,7 @@ from hypothesis import strategies as st
 
 from datum.enums import DiscrepancyType
 from datum.reconcile.diff import reconcile
-from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import PlaneValue, ResourceSnapshot, canonical
 from datum.reconcile.matcher import match_by_natural_key
 
 T = "t1"
@@ -19,8 +19,8 @@ def test_single_field_discrepancy_replicas_3_vs_5():
     assert len(diff.field_discrepancies) == 1
     fd = diff.field_discrepancies[0]
     assert fd.field_name == "replicas"
-    assert fd.declared_value == 3
-    assert fd.discovered_value == 5
+    assert fd.declared == PlaneValue.of(3)
+    assert fd.discovered == PlaneValue.of(5)
     assert not diff.orphans
 
 
@@ -61,10 +61,11 @@ def test_every_field_differing_is_reported_not_just_the_first():
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": 3, "paused": False})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {"replicas": 5, "paused": True})
     diff = reconcile(match_by_natural_key([d], [x]))
-    reported = [
-        (fd.field_name, fd.declared_value, fd.discovered_value) for fd in diff.field_discrepancies
-    ]
-    assert reported == [("paused", False, True), ("replicas", 3, 5)]  # sorted by field name
+    reported = [(fd.field_name, fd.declared, fd.discovered) for fd in diff.field_discrepancies]
+    assert reported == [
+        ("paused", PlaneValue.of(False), PlaneValue.of(True)),
+        ("replicas", PlaneValue.of(3), PlaneValue.of(5)),
+    ]  # sorted by field name
 
 
 def test_pair_sharing_no_attribute_keys_reports_every_key_from_both_sides():
@@ -72,19 +73,22 @@ def test_pair_sharing_no_attribute_keys_reports_every_key_from_both_sides():
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {"paused": True})
     diff = reconcile(match_by_natural_key([d], [x]))
     assert [fd.field_name for fd in diff.field_discrepancies] == ["paused", "replicas"]
-    assert [(fd.declared_value, fd.discovered_value) for fd in diff.field_discrepancies] == [
-        (None, True),  # paused: absent on declared
-        (3, None),  # replicas: absent on discovered
+    assert [(fd.declared, fd.discovered) for fd in diff.field_discrepancies] == [
+        (PlaneValue.absent(), PlaneValue.of(True)),  # paused: absent on declared
+        (PlaneValue.of(3), PlaneValue.absent()),  # replicas: absent on discovered
     ]
 
 
 def test_explicit_null_differs_from_a_missing_key_in_the_comparison():
-    """Absent and null are compared distinctly, even though both report as None."""
+    """Absent and null are compared distinctly, and now reported distinctly too."""
     d = ResourceSnapshot("Deployment", T, "default", "web", None, {"replicas": None})
     x = ResourceSnapshot("Deployment", T, "default", "web", "u1", {})
     diff = reconcile(match_by_natural_key([d], [x]))
     assert len(diff.field_discrepancies) == 1
-    assert diff.field_discrepancies[0].field_name == "replicas"
+    fd = diff.field_discrepancies[0]
+    assert fd.field_name == "replicas"
+    assert fd.declared == PlaneValue.of(None)
+    assert fd.discovered == PlaneValue.absent()
 
 
 def test_rerun_on_same_input_is_identical():
@@ -110,3 +114,65 @@ def test_determinism_invariant_input_order_does_not_matter(decl, disc):
     forward = reconcile(match_by_natural_key(declared, discovered))
     reversed_ = reconcile(match_by_natural_key(declared[::-1], discovered[::-1]))
     assert forward == reversed_
+
+
+# A WBS 1.5.0 deliverable: the D5 invariant, exercised over presence rather
+# than only over values. Extends this generator rather than adding a second,
+# weaker same-process double call elsewhere.
+
+ATTRIBUTE_NAMES = ["a", "b", "c"]
+# int, None, and the absence marker. None is an explicit null; ABSENT means the
+# key is not written at all, which is the distinction under test.
+ABSENT_MARKER = object()
+ATTRIBUTE_VALUES = st.one_of(
+    st.integers(0, 9),
+    st.none(),
+    st.just(ABSENT_MARKER),
+    st.booleans(),
+)
+
+
+def build_snapshot(name, attribute_pairs, provider_id=None):
+    attributes = {
+        key: value for key, value in dict(attribute_pairs).items() if value is not ABSENT_MARKER
+    }
+    return ResourceSnapshot("Deployment", T, "default", name, provider_id, attributes)
+
+
+@given(
+    st.lists(st.tuples(st.sampled_from(ATTRIBUTE_NAMES), ATTRIBUTE_VALUES), max_size=6),
+    st.lists(st.tuples(st.sampled_from(ATTRIBUTE_NAMES), ATTRIBUTE_VALUES), max_size=6),
+)
+def test_determinism_holds_over_absent_and_null_attributes(declared_attrs, discovered_attrs):
+    """Identical input in a different key order produces an identical result.
+
+    Attribute insertion order is permuted rather than the snapshot list order,
+    because presence lives in the attribute mapping: `_field_discrepancies`
+    builds a set union of both sides' keys before sorting, and a set's
+    iteration order is where an unsorted implementation would leak.
+    """
+    declared = build_snapshot("web", declared_attrs)
+    discovered = build_snapshot("web", discovered_attrs, provider_id="u1")
+    shuffled_declared = build_snapshot("web", list(reversed(declared_attrs)))
+    shuffled_discovered = build_snapshot("web", list(reversed(discovered_attrs)), provider_id="u1")
+
+    forward = reconcile(match_by_natural_key([declared], [discovered]))
+    permuted = reconcile(match_by_natural_key([shuffled_declared], [shuffled_discovered]))
+
+    # Same content either way: reversing the pairs changes which duplicate wins
+    # under dict "last wins", so only compare when both sides built the same map.
+    #
+    # Compared canonically, not with `==`. Hypothesis found the reason: for
+    # [("a", 0), ("a", False)], last-wins yields {"a": False} forwards and
+    # {"a": 0} reversed, and `{"a": 0} == {"a": False}` is True in Python. The
+    # guard would have admitted two genuinely different inputs and blamed the
+    # engine for the difference. This is the same 0-versus-False conflation
+    # PlaneValue defines its own equality to avoid, met here in the test that
+    # checks it.
+    if canonical(declared.attributes) == canonical(shuffled_declared.attributes) and (
+        canonical(discovered.attributes) == canonical(shuffled_discovered.attributes)
+    ):
+        assert forward == permuted
+        assert [fd.field_name for fd in forward.field_discrepancies] == sorted(
+            fd.field_name for fd in forward.field_discrepancies
+        )

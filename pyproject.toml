@@ -39,9 +39,19 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C901"]
+# SLF added by WBS 1.5.0. PlaneValue holds its state in a private field and
+# exposes no value accessor, so `fd.declared._value` would reintroduce the
+# collapsed reporting this project just removed -- one character longer than
+# the line the design rejects. A test cannot police what other modules reach
+# into; a linter can.
+select = ["E", "F", "I", "UP", "B", "C901", "SLF"]
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["C901"]
+# SLF is off for tests deliberately. The rule exists to stop production call
+# sites reaching around an interface -- `fd.declared._value` in service.py.
+# Tests legitimately reach into privates to prove an invariant holds at the
+# raw constructor and not only at the factories, which is the point of
+# test_an_absent_value_carrying_a_value_is_unconstructible.
+"tests/*" = ["C901", "SLF001"]
 [tool.ruff.lint.mccabe]
 max-complexity = 9          # C901 fires at 10 -> enforces "under 10"
 

@@ -9,7 +9,7 @@ provider.
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
 
 from datum.graph.models import DeclaredResource
 from datum.intent.documents import DocumentSource, KindSchemas, parse_document_set
@@ -60,6 +60,41 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
         # `_project` is atomic, so its work is already rolled back here -- there
         # is no half-projected revision to clean up.
         return _resolve_conflict(tenant_id, commit_sha, exc)
+    except OperationalError as exc:
+        # The other way this race resolves, and the one the first pass missed. A
+        # deadlock or serialization failure is not an IntegrityError -- psycopg
+        # raises it under OperationalError -- so it escaped the handler above and
+        # every except clause in the poll task, breaking that task's documented
+        # promise never to raise.
+        #
+        # It is the same condition wearing a different code: the transaction was
+        # rolled back because another writer was doing this at the same time. So
+        # it gets the same answer, including the idempotency check.
+        if not _is_concurrency_rollback(exc):
+            raise
+        return _resolve_conflict(tenant_id, commit_sha, exc)
+
+
+# SQLSTATE class 40: the transaction was rolled back because of concurrent
+# activity rather than because of anything wrong with it. 40001 is a
+# serialization failure, 40P01 a detected deadlock. Anything else arriving as an
+# OperationalError -- a dropped connection, an exhausted pool -- is not a race
+# and must not be answered as one.
+_CONCURRENCY_ROLLBACK_CODES = frozenset({"40001", "40P01"})
+
+
+def _is_concurrency_rollback(exc: OperationalError) -> bool:
+    """Whether this database error means "another writer got in the way".
+
+    Django re-raises its own exception type wrapping the driver's, so the
+    SQLSTATE lives on the cause rather than on what was caught. Both are checked
+    because that wrapping is Django's implementation detail, not a promise.
+    """
+    for candidate in (exc, exc.__cause__):
+        sqlstate = getattr(candidate, "sqlstate", None)
+        if sqlstate in _CONCURRENCY_ROLLBACK_CODES:
+            return True
+    return False
 
 
 def _existing_revision(tenant_id: str, commit_sha: str) -> IntentRevision | None:
@@ -83,8 +118,14 @@ def _deactivate_current(tenant_id: str) -> int:
     )
 
 
-def _resolve_conflict(tenant_id: str, commit_sha: str, exc: IntegrityError) -> IntentRevision:
+def _resolve_conflict(
+    tenant_id: str, commit_sha: str, exc: IntegrityError | OperationalError
+) -> IntentRevision:
     """Answer a lost race, or convert it into this module's own exception.
+
+    Takes either loss. A constraint rejection and a transaction rollback mean the
+    same thing -- another writer was doing this at the same time -- and differ
+    only in which part of the database noticed.
 
     Idempotency outranks the conflict. If the writer that won was projecting
     this very commit, the caller asked for a revision at that commit and there

@@ -617,3 +617,51 @@ The transferable lesson is not about `git reset`: **verification has to run afte
 The specific instance, and the reason this is a condition rather than advice: **the precedence evaluator returns the deciding rule as part of its result type.** D6 requires the policy be explainable for any single field. A log line satisfies the words and not the requirement; a return type makes an unexplainable decision unrepresentable. That is the structural version of the objective, and the enforcement column currently reads "nothing yet" against it.
 
 1.5.0 (null-versus-absent) already blocks 1.5.3 and 1.5.4 for a related reason: precedence cannot answer which plane is authoritative for a field while "absent" and "null" are one value.
+
+---
+
+# START HERE at the opening of Phase 4
+
+Written at Phase 3 close for whoever opens Phase 4, which may be a session with no memory of this one. Nothing below is a suggestion; each item is a decision that must be made *before* the code that depends on it, and each one has a reason it cannot be deferred again.
+
+Phase 4 is the largest phase and the whole of the critical path: matching, diff, precedence, discrepancy lifecycle, and two UIs. It is also where four questions deliberately left open finally come due, because Phase 4 is the thing that needed them.
+
+## 1. Answer the four open questions that Phase 4 makes due
+
+DESIGN §23 lists these as "open, but not needed until phase 4". That phase is now. Answer them in DESIGN before writing the code that assumes an answer, because each one is a shape decision rather than a detail.
+
+| Question | Why it blocks | Blocks |
+|---|---|---|
+| **§23.2** Does a discrepancy attach to a field, a resource, or both? | The `Discrepancy` model already carries both a `field_name` and a natural key, which is an implicit answer nobody decided. The lifecycle and the review queue both need it settled: resolving "this resource has drifted" and "this field has drifted" are different actions with different blast radii. | 1.5.4, 1.5.5 |
+| **§23.6** Does a missing precedence rule default to intent-wins, or is it a hard error? | DESIGN §6 already lists this as a condition that legitimately happens and defers the response to Phase 4. A default is convenient and silent; a hard error is loud and will annoy. The quality objective for this component ranks correctness first, which argues for the error. | 1.5.3 |
+| **§23.4** How much drift history is retained, and per resource or per discrepancy? | Full-rebuild projection already grows declared rows per revision, so this is now about two planes plus drift rather than drift alone. Retention is cheap to add before records are durable and expensive after. | 1.5.4 |
+| **§23.5** Is the synthetic estate generator a permanent product feature or a test fixture? | 1.5.1 and 1.5.2 depend on it for adversarial data (activity F in the schedule), and "product feature" implies a UI, docs, and support that nothing has scoped. | 1.5.1 |
+
+Also due, from this document's own "known incompleteness" note, which says these are resolved before Phase 4 rather than now:
+
+- **What happens when an intent revision deletes a resource that has open discrepancies.** Absence semantics answered the discovered side of this in 1.4.4; the declared side is still unanswered, and full-rebuild projection means a resource can vanish from the declared plane between two commits.
+- **Whether tenants may define their own kinds or only use global ones.** Kinds are data, so nothing in the schema currently prevents either.
+
+**Not due:** DESIGN §23.8 (multi-kind collector absence). Its trigger is a collector *owning* more than one kind, and although a second kind now exists, each collector still owns exactly one. The assertion in `run_collector` fails loudly if that changes. Leave it open.
+
+## 2. Two gates already set, which need no new decision
+
+- **WBS 1.5.0 (null-versus-absent) completes before 1.5.3 and 1.5.4.** Precedence cannot say which plane is authoritative for a field while "absent" and "explicitly null" are one value, and once suppression makes records durable, changing the semantics makes historical records retroactively ambiguous. Rationale in the "Scheduled at the Phase 3 second-kind decision" section above.
+- **The Phase 4 entry condition: build the interfaces before the bulk work that sits on them**, and specifically, the precedence evaluator returns the deciding rule as part of its result type. D6 requires explainability for any single field; a log line satisfies the words and not the requirement. Rationale in the "Phase 4 entry condition" section above.
+
+## 3. One call to make fresh, with the phase in front of you
+
+**Does Phase 4 use the spec-first order, and for which packages?**
+
+Phase 3 used it once, for 1.4.4, and it earned its cost: the review of the specification found that absence scoped by `(tenant, collector)` was sound only while a collector owns one kind — a hole in the *rule*, which under the normal order would have been implemented, confirmed by tests written to match it, and handed over as a self-consistent package.
+
+The reason not to adopt it as standing process is that it is slower and most packages do not earn it. But Phase 4 is different from Phase 3 in the way that matters: 1.5.1 through 1.5.4 are **all kernel**, where a wrong rule is expensive by definition, whereas Phase 3 was mostly bulk with one kernel-adjacent package.
+
+So the honest answer is that the balance has shifted and the decision should be re-made rather than inherited. Deciding it at the start, per package, is the point. A reasonable default to argue against: spec-first for 1.5.3 (precedence) and 1.5.4 (lifecycle), because both encode rules that outlive their code; normal order for 1.5.1 and 1.5.2, which have the adversarial corpus in DESIGN §12 already acting as a specification written before the code.
+
+## 4. Standing facts a new session will not know
+
+- **Local tests need `POSTGRES_PORT=5544` and a running Docker daemon**, or they block on the connection rather than failing. `docker compose up -d postgres valkey` first.
+- **Two collectors exist and each owns one kind.** Kubernetes has a live path (`DATUM_K8S_LIVE=1` to run it); OCI reads recorded payloads only, and D3 is recorded as met-minus-the-live-read for that reason.
+- **The review tiers are three now, not two** — kernel, boundary, bulk. See CLAUDE.md. Boundary code gets non-authoring review, and the reason is in the Phase 3 close.
+- **The quality objectives have an enforcement column.** Two entries read "nothing yet"; one of them is precedence explainability, which is Phase 4's job.

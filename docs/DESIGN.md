@@ -344,6 +344,35 @@ The correctness kernel. Highest review standard, reviewed by the model that did 
 - Orphan detection: declared-not-discovered and discovered-not-declared are different discrepancy types.
 - **Complexity ceiling:** no routine exceeds cyclomatic complexity 10, enforced in CI. If comparison logic needs more branching, it is a table.
 
+### Null versus absent — the WBS 1.5.0 specification
+
+Written before the implementation, 2026-07-30. This is one of §13's five comparison-semantics questions, answered early because it gates 1.5.3 and 1.5.4.
+
+**The defect being closed.** `reconcile` already *compares* an absent key and an explicit null distinctly, via a sentinel. It then *reports* both as `None`, so a reader of the resulting discrepancy cannot tell "intent does not mention this field" from "intent requires this field empty". The comparison was never wrong; the reporting throws away the answer.
+
+**The rule.** Presence and value are two facts, and a discrepancy carries both, on both planes. Absence is never encoded as a value.
+
+| Declared | Discovered | Outcome |
+|---|---|---|
+| absent | absent | Not a discrepancy. The key is in neither plane's attribute set |
+| null | null | Not a discrepancy. Both planes state the same thing |
+| absent | null | **A discrepancy**, and the report distinguishes which side is which |
+| null | absent | **A discrepancy**, distinct from the row above and not its mirror image |
+| absent | any value | A discrepancy, declared side reported absent, not null |
+| null | any value | A discrepancy, declared side reported null, not absent |
+
+**The representation, which is the part that crosses languages.** `null` is already taken by the JSON value, so presence travels beside the value rather than inside it:
+
+- **Domain:** a frozen `PlaneValue(present: bool, value: object)`. `FieldDiscrepancy` holds one per plane. This replaces the bare `declared_value` and `discovered_value` attributes rather than sitting alongside them — **the mistake it makes unavailable is reading a value without having seen its presence flag**, which is precisely the mistake the current `_present()` helper forces on every caller.
+- **Database:** `declared_present` and `discovered_present` boolean columns beside the existing JSONB value columns. The value column is meaningless when its flag is false, and a check constraint holds it to `NULL` there so that "meaningless" is not left to convention.
+- **TypeScript:** `{ present: boolean; value: T | null }`, generated from the API schema like every other type.
+
+**Why not a sentinel inside the JSON.** A reserved object such as `{"__absent__": true}` needs one column instead of two, and fails on the barricade's own terms: provider payloads are untrusted data, and a magic value living inside untrusted data is indistinguishable from a payload that happens to contain it. Presence is metadata about the value and does not belong in the value's own namespace.
+
+**Why not a new discrepancy type.** `discrepancy_type` is part of a discrepancy's durable identity (§23.2). Encoding absence there means a field flipping from absent to null becomes a different record, silently dropping any suppression made against it — the exact failure the identity rule exists to prevent.
+
+**Explicitly out of scope for 1.5.0.** What absence *means* for authority — declared-absent as "intent has no opinion" versus declared-null as "intent requires this empty" — is a precedence question and belongs to 1.5.3. 1.5.0 exists so that 1.5.3 has an unambiguous input, and it stops there. Distinguishing the two values is this package; deciding what follows from the distinction is not.
+
 **WBS 1.5.2 is spec-first, decided 2026-07-30, and the reason is the second bullet above.** "Comparison semantics per attribute type" names five questions — sets versus lists, null versus absent, case and whitespace, numeric precision, timestamps and zones — and answers none of them. This section is a list of things to decide, not a decision.
 
 That is easy to miss because §12 sits next to it and is genuinely finished: matching has its strategy table, its confidence assignment, its error bias, and an adversarial corpus with expected outcomes, all written before its code. The diff engine has no equivalent. §12's corpus is about matching and does not exercise a single comparison rule. **The largest package in phase 4, and the one this document calls the correctness kernel, is the least specified thing in it** — which is precisely the shape of package where a wrong rule gets implemented, confirmed by tests written to match it, and handed over self-consistent.

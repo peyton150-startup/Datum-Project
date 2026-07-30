@@ -315,10 +315,27 @@ Intent is authored before a resource exists, so it cannot carry the provider's i
 
 **Phase 4 ships strategies 1 and 3.** Strategy 2 is supported by reading the tag when present. Strategy 4 is out of scope for the core build.
 
-> **Strategy 1 is currently unimplementable, and the defect is in shipped code (CF-6, found 2026-07-30).** `run_reconciliation` deletes every `Match` for the tenant on each run, confirmed ones included, so "a stored binding from a prior confirmed match" has no input to read. This contradicts the next sentence of this section — *matches are stored, never recomputed from scratch* — and it defeats the rename case, which is the reason the strategy is ranked first. Scheduled to 1.5.1, which owns the question the fix depends on: what a confirmed match means across runs. Recorded in PROJECT_PLAN under "Found at the opening of Phase 4".
+> **CF-6, found 2026-07-30 at the opening of Phase 4, closed in WBS 1.5.1.** Strategy 1 was unimplementable in shipped code, for two reasons rather than the one first recorded. `run_reconciliation` deleted every `Match` for the tenant on each run, confirmed ones included, so a stored binding had no input to read. That was the visible half. The second half only appeared on reading the schema: `Match.declared_resource` was a foreign key to `DeclaredResource`, which is **revision-scoped** under full-rebuild projection (§10), so a preserved match pointed at a superseded revision's row and was never found again. **A confirmed match would have survived the run and died at the next intent commit, silently, with no error.** Fixing the delete alone would have shipped a binding that looked durable and was not. The cross-run semantics below are what the fix required.
 
 ### Recorded on every match, from the first line of code
-`strategy`, `confidence` (high/medium/low), `state` (proposed/confirmed/rejected), `confirmed_by`, `confirmed_at`.
+`strategy`, `confidence` (high/medium/low), `state`, `confirmed_by`, `confirmed_at`.
+
+### What a match is anchored to, and what survives a run
+**Decided 2026-07-30 (WBS 1.5.1).** Four rules, which together answer *what a confirmed match means across runs*.
+
+**1. A match is anchored on domain identity, not on row identity.** The durable anchor is the declared natural key `(kind, tenant, scope, name)` as of the decision, plus the discovered resource's own `provider_id`. Foreign keys to either plane's rows are convenience lookups and carry no meaning: neither plane's rows are durable, and a foreign key to a `DeclaredResource` binds a decision to a *commit* rather than to a resource. This is the same call already made for discrepancy identity in §23.2, for the same reason.
+
+A consequence worth stating plainly: **a discovered resource with no `provider_id` has nothing to anchor to, so it can be matched but never confirmed.** The database refuses the confirmation rather than storing a decision that cannot be found again.
+
+**2. A run rebuilds proposals and never touches human decisions.** `PROPOSED` matches are deleted and recomputed each run, exactly as discrepancies are. `CONFIRMED` and `REJECTED` are human-authored and are read as input, never rewritten. This is the rule CF-6 broke.
+
+**3. A rejection is remembered, and refuses the pairing rather than merely failing to propose it.** A human rejecting a match said *these are not the same resource*. The matcher therefore suppresses that pairing and lets both sides fall out as orphans on their own sides. Re-proposing it every run would make the queue un-clearable, which is the same failure that makes a resolved discrepancy durable.
+
+**4. A vanished anchor invalidates the decision, and re-creation does not revive it.** When either side of a stored decision stops resolving, the record moves to `INVALIDATED` — a terminal state, system-closed, and deliberately distinct from `REJECTED`, because "the resource this was about is gone" is not the same fact as "a human said no". A re-created resource is re-proposed and re-decided by a human. This follows §23's decision that a re-added resource does not inherit its old suppressions, and for the same reason: the anchor tuple is identical on return, so without an explicit terminal state the old decision would silently re-apply to a different instance.
+
+Because terminal rows are history, and several may accumulate for one resource over time, **the one-to-one constraint holds over the active states only** — `PROPOSED` and `CONFIRMED` — as partial unique indexes on each side. A separate partial unique index on the full pairing where `state = rejected` keeps one rejection from being recorded twice.
+
+> **Not yet decided: the strategy 2 tag format.** This section says Phase 4 ships strategies 1 and 3, and also that strategy 2 is "supported by reading the tag when present". Nothing anywhere defines what value `datum/id` carries — a name, a natural key, a Datum-assigned identifier that does not currently exist. WBS 1.5.1 shipped strategies 1 and 3 only, deliberately. Building strategy 2 needs that format decided first, and it is a schema commitment to operators, not a detail.
 
 ### Error bias
 A wrong match is far worse than a missing one. **When uncertain, do not match.** A low-confidence result becomes its own queue item; it never silently feeds the diff engine.
@@ -336,6 +353,17 @@ Matching is one-to-one. Unique constraints on both sides at the database level.
 | Same name in two scopes | Two distinct matches. No collision. |
 | Declared resource never provisioned | One orphan: declared, not discovered. |
 | Two declared resources claim one identity | Rejected at intent validation, not at matching. |
+
+### Cross-run corpus, added with the semantics above
+| Case | Expected |
+|---|---|
+| Run twice, nothing changed | The confirmed match is still there, still `CONFIRMED`, not recreated. |
+| Intent commits a new revision, nothing else changed | The confirmed match still binds. This is the case the foreign key broke. |
+| Confirmed, then the discovered resource disappears | Match becomes `INVALIDATED`, not deleted. Declared side becomes an orphan. |
+| Confirmed, then the resource is re-created with the same identity | A **new** `PROPOSED` match. The `INVALIDATED` row stays as history and does not revive. |
+| Rejected, then run again | Not re-proposed. Two orphans, and the rejection is not duplicated. |
+| Confirmed binding whose declared resource is renamed in intent | The anchor no longer resolves: `INVALIDATED`, and the new name is proposed afresh. |
+| Discovered resource with no `provider_id` | Matchable by natural key, and refused at confirmation by the database. |
 
 ## 13. Diff engine
 

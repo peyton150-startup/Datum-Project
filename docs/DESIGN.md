@@ -354,24 +354,46 @@ Written before the implementation, 2026-07-30. This is one of §13's five compar
 
 **The rule.** Presence and value are two facts, and a discrepancy carries both, on both planes. Absence is never encoded as a value.
 
+Both directions are enumerated rather than one plus a symmetry note, because the rule's own claim is that direction matters. A table that states asymmetry and then relies on the reader to mirror half of it invites exactly the implementation that handles one side and reuses a bare-`None` helper for the other.
+
 | Declared | Discovered | Outcome |
 |---|---|---|
-| absent | absent | Not a discrepancy. The key is in neither plane's attribute set |
+| absent | absent | **Vacuous by construction** — see below. Not reachable through this engine |
 | null | null | Not a discrepancy. Both planes state the same thing |
+| value | same value | Not a discrepancy |
+| value | different value | A discrepancy. Both sides present |
 | absent | null | **A discrepancy**, and the report distinguishes which side is which |
 | null | absent | **A discrepancy**, distinct from the row above and not its mirror image |
-| absent | any value | A discrepancy, declared side reported absent, not null |
-| null | any value | A discrepancy, declared side reported null, not absent |
+| absent | value | A discrepancy, declared side reported absent, not null |
+| null | value | A discrepancy, declared side reported null, not absent |
+| value | absent | A discrepancy, discovered side reported absent, not null |
+| value | null | A discrepancy, discovered side reported null, not absent |
+
+**The absent/absent row is unreachable and says so.** `_field_discrepancies` iterates the *union* of both sides' attribute keys, so a key present in neither is never visited. The row is listed because its absence from the table would read as an oversight, not because any code can produce it. It becomes reachable only if field enumeration moves from the observed keys to the kind's `attribute_schema`, which is a 1.5.2 question; if that happens, this row acquires a real outcome and needs a real test.
 
 **The representation, which is the part that crosses languages.** `null` is already taken by the JSON value, so presence travels beside the value rather than inside it:
 
-- **Domain:** a frozen `PlaneValue(present: bool, value: object)`. `FieldDiscrepancy` holds one per plane. This replaces the bare `declared_value` and `discovered_value` attributes rather than sitting alongside them — **the mistake it makes unavailable is reading a value without having seen its presence flag**, which is precisely the mistake the current `_present()` helper forces on every caller.
-- **Database:** `declared_present` and `discovered_present` boolean columns beside the existing JSONB value columns. The value column is meaningless when its flag is false, and a check constraint holds it to `NULL` there so that "meaningless" is not left to convention.
-- **TypeScript:** `{ present: boolean; value: T | null }`, generated from the API schema like every other type.
+- **Domain:** a frozen `PlaneValue`, constructed only through `PlaneValue.absent()` and `PlaneValue.of(value)`, holding its state in private fields. `FieldDiscrepancy` holds one per plane, **replacing** the bare `declared_value` and `discovered_value` attributes rather than sitting alongside them.
+
+  **There is no public `.value`.** Reaching a value goes through `resolve(on_absent=..., on_present=...)`, which cannot be called without saying what absence does. This is the difference between an interface that makes the collapse *recoverable* and one that makes it *unavailable*, and only the second is a boundary under CLAUDE.md's rule. The weaker version was specified first and rejected on review: with a public `.value`, the minimal edit an implementer makes in `service.py` is `declared_value=fd.declared.value`, which writes JSON `null` for both states and restores the original defect at the database layer with every kernel test still green.
+
+  The consequence is deliberate and is the reason for the choice: **`service.py`, the API schema, and the review-queue component do not compile until each one states what it does with absence.** Three call sites that would otherwise have been three things to remember become three compile errors.
+
+- **Equality is type-strict and matches the engine.** `PlaneValue.of(0) != PlaneValue.of(False)`, because `_canonical` already distinguishes `0` from `false` and a report that conflates them contradicts the comparison that produced it. Structural dataclass equality does not give this — in Python `0 == False` — so equality is defined over `(present, canonical(value))`. Hashing follows the same pair, which also makes a `PlaneValue` wrapping a dict hashable, since the canonical form is a string.
+
+- **Database:** `declared_present` and `discovered_present` boolean columns beside the existing JSONB value columns, with a check constraint holding the value column to `NULL` when its flag is false, so that "meaningless" is not left to convention. **The domain type enforces the same rule at construction** — `PlaneValue.absent()` is the only way to build an absent value, and a non-`None` value with `present=False` is unconstructible. Without that, the domain can hold a state the database rejects, and the conflict surfaces as an `IntegrityError` from inside `run_reconciliation`'s transaction, taking down reconciliation for the whole tenant and wearing the database's abstraction rather than this module's — which §6 forbids.
+
+- **Migration of existing rows: they are deleted, not backfilled.** A pre-1.5.0 `Discrepancy` row records `None` for a value that may have been either state, so any backfill invents a fact — `present=True` retroactively asserts "intent stated null" about records where nothing determined that. Deletion is available precisely because discrepancy records are still disposable: `run_reconciliation` rewrites open records every run, and nothing durable depends on them until suppression arrives in 1.5.4. **This is the concrete form of the gate that put 1.5.0 before 1.5.4**, and it expires the moment that package lands.
+
+- **TypeScript:** `{ present: boolean; value: T | null }`, generated from the API schema. **The CI enum-drift check does not cover this** — `scripts/gen_ts_enums.py` generates enums, and `PlaneValue` is not one, so that gate passes with the TypeScript shape wrong. The protection here is that the strengthened interface breaks the API schema and the component at compile time, not that a drift check catches it afterwards. Stated because the cross-language rationale for this package would otherwise appear to rest on a gate that does not apply.
+
+**Which layer the guarantee is made at.** The domain distinction is total. Whether a *declared document* can express an absent key is a separate question owned by §10's all-attributes-required limit, which currently makes every attribute in a kind's schema mandatory — so today the declared-absent rows are reachable through the domain and through discovery, but not through intent ingestion. §23.8's cluster note groups these two simplifications deliberately; this package resolves one of them and does not touch the other.
 
 **Why not a sentinel inside the JSON.** A reserved object such as `{"__absent__": true}` needs one column instead of two, and fails on the barricade's own terms: provider payloads are untrusted data, and a magic value living inside untrusted data is indistinguishable from a payload that happens to contain it. Presence is metadata about the value and does not belong in the value's own namespace.
 
 **Why not a new discrepancy type.** `discrepancy_type` is part of a discrepancy's durable identity (§23.2). Encoding absence there means a field flipping from absent to null becomes a different record, silently dropping any suppression made against it — the exact failure the identity rule exists to prevent.
+
+**Existing tests are rewritten by this package, not preserved.** `tests/kernel/test_diff.py` currently asserts the collapsed representation positively — one case asserts `(None, True)` and `(3, None)` under the comments *"absent on declared"* and *"absent on discovered"*, and another's docstring states *"both report as None"* as expected behaviour. Those assertions are the defect, written down as a requirement. They are rewritten here, and `declared_value` / `discovered_value` are **removed** from `FieldDiscrepancy`. Said explicitly because the cheap way through a red suite is to keep the bare attributes alongside `PlaneValue`, which satisfies every test in both files and destroys the guarantee above.
 
 **Explicitly out of scope for 1.5.0.** What absence *means* for authority — declared-absent as "intent has no opinion" versus declared-null as "intent requires this empty" — is a precedence question and belongs to 1.5.3. 1.5.0 exists so that 1.5.3 has an unambiguous input, and it stops there. Distinguishing the two values is this package; deciding what follows from the distinction is not.
 

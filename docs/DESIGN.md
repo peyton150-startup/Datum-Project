@@ -315,6 +315,8 @@ Intent is authored before a resource exists, so it cannot carry the provider's i
 
 **Phase 4 ships strategies 1 and 3.** Strategy 2 is supported by reading the tag when present. Strategy 4 is out of scope for the core build.
 
+> **Strategy 1 is currently unimplementable, and the defect is in shipped code (CF-6, found 2026-07-30).** `run_reconciliation` deletes every `Match` for the tenant on each run, confirmed ones included, so "a stored binding from a prior confirmed match" has no input to read. This contradicts the next sentence of this section — *matches are stored, never recomputed from scratch* — and it defeats the rename case, which is the reason the strategy is ranked first. Scheduled to 1.5.1, which owns the question the fix depends on: what a confirmed match means across runs. Recorded in PROJECT_PLAN under "Found at the opening of Phase 4".
+
 ### Recorded on every match, from the first line of code
 `strategy`, `confidence` (high/medium/low), `state` (proposed/confirmed/rejected), `confirmed_by`, `confirmed_at`.
 

@@ -490,6 +490,28 @@ That is the same inversion as CF-2, which is why these are recorded as a class r
 
 ---
 
+## Found at the opening of Phase 4 (2026-07-30): a confirmed match does not survive a run
+
+Found by asking a product question — *will the UI let someone match identities by hand?* — not by a failing test, and not by reading the code with any suspicion. The answer in DESIGN §12 is yes, and the code says otherwise.
+
+| ID | Defect | Owning module | Scheduled | Mitigation while deferred |
+|---|---|---|---|---|
+| CF-6 | `_reset` deletes every `Match` for the tenant on every reconciliation run, confirmed matches included, so a human confirmation survives until the next beat tick | `datum/reconcile/service.py` | 1.5.1 | None available. The confirm and reject path has no UI yet, so nothing can currently create the state that is being destroyed. That is a scheduling accident, not a control. |
+
+**The contradiction is with a section marked Decided.** §12 states that *"matches are stored, never recomputed from scratch"* and makes **stored binding from a prior confirmed match** the highest-priority strategy, above provider tag and natural key. `Match.objects.filter(tenant_id=tenant_id).delete()` means strategy 1 has nothing to read on any run, ever. The strategy is not merely unimplemented — it is unimplementable against the current service, because its input is deleted before it could be consulted.
+
+The blast radius is the one §12 cares most about. Strategy 1 exists to survive a **rename**: the natural key breaks, the stored binding carries the match across, and the result is one true discrepancy on `name` instead of two false orphans. With CF-6 present, a rename produces two orphans, which is the failure §12's opening paragraph names as the reason matching exists at all.
+
+**Why 1.5.1 and not sooner.** 1.5.1 is identity matching, and it owns the question CF-6 is really asking: *what does a confirmed match mean across runs?* That question cannot be answered by patching the delete, because the answer has to say what happens when a confirmed match's two sides stop existing, what happens when the natural key later points somewhere else, and whether a rejected match is remembered as a rejection or forgotten. Fixing the symptom in `service.py` before 1.5.1 decides the rule would produce a persistence behaviour nobody specified, which is the failure mode the spec-first decision was taken to avoid.
+
+**The condition, same as every carry-forward before it:** the fix lands in the module that owns it. Match persistence is `datum/reconcile/`, whatever package schedules the work.
+
+**What this says about the review tiers.** CF-6 is in `reconcile/service.py`, which is neither kernel nor boundary under the three-tier rule — it is the orchestration around them, and it went unreviewed line by line. The defect is not in the diff engine or the matcher, both of which are correct; it is in the code that decides what to persist afterwards. Phase 3's finding was that for code nobody reads line by line, the protection is the interface it is written against. There is no interface here to have protected it: `_reset` is a private function calling the ORM directly. Worth carrying into the 1.5.4 lifecycle work, which will add more code of exactly this shape.
+
+**How it was found is the part worth keeping.** Not by a test, not by review, and not by reading `service.py` at all — by taking a written design claim (*a human can confirm a match*) and asking what the UI for it looks like. The gap appeared in the distance between the two. Three phases of gates did not catch it, because every gate checks the code against itself.
+
+---
+
 ## Construction practice: usability and visualization references
 
 Three reference skills are available to the build. They are recorded here rather than remembered, for the same reason the defect-removal plan is a table: a practice that depends on someone recalling it at the right moment is not a practice.

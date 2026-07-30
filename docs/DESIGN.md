@@ -78,7 +78,7 @@ The system has a **barricade** (ADR-008). Outside it, all data is untrusted. Ins
 | Intent document fails schema validation | Yes | Reject the whole revision, keep the previous one active |
 | Two declared resources claim the same identity | Yes | Reject at intent validation |
 | Diff engine receives a match whose two sides have different kinds | No | Assert. This is a bug. |
-| Precedence policy has no rule covering a field | Yes | Decide in phase 4 (default intent-wins vs hard error) |
+| Precedence policy has no rule covering a field | Yes | **Neither silent nor fatal.** The field yields an undecidable-precedence discrepancy and the run completes. Decided 2026-07-30, §23.6 |
 
 Exceptions crossing a module boundary carry that module's abstraction, not a lower one. No empty except blocks without a comment. Every exception message includes the identifiers needed to find the thing that failed. Offensive in development, graceful in production.
 
@@ -315,6 +315,8 @@ Intent is authored before a resource exists, so it cannot carry the provider's i
 
 **Phase 4 ships strategies 1 and 3.** Strategy 2 is supported by reading the tag when present. Strategy 4 is out of scope for the core build.
 
+> **Strategy 1 is currently unimplementable, and the defect is in shipped code (CF-6, found 2026-07-30).** `run_reconciliation` deletes every `Match` for the tenant on each run, confirmed ones included, so "a stored binding from a prior confirmed match" has no input to read. This contradicts the next sentence of this section — *matches are stored, never recomputed from scratch* — and it defeats the rename case, which is the reason the strategy is ranked first. Scheduled to 1.5.1, which owns the question the fix depends on: what a confirmed match means across runs. Recorded in PROJECT_PLAN under "Found at the opening of Phase 4".
+
 ### Recorded on every match, from the first line of code
 `strategy`, `confidence` (high/medium/low), `state` (proposed/confirmed/rejected), `confirmed_by`, `confirmed_at`.
 
@@ -344,13 +346,114 @@ The correctness kernel. Highest review standard, reviewed by the model that did 
 - Orphan detection: declared-not-discovered and discovered-not-declared are different discrepancy types.
 - **Complexity ceiling:** no routine exceeds cyclomatic complexity 10, enforced in CI. If comparison logic needs more branching, it is a table.
 
+### Null versus absent — WBS 1.5.0, specified then built
+
+Written before the implementation and **delivered 2026-07-30**. This is one of §13's five comparison-semantics questions, answered early because it gates 1.5.3 and 1.5.4.
+
+**Two things the specification got wrong, found by building it.** Both are recorded because a spec that is quietly corrected during implementation teaches nothing the next time.
+
+*The fixtures could not produce the case the contract test needed.* The spec named "extend the fixtures so ingestion yields a declared-absent field" as a deliverable. It cannot be done in this package: §10's all-attributes-required limit means a declared document cannot omit an attribute in its kind's schema, so **declared-absent is unreachable through intent ingestion today** — which the "which layer the guarantee is made at" paragraph below already said, one section away from a deliverable that contradicted it. The wire-contract test builds its rows directly, which is the honest level for an API serialization contract. The end-to-end version becomes writable when §10's limit lifts and belongs with that work.
+
+*The determinism test's own guard was lossy in the way this package exists to fix.* It compared two attribute maps with `==` to check they were the same input. Hypothesis found `[("a", 0), ("a", False)]`: last-wins yields `{"a": False}` one way and `{"a": 0}` the other, and `{"a": 0} == {"a": False}` is `True` in Python while the canonical forms differ. The guard admitted two genuinely different inputs and blamed the engine. **The 0-versus-`False` conflation that motivated `PlaneValue`'s custom equality reappeared inside the test written to check it** — which is the most useful thing this package produced, because it shows the hazard is not confined to the type that was hardened against it.
+
+**The defect being closed.** `reconcile` already *compares* an absent key and an explicit null distinctly, via a sentinel. It then *reports* both as `None`, so a reader of the resulting discrepancy cannot tell "intent does not mention this field" from "intent requires this field empty". The comparison was never wrong; the reporting throws away the answer.
+
+**The rule.** Presence and value are two facts, and a discrepancy carries both, on both planes. Absence is never encoded as a value.
+
+Both directions are enumerated rather than one plus a symmetry note, because the rule's own claim is that direction matters. A table that states asymmetry and then relies on the reader to mirror half of it invites exactly the implementation that handles one side and reuses a bare-`None` helper for the other.
+
+| Declared | Discovered | Outcome |
+|---|---|---|
+| absent | absent | **Vacuous by construction** — see below. Not reachable through this engine |
+| null | null | Not a discrepancy. Both planes state the same thing |
+| value | same value | Not a discrepancy |
+| value | different value | A discrepancy. Both sides present |
+| absent | null | **A discrepancy**, and the report distinguishes which side is which |
+| null | absent | **A discrepancy**, distinct from the row above and not its mirror image |
+| absent | value | A discrepancy, declared side reported absent, not null |
+| null | value | A discrepancy, declared side reported null, not absent |
+| value | absent | A discrepancy, discovered side reported absent, not null |
+| value | null | A discrepancy, discovered side reported null, not absent |
+
+**The absent/absent row is unreachable and says so.** `_field_discrepancies` iterates the *union* of both sides' attribute keys, so a key present in neither is never visited. The row is listed because its absence from the table would read as an oversight, not because any code can produce it. It becomes reachable only if field enumeration moves from the observed keys to the kind's `attribute_schema`, which is a 1.5.2 question; if that happens, this row acquires a real outcome and needs a real test.
+
+**The representation, which is the part that crosses languages.** `null` is already taken by the JSON value, so presence travels beside the value rather than inside it:
+
+- **Domain:** a frozen `PlaneValue`, constructed only through `PlaneValue.absent()` and `PlaneValue.of(value)`, holding its state in private fields. `FieldDiscrepancy` holds one per plane, **replacing** the bare `declared_value` and `discovered_value` attributes rather than sitting alongside them.
+
+  **There is no public `.value`.** Reaching a value goes through `resolve(on_absent=..., on_present=...)`. The public surface is exactly `absent`, `of`, `resolve`, and the tests assert that as a whitelist rather than blacklisting accessor names somebody guessed. `ruff`'s `SLF` rule is enabled by this package so that `fd.declared._value` — one character longer than the line this design rejects — is a lint failure rather than a convention.
+
+  **What this does and does not guarantee, stated precisely, because the first draft overstated it.** `resolve` does not make the collapse *unavailable*. No total eliminator can: `resolve(on_absent=lambda: None, on_present=lambda v: v)` reproduces the defect exactly, and at the database layer that is the *correct* code, because the check constraint requires the value column to be `NULL` when presence is false. The same shape is right at one call site and the defect at the next.
+
+  What it does guarantee is that **the decision is unavoidably visible at the call site.** A reviewer sees an `on_absent` branch and can judge it; before, there was nothing to see. That is a real property and a weaker one than "unavailable", and the difference matters because CLAUDE.md's boundary test turns on it. The load-bearing protection is this *plus* the destination shapes below — neither alone.
+
+- **The destination shapes carry the other half, because `PlaneValue` cannot reach them.** `api/schemas.py` and `api/router.py` read `declared_value` off the Django *model*, not off a `FieldDiscrepancy`, so no domain-side interface constrains them; `web/src/api.ts` is hand-written and casts with `body.items as Discrepancy[]`, so even a changed payload does not surface. Only `service.py` is protected by the domain type, via `mypy --strict` on `datum.reconcile.*`.
+
+  So the API and TypeScript shapes are part of this package: `DiscrepancyOut` carries a nested `{ present, value }` per plane, `api.ts` matches it, and the review queue renders both states distinctly. **One API contract test asserts that a declared-absent field serializes with `present: false` and a declared-null field with `present: true, value: null`.** That test is the only thing in the package that catches the collapse where a reader actually sees it, and without it the package's cross-language justification would be a claim about code that does not exist.
+
+- **Equality delegates to the shared canonical form; it does not define one.** `PlaneValue.of(0) != PlaneValue.of(False)`, because a report whose equality contradicts the comparison that produced it is worse than the alternative. Equality and hashing are defined over `(present, canonical(value))`.
+
+  **`_canonical` moves from `diff.py` into `domain.py` as part of this package.** `diff.py` already imports `domain.py`, so a `PlaneValue` reaching back into `diff` would be an import cycle on day one; the alternative an implementer reaches for under time pressure is duplicating it, leaving two canonical forms that must agree and will stop agreeing the first time 1.5.2 touches either. Canonicalization is a domain concept and belongs with the type whose identity it defines.
+
+  **What this deliberately does not settle:** deep and numeric comparison semantics. `PlaneValue.of(3)` versus `PlaneValue.of(3.0)` is one of §13's own five open questions, owned by 1.5.2 — JSON has a single number type, and a collector returning `3.0` where intent says `3` becoming a permanent discrepancy is a real risk, not obviously the right answer. 1.5.0 fixes *where* canonicalization lives and that equality delegates to it. 1.5.2 decides what it does. Stated because a package quietly answering a question the plan assigned elsewhere is the failure this phase's spec-first order exists to prevent.
+
+- **`_ABSENT` and `_present()` are removed from `diff.py`.** Once presence is a field on the value, the comparison is `PlaneValue` inequality and the sentinel is a second encoding of absence that has to agree with the first. Two encodings of one fact is the shape of thing that stops agreeing.
+
+- **The storage pair has its own accessor: `as_columns() -> tuple[bool, object | None]`,** defined in `domain.py` where the absent-implies-`NULL` rule is already enforced. The alternative is four `resolve` calls per row in `_write_discrepancies`, two of them with lambdas that discard their argument — worse than the `if` it replaces, and the kind of shape the construction conventions would flag anywhere else. The DB destination gets a barricade instead of hand-written lambdas at the call site; `resolve` stays for semantic reads.
+
+- **Database:** `declared_present` and `discovered_present` boolean columns beside the existing JSONB value columns, with a check constraint holding the value column to `NULL` when its flag is false, so that "meaningless" is not left to convention. **The domain type enforces the same rule at construction** — `PlaneValue.absent()` is the only way to build an absent value, and a non-`None` value with `present=False` is unconstructible. Without that, the domain can hold a state the database rejects, and the conflict surfaces as an `IntegrityError` from inside `run_reconciliation`'s transaction, taking down reconciliation for the whole tenant and wearing the database's abstraction rather than this module's — which §6 forbids.
+
+- **Migration: open rows are deleted, terminal rows survive with undetermined presence.** The first draft of this specification said "delete existing rows" on the grounds that discrepancy records are still disposable. **That was false, and dangerously so.** `_reset` deletes only `state=OPEN`; `resolve_discrepancy` writes `RESOLVED` and `resolved_at` when a human clicks resolve in the review queue, `list_discrepancies` reads them back by state, and `DiscrepancyState` has exactly two members — so resolved rows are the *entire* durable human-authored state in the system. A blanket delete would have erased every record of who reviewed what, silently, with the drift reappearing as fresh open rows on the next beat. It also contradicted §23.4, written the same day, which says open records are never pruned and history is never pruned.
+
+  The rule that survives: **delete `state=OPEN` rows only.** Those are rebuilt by the next reconciliation run, so deleting them invents nothing and backfills nothing, which was the whole of the original argument. It just never applied to terminal rows.
+
+  **Terminal rows keep their values and get `NULL` presence**, meaning "recorded before 1.5.0, never determined". The presence columns are therefore nullable, and the check constraint permits it. `present=true` was refused for the same reason the blanket backfill was: it retroactively asserts "intent stated null" about records where nothing determined that, and doing it only to resolved rows means doing it where nobody will look.
+
+  The cost, stated rather than hidden: **this is a third state, and it reaches TypeScript as `present: boolean | null`.** Legacy rows are a closed set that shrinks to nothing under §23.4's retention policy, so the third state is temporary in fact even though the type is permanent. Worth it to avoid writing a fact that was never true.
+
+- **TypeScript:** `{ present: boolean | null; value: unknown }` in `web/src/api.ts`, matching the API. **Two gates that look like they cover this do not.** `scripts/gen_ts_enums.py` generates enums, and `PlaneValue` is not one, so the CI drift check passes with the shape wrong. And `api.ts` is hand-written with `return body.items as Discrepancy[]` — an unchecked assertion, so a changed payload does not surface at compile time either; if the API dropped `declared_value` today, `String(d.declared_value)` would render the literal string `undefined` with `tsc` green. The protection is the API contract test named above, not either gate. Stated because assuming a gate covers something it does not is this project's own named failure class.
+
+- **Determinism (D5) over the new representation is a deliverable of this package, not a comment.** The existing Hypothesis test in `tests/kernel/test_diff.py` varies input order; its generator is extended here to produce absent and explicitly-null attributes. Named as a deliverable because the first draft left this as a promise in a comment, and comments do not fail.
+
+**Which layer the guarantee is made at.** The domain distinction is total. Whether a *declared document* can express an absent key is a separate question owned by §10's all-attributes-required limit, which currently makes every attribute in a kind's schema mandatory — so today the declared-absent rows are reachable through the domain and through discovery, but not through intent ingestion. §23.8's cluster note groups these two simplifications deliberately; this package resolves one of them and does not touch the other.
+
+**Why not a sentinel inside the JSON.** A reserved object such as `{"__absent__": true}` needs one column instead of two, and fails on the barricade's own terms: provider payloads are untrusted data, and a magic value living inside untrusted data is indistinguishable from a payload that happens to contain it. Presence is metadata about the value and does not belong in the value's own namespace.
+
+**Why not a new discrepancy type.** `discrepancy_type` is part of a discrepancy's durable identity (§23.2). Encoding absence there means a field flipping from absent to null becomes a different record, silently dropping any suppression made against it — the exact failure the identity rule exists to prevent.
+
+**Existing tests are rewritten by this package, not preserved.** `tests/kernel/test_diff.py` currently asserts the collapsed representation positively — one case asserts `(None, True)` and `(3, None)` under the comments *"absent on declared"* and *"absent on discovered"*, and another's docstring states *"both report as None"* as expected behaviour. Those assertions are the defect, written down as a requirement. They are rewritten here, and `declared_value` / `discovered_value` are **removed** from `FieldDiscrepancy`. Said explicitly because the cheap way through a red suite is to keep the bare attributes alongside `PlaneValue`, which satisfies every test in both files and destroys the guarantee above.
+
+**Explicitly out of scope for 1.5.0.** What absence *means* for authority — declared-absent as "intent has no opinion" versus declared-null as "intent requires this empty" — is a precedence question and belongs to 1.5.3. 1.5.0 exists so that 1.5.3 has an unambiguous input, and it stops there. Distinguishing the two values is this package; deciding what follows from the distinction is not.
+
+**WBS 1.5.2 is spec-first, decided 2026-07-30, and the reason is the second bullet above.** "Comparison semantics per attribute type" names five questions — sets versus lists, null versus absent, case and whitespace, numeric precision, timestamps and zones — and answers none of them. This section is a list of things to decide, not a decision.
+
+That is easy to miss because §12 sits next to it and is genuinely finished: matching has its strategy table, its confidence assignment, its error bias, and an adversarial corpus with expected outcomes, all written before its code. The diff engine has no equivalent. §12's corpus is about matching and does not exercise a single comparison rule. **The largest package in phase 4, and the one this document calls the correctness kernel, is the least specified thing in it** — which is precisely the shape of package where a wrong rule gets implemented, confirmed by tests written to match it, and handed over self-consistent.
+
+This section's own corpus, in the sense §12 has one, is part of 1.5.2's specification rather than of its implementation.
+
 ## 14. Precedence policy
 
-TO WRITE. Policy shape and granularity. Resolution order when several rules match. **Explainability is a hard requirement:** given a field, the engine returns the rule that decided it and why. Versioning, and what happens to open discrepancies when the policy changes. Implement as a lookup, not a conditional chain.
+**Specified before implementation (WBS 1.5.3 is spec-first).** Still TO WRITE: policy shape and granularity, resolution order when several rules match, versioning, and what happens to open discrepancies when the policy changes. Implement as a lookup, not a conditional chain.
+
+**Decided already, and binding on that specification:**
+
+- **Explainability is structural, not procedural.** Given a field, evaluation returns the rule that decided it *as part of the result type*. A log line satisfies the wording of D6 and not the requirement; a return type makes an unexplainable decision unrepresentable. The quality objectives' enforcement column reads "nothing yet" against D6 today, and this is what closes it.
+- **The result is a closed pair of cases:** a decision carrying its deciding rule, or an explicit undecidable. There is no third case in which a rule is synthesized to satisfy the type, because a synthesized rule is a silent default wearing the explainability guarantee as a costume.
+- **A missing rule does not fail the run** (§23.6). It fails the field, which becomes queue work.
+- **Rules are keyed on `(kind, field)` with no tenant dimension**, because kinds are global (§23). If that reopens, this table migrates with `Kind` and the RLS policies, together.
 
 ## 15. Discrepancy lifecycle
 
-TO WRITE. The state machine drawn, with allowed transitions and who may perform each. Suppression: required reason, required expiry, behavior on expiry. What a rediscovery of already-suppressed drift does. Immutability of transition history, enforced in the database.
+**Specified before implementation (WBS 1.5.4 is spec-first).** Still TO WRITE: the state machine drawn, with allowed transitions and who may perform each; suppression's required reason, required expiry, and behavior on expiry; what a rediscovery of already-suppressed drift does; immutability of transition history, enforced in the database.
+
+**Decided already, and binding on that specification:**
+
+- **A discrepancy is field-scoped, and its identity across runs is `(tenant, kind, scope, name, discrepancy_type, field_name)`** (§23.2), enforced by two partial unique indexes rather than one whole-table constraint. This is what lets a re-detected drift find its suppressed record instead of duplicating it — the named risk against this package.
+- **Terminal states distinguish who closed the record.** Human resolution and system closure are different facts, and a record vacated by an intent revision must not claim a reviewer looked at it (D11).
+- **Suppression is scoped to the record, not to the natural key.** A resource deleted from intent and later re-added gets fresh open records; the old suppression stays in history, inert (§23). Under a natural-key identity, resurrection is the default behaviour, so preventing it is a design act rather than an omission.
+- **Retention is per discrepancy, age-based, terminal states only.** Open records are never pruned; transition history is never pruned (§23.4).
+
+The current implementation has none of this. `run_reconciliation` deletes and rewrites every open discrepancy each run, `DiscrepancyState` carries two of the five states D7 requires, and `datum/workflow/models.py` is an empty file. The lifecycle is where discrepancy records stop being disposable, and every decision above exists because that transition is one-way.
 
 ## 16. API
 
@@ -417,11 +520,47 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 **Open, answered when a second kind arrives:**
 8. How does a collector that owns more than one kind scope absence? Today one collector owns one kind, enforced by assertion, and absence is scoped by `(tenant, collector_name)`. A multi-kind collector needs the `Collector` protocol to declare the set of kinds it is responsible for, and absence scoped by `(tenant, collector_name, kind)` — so a run producing zero records for a kind it owns can still correctly infer absence for that kind, while never touching a kind it does not own. This joins the null-vs-absent simplification (§24) and the all-attributes-required limit (§10) in the cluster of things a second kind forces; they are revisited together, because a second kind is the event that turns each of them from a simplification into a defect.
 
-**Open, but not needed until phase 4:**
-2. Does a discrepancy attach to a field, a resource, or both?
-4. How much drift history is retained, and is it per resource or per discrepancy? *(Phase 2 raises the stakes on this: full-rebuild projection grows rows per revision, so retention is now about the declared plane too, not only drift history.)*
-5. Is the synthetic estate generator a permanent part of the product or a test fixture?
-6. Does a missing precedence rule default to intent-wins, or is it a hard error?
+**Resolved at the opening of phase 4 (2026-07-30), before the code that assumes them:**
+
+These four were deferred as independent questions. They are not independent. Five of the six decisions taken that day are the same question wearing different hats — **when does a discrepancy acquire a durable identity, and what is that identity made of?** Attachment defines it, suppression depends on it, retention bounds it, intent deletion tests it, and re-adding a deleted resource attacks it. They were answered from that rule rather than one at a time, because four locally sensible answers that do not compose is the failure mode available here.
+
+2. ~~Does a discrepancy attach to a field, a resource, or both?~~ **A field**, and the identity that follows is `(tenant, kind, scope, name, discrepancy_type, field_name)`.
+
+   The stakes are not display; the review queue may group by resource either way. The stakes are identity across runs, which is the named risk against 1.5.4 — re-detected drift duplicating suppressed records. Once suppression is durable, re-detection must find the existing record rather than write a second one, and that needs a stable key.
+
+   Take `field_name` out of that key and a record's *content* changes between runs while its *identity* does not. Someone suppresses drift on `replicas`; months later the same resource drifts on `image`, matches the same identity, and is covered by the earlier suppression with the earlier reason attached. The suppression outlives the fact it was made about, and nothing surfaces — the queue is merely quieter than it should be. Field-level identity makes that unrepresentable: a new field is a new record.
+
+   Accepted cost: a fifty-field drift is fifty rows. That is what D8's bulk actions are for; it is a UI problem, not a schema one.
+
+   **Enforced by a partial unique index, not a plain one.** `FIELD` rows carry a `field_name`; orphan rows do not, and Postgres treats NULLs as distinct, so a single unique constraint over the six columns would let duplicate orphans through while appearing to prevent them. Two partial indexes — one `WHERE field_name IS NOT NULL`, one `WHERE field_name IS NULL`. A constraint that looks enforced and is not is this project's own named failure class.
+
+4. ~~How much drift history is retained, and is it per resource or per discrepancy?~~ **Per discrepancy, age-based, terminal states only.** Open records are never pruned. Resolved, vacated, and expired-suppressed records are pruned after a configured age. Transition history is never pruned, because D11 requires history to survive the resource. The declared plane keeps a separate policy, because its growth is per intent revision — bounded by commit rate — while discrepancy growth is per collector run times drifted fields, which is faster by an order of magnitude and multiplied by the field-level decision above.
+
+   Decided now rather than later because nothing currently retains anything: `run_reconciliation` deletes and rewrites every open discrepancy each run, and that accidental bound disappears the moment suppression makes records durable. Retrofitting a policy means deciding what to do with rows already accumulated under none.
+
+5. ~~Is the synthetic estate generator a permanent part of the product or a test fixture?~~ **A fixture, plus a seeding command. No UI, no API surface, no support commitment.**
+
+   The fixture/feature framing was a false binary: D14 requires a public demo seeded with drift, so the generator already has a phase 5 job that is not a test. Answering "fixture" flatly and discovering that dependency in phase 5 is how fixture-grade code gets promoted to production. "Invoked by a management command during demo seeding" and "a user-facing capability with docs and a support story" are different commitments, and only the first is taken.
+
+   **The standing tension, recorded because it will pull:** the risk already named against 1.2.3 is generated drift too tidy to be a real test. Two audiences pull opposite ways — the demo wants drift that reads well, the adversarial corpus wants drift designed to break the matcher. When they conflict, the corpus wins, because the demo has a person looking at it and the corpus does not.
+
+6. ~~Does a missing precedence rule default to intent-wins, or is it a hard error?~~ **Neither exactly: the field yields an undecidable-precedence discrepancy and the run completes.**
+
+   The error-versus-default framing left out the question that decides whether strictness is livable — the *blast radius*. Reconciliation is a batch job over a whole estate in one transaction, so a raise on one uncovered field kills reconciliation for the entire tenant. Phase 3 already answered the analogous question for collectors: one bad record does not take the good ones with it. The same shape applies. Precedence for that field is undecidable, so it surfaces in the queue as work to do, and every other field reconciles.
+
+   This keeps both properties that mattered. Nothing is silently decided, so the result type's guarantee holds — `evaluate` returns either a decision carrying its deciding rule or an explicit `Undecidable`, and there is no third case where a rule is invented to satisfy the type. And the estate still reconciles, so a gap in policy is a queue item rather than an outage.
+
+   A silent intent-wins default was refused on the reversal asymmetry this document already used to defer optionality in §10: loosening later breaks nothing, tightening later breaks every install that leaned on the default — and worse, nothing recorded which fields were deliberate and which were forgotten.
+
+**Also resolved 2026-07-30**, from the project plan's own known-incompleteness note, which scheduled them before phase 4 rather than during it:
+
+- **An intent revision deletes a resource with open discrepancies.** Those records are **system-closed to a state distinct from human resolution**, carrying the system actor and the revision that vacated them. D11 auditability is the reason for the distinct state: nobody reviewed those records, and a record that says `RESOLVED` claims somebody did. The resource then reappears at the next run as `DISCOVERED_UNDECLARED` on its own, which is simply true — it is in the estate and nobody declares it. No cascade is involved; `Discrepancy` denormalizes the natural key and holds no foreign key to either plane, which is what lets history survive the resource.
+
+- **A deleted resource that is later re-added does not inherit its earlier suppressions.** Suppression is scoped to the record, and the record closed at deletion; the re-added resource gets fresh open records. Old suppressions remain in history, inert. This follows directly from the identity rule rather than being a separate policy: a suppression must never outlive the fact it was made about, and a resource can be deleted and re-added with entirely different attributes. Under a natural-key identity, resurrection is the *default* behaviour and has to be prevented deliberately, which is why it is written down rather than left to emerge.
+
+- **Kinds are global only.** `Kind.name` is already globally unique, so this ratifies the status quo rather than changing it, and precedence rules stay keyed on `(kind, field)` with no tenant dimension. Timing is the reason it is answered now: precedence rules are per kind and per field, so tenant-defined kinds would put a tenant dimension in the precedence table — and 1.5.3 is being written now. Deciding after 1.5.3 ships means migrating the precedence model as well as the kind model. **Trigger to reopen:** a tenant needs a kind the project will not ship globally. The reversal then touches `Kind`, the RLS policies, and the precedence table together.
+
+**Open, still not due:**
 
 ## 24. How this design could fail
 

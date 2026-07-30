@@ -1,5 +1,3 @@
-import json
-
 from datum.enums import DiscrepancyType
 from datum.reconcile.domain import (
     DiscrepancySet,
@@ -9,8 +7,6 @@ from datum.reconcile.domain import (
     OrphanDiscrepancy,
     ResourceSnapshot,
 )
-
-_ABSENT = object()
 
 
 def reconcile(match_result: MatchResult) -> DiscrepancySet:
@@ -24,11 +20,10 @@ def reconcile(match_result: MatchResult) -> DiscrepancySet:
     Deterministic: pairs are walked in natural-key order, attribute keys in
     sorted order, and orphans in natural-key order within each direction.
 
-    Known Phase 1 simplification: an absent key and an explicit null are
-    *compared* distinctly, but both *report* a value of None, so a reader of the
-    resulting discrepancy cannot tell them apart. Deliberate while one kind has
-    one required integer attribute. See DESIGN.md section 24 -- revisit when a
-    second kind introduces optional fields.
+    An absent key and an explicit null are compared *and reported* distinctly:
+    each side of a field is a `PlaneValue` carrying presence alongside value.
+    Comparison is that type's equality, which is why no sentinel lives here --
+    a second encoding of absence would have to agree with the first.
     """
     field_discrepancies: list[FieldDiscrepancy] = []
     for pair in sorted(match_result.pairs, key=lambda p: p.declared.natural_key):
@@ -45,15 +40,15 @@ def _field_discrepancies(pair: MatchedPair) -> list[FieldDiscrepancy]:
     keys = sorted(set(pair.declared.attributes) | set(pair.discovered.attributes))
     result: list[FieldDiscrepancy] = []
     for key in keys:
-        declared_value = pair.declared.attributes.get(key, _ABSENT)
-        discovered_value = pair.discovered.attributes.get(key, _ABSENT)
-        if _canonical(declared_value) != _canonical(discovered_value):
+        declared = pair.declared.plane_value(key)
+        discovered = pair.discovered.plane_value(key)
+        if declared != discovered:
             result.append(
                 FieldDiscrepancy(
                     natural_key=pair.declared.natural_key,
                     field_name=key,
-                    declared_value=_present(declared_value),
-                    discovered_value=_present(discovered_value),
+                    declared=declared,
+                    discovered=discovered,
                 )
             )
     return result
@@ -67,13 +62,3 @@ def _orphans(
         OrphanDiscrepancy(natural_key=s.natural_key, discrepancy_type=discrepancy_type)
         for s in ordered
     ]
-
-
-def _canonical(value: object) -> str:
-    if value is _ABSENT:
-        return "\0absent"
-    return json.dumps(value, sort_keys=True, default=str)
-
-
-def _present(value: object) -> object:
-    return None if value is _ABSENT else value

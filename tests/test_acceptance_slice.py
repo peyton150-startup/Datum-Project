@@ -47,7 +47,8 @@ def test_phase1_slice_end_to_end(intent_repo):
         == 0
     )
     d = field.get()
-    assert (d.field_name, d.declared_value, d.discovered_value) == ("replicas", 3, 5)
+    assert (d.field_name, d.declared_present, d.declared_value) == ("replicas", True, 3)
+    assert (d.discovered_present, d.discovered_value) == (True, 5)
     # 7: visible via API with authoritative side declared
     item = Client().get("/api/discrepancies?state=open").json()["items"][0]
     assert item["authoritative_plane"] == "declared"

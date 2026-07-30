@@ -52,7 +52,7 @@ This column exists so an objective with nothing behind it is visible *before* it
 | Intent correctness | Whole-revision validation that accumulates every error before rejecting, four blocking layers, and branch coverage gated at 100% |
 | A conflict never surfaces as the database's exception | Conversion at the intent boundary for both ways a race loses — constraint and transaction rollback — and a review-checklist line |
 | Read-only toward the estate | **Intent only.** No mechanism prevents a collector from issuing a write; ADR-007 and the `Collector` protocol's documented prohibitions are all that stand there. The protocol gives an adapter no writing tool, which is weak enforcement rather than none |
-| Precedence explainability (D6) | **Nothing yet.** Phase 4 work. See the Phase 4 entry condition at the end of this document |
+| Precedence explainability (D6) | **Still nothing, but the mechanism is now decided rather than aspirational.** As of 2026-07-30, evaluation returns the deciding rule inside its result type, and a missing rule returns an explicit undecidable rather than a synthesized one — so there is no case where the type is satisfied by inventing a rule. Structural once 1.5.3 ships; this row stays "nothing" until it does, because a decision is not an enforcement |
 | Review queue usability (D8) | **Nothing yet.** `dont-make-me-think-ui` is bound to 1.5.5, and the keyboard path is the only part with a test |
 | Whole-system understandability | The construction conventions, the two-tier review rule, and CI refusing unformatted or lint-failing code |
 | Performance | Nothing, deliberately. Nothing here is tuned until measured, and the benchmark is scheduled per phase close rather than enforced per commit |
@@ -118,6 +118,8 @@ The first draft specified what the system does and skipped what it must be. Each
 | Accessibility | Review queue is fully keyboard operable. | Manual pass, no mouse |
 
 **Known incompleteness, flagged rather than guessed:** retention policy for drift history, behavior when an intent revision deletes a resource with open discrepancies, and whether tenants may define their own kinds or only use global ones. These are resolved before phase 4, not now. Flagging them is deliberate: an iterative project is allowed to leave requirements open, but it is not allowed to leave them unnoticed.
+
+**All three were answered at the opening of phase 4 on 2026-07-30, on the schedule this note set.** Rationale in DESIGN §23; the decisions themselves are summarised in "Phase 4 opening decisions" at the end of this document. Recorded here rather than only there because the value of a flagged gap is that someone can check it closed on time, and that check has to be possible from where the flag was raised.
 
 ### Stakeholders
 
@@ -488,6 +490,28 @@ That is the same inversion as CF-2, which is why these are recorded as a class r
 
 ---
 
+## Found at the opening of Phase 4 (2026-07-30): a confirmed match does not survive a run
+
+Found by asking a product question — *will the UI let someone match identities by hand?* — not by a failing test, and not by reading the code with any suspicion. The answer in DESIGN §12 is yes, and the code says otherwise.
+
+| ID | Defect | Owning module | Scheduled | Mitigation while deferred |
+|---|---|---|---|---|
+| CF-6 | `_reset` deletes every `Match` for the tenant on every reconciliation run, confirmed matches included, so a human confirmation survives until the next beat tick | `datum/reconcile/service.py` | 1.5.1 | None available. The confirm and reject path has no UI yet, so nothing can currently create the state that is being destroyed. That is a scheduling accident, not a control. |
+
+**The contradiction is with a section marked Decided.** §12 states that *"matches are stored, never recomputed from scratch"* and makes **stored binding from a prior confirmed match** the highest-priority strategy, above provider tag and natural key. `Match.objects.filter(tenant_id=tenant_id).delete()` means strategy 1 has nothing to read on any run, ever. The strategy is not merely unimplemented — it is unimplementable against the current service, because its input is deleted before it could be consulted.
+
+The blast radius is the one §12 cares most about. Strategy 1 exists to survive a **rename**: the natural key breaks, the stored binding carries the match across, and the result is one true discrepancy on `name` instead of two false orphans. With CF-6 present, a rename produces two orphans, which is the failure §12's opening paragraph names as the reason matching exists at all.
+
+**Why 1.5.1 and not sooner.** 1.5.1 is identity matching, and it owns the question CF-6 is really asking: *what does a confirmed match mean across runs?* That question cannot be answered by patching the delete, because the answer has to say what happens when a confirmed match's two sides stop existing, what happens when the natural key later points somewhere else, and whether a rejected match is remembered as a rejection or forgotten. Fixing the symptom in `service.py` before 1.5.1 decides the rule would produce a persistence behaviour nobody specified, which is the failure mode the spec-first decision was taken to avoid.
+
+**The condition, same as every carry-forward before it:** the fix lands in the module that owns it. Match persistence is `datum/reconcile/`, whatever package schedules the work.
+
+**What this says about the review tiers.** CF-6 is in `reconcile/service.py`, which is neither kernel nor boundary under the three-tier rule — it is the orchestration around them, and it went unreviewed line by line. The defect is not in the diff engine or the matcher, both of which are correct; it is in the code that decides what to persist afterwards. Phase 3's finding was that for code nobody reads line by line, the protection is the interface it is written against. There is no interface here to have protected it: `_reset` is a private function calling the ORM directly. Worth carrying into the 1.5.4 lifecycle work, which will add more code of exactly this shape.
+
+**How it was found is the part worth keeping.** Not by a test, not by review, and not by reading `service.py` at all — by taking a written design claim (*a human can confirm a match*) and asking what the UI for it looks like. The gap appeared in the distance between the two. Three phases of gates did not catch it, because every gate checks the code against itself.
+
+---
+
 ## Construction practice: usability and visualization references
 
 Three reference skills are available to the build. They are recorded here rather than remembered, for the same reason the defect-removal plan is a table: a practice that depends on someone recalling it at the right moment is not a practice.
@@ -622,6 +646,10 @@ The specific instance, and the reason this is a condition rather than advice: **
 
 # START HERE at the opening of Phase 4
 
+> **STATUS as of 2026-07-30: every decision this section demanded has been made.** All six questions are answered in DESIGN §23, and the spec-first call is made below. **Read "Phase 4 opening decisions" at the end of this document first** — it carries the answers. This section is kept unedited as the record of what was due and why, because the reasoning for *when* a question becomes expensive is worth more than the answer it produced.
+>
+> The one thing below that did not survive contact: the spec-first default it proposed was drawn on code tier, and tier turned out to be the wrong predictor. See the decisions section.
+
 Written at Phase 3 close for whoever opens Phase 4, which may be a session with no memory of this one. Nothing below is a suggestion; each item is a decision that must be made *before* the code that depends on it, and each one has a reason it cannot be deferred again.
 
 Phase 4 is the largest phase and the whole of the critical path: matching, diff, precedence, discrepancy lifecycle, and two UIs. It is also where four questions deliberately left open finally come due, because Phase 4 is the thing that needed them.
@@ -665,3 +693,108 @@ So the honest answer is that the balance has shifted and the decision should be 
 - **Two collectors exist and each owns one kind.** Kubernetes has a live path (`DATUM_K8S_LIVE=1` to run it); OCI reads recorded payloads only, and D3 is recorded as met-minus-the-live-read for that reason.
 - **The review tiers are three now, not two** — kernel, boundary, bulk. See CLAUDE.md. Boundary code gets non-authoring review, and the reason is in the Phase 3 close.
 - **The quality objectives have an enforcement column.** Two entries read "nothing yet"; one of them is precedence explainability, which is Phase 4's job.
+
+---
+
+# Phase 4 opening decisions (2026-07-30)
+
+Seven decisions, taken before any Phase 4 code. Full rationale for the six question-answers is in DESIGN §23, §14, and §15; this is the index and the two findings that only appeared while deciding.
+
+| Decision | Answer | Written in |
+|---|---|---|
+| §23.2 Discrepancy attachment | **Field**, identity `(tenant, kind, scope, name, type, field_name)`, two partial unique indexes | DESIGN §23.2, §15 |
+| §23.6 Missing precedence rule | **Undecidable discrepancy, run completes.** Not silent, not fatal | DESIGN §23.6, §6, §14 |
+| §23.4 Retention | **Per discrepancy, age-based, terminal states only.** Open never pruned, history never pruned | DESIGN §23.4 |
+| §23.5 Estate generator | **Fixture plus a seeding command.** No UI, no API, no support commitment | DESIGN §23.5 |
+| Intent deletes a resource with open discrepancies | **System-closed to a state distinct from human resolution**, carrying actor and revision | DESIGN §23 |
+| Re-added resource inherits suppressions? | **No.** Suppression is scoped to the record, not the natural key | DESIGN §23 |
+| Spec-first, and for which packages | **1.5.0, 1.5.2, 1.5.3, 1.5.4.** 1.5.1 excluded | below, and DESIGN §13 |
+
+## The first finding: six of these were one question
+
+They were deferred separately and read as independent. They are not. Five of the seven are the same question wearing different hats — **when does a discrepancy acquire a durable identity, and what is that identity made of?** Attachment defines it. Suppression depends on it. Retention bounds it. Intent deletion tests it. Re-adding a deleted resource attacks it.
+
+Answered one at a time in the order the START HERE section listed them, they would have produced four locally sensible answers that do not compose. The resurrection case shows why: under a natural-key identity, a deleted-then-re-added resource inherits its old suppressions *by default*, silently, and nothing in the attachment question or the retention question would have surfaced that. It is only visible once the identity rule is written down as a rule.
+
+**The transferable part is not the answer, it is the grouping.** A list of deferred questions accumulates in the order the questions were noticed, which is unrelated to the order they depend on each other. Sorting them before answering them cost one pass and changed three answers.
+
+## The second finding: the spec-first default was drawn on the wrong axis
+
+The START HERE section proposed spec-first for 1.5.3 and 1.5.4, with 1.5.1 and 1.5.2 taking the normal order because DESIGN §12's adversarial corpus already acts as a specification written before the code. **That reasoning does not survive reading §12 and §13 next to each other.**
+
+§12 (matching, 1.5.1) is marked **Decided**. It carries the strategy priority table, confidence per strategy, the error-bias rule, the one-to-one Postgres constraint, and a seven-case corpus with expected outcomes. That is a specification, written before the code, already reviewed.
+
+§13 (diff engine, 1.5.2) carries four bullets, one of which lists five comparison-semantics questions and answers none of them, and it has no corpus. **§12's corpus is about matching and does not exercise a single comparison rule.** The claim that it covered both packages was made by proximity, not by reading.
+
+So the largest package in the phase, which this design calls the correctness kernel, was scheduled for the normal order on the strength of a specification belonging to a different package.
+
+| Package | Spec state before this decision | Order |
+|---|---|---|
+| 1.5.0 Null-versus-absent | §24 names the defect; no representation decided | **Spec-first**, short |
+| 1.5.1 Matching | §12 Decided — rules, confidence, corpus with outcomes | Normal |
+| 1.5.2 Diff engine | §13 — five open questions, no corpus | **Spec-first** |
+| 1.5.3 Precedence | §14 TO WRITE | **Spec-first** |
+| 1.5.4 Lifecycle | §15 TO WRITE | **Spec-first** |
+| 1.5.5, 1.5.6 UIs | Bulk | Normal |
+
+1.5.0 earns a short pass despite being one week and sitting first on the critical path, because its output is a **cross-language representation**: "absent" must be expressible in the `declared_value` and `discovered_value` JSONB columns, in the API schema, and in the generated TypeScript, and `null` is already taken. This repository has a CI enum-drift check precisely because cross-language disagreement is a known failure mode here.
+
+**The rule that replaces the tier heuristic: spec-first is earned by a package whose rules are not yet written down, not by a package's code tier.** Tier predicts how carefully code is reviewed. It does not predict whether anyone has decided what the code should do, and those are different gaps with different remedies.
+
+## What this does not decide
+
+The two gates set at Phase 3 close stand unchanged and needed no new decision: 1.5.0 completes before 1.5.3 and 1.5.4, and interfaces are built before the bulk work sitting on them. DESIGN §23.8 (multi-kind collector absence) remains open and not due; its trigger is still unfired, since each collector owns exactly one kind.
+
+Nothing here schedules work. The next act is 1.5.0's specification.
+
+---
+
+# WBS 1.5.0 close (2026-07-30): null versus absent
+
+The first Phase 4 package, and the first one built spec-first under the order decided above. Complete: `PlaneValue` in the domain, presence columns and check constraints in Postgres, the nested shape through the API and TypeScript, and the review queue rendering three states where it rendered one.
+
+## What the gates say
+
+| Gate | Result |
+|---|---|
+| Backend tests | 299 passing, 2 skipped (both require a live cluster) |
+| Branch coverage on gated modules | 100% on `reconcile`, `workflow`, `intent`, `discovery` |
+| `mypy --strict` on kernel modules | Clean |
+| `ruff` | Clean, with `SLF` newly enabled |
+| Frontend lint, typecheck, build, tests | Clean; 5 tests, 3 of them new and about presence |
+
+## The review found the boundary was not one, twice
+
+The specification was reviewed by a non-authoring model before implementation, revised, and reviewed again. Both passes were load-bearing, and the second retracted two of its own first-pass prescriptions — which is the part worth keeping, because a reviewer that only ever adds findings is not reading its own advice.
+
+**Pass one.** `PlaneValue` was specified with a public `.value`. The reviewer performed the Phase 3 exercise — write the code that reintroduces the fixed defect — and found it was not merely possible but was what the shipped downstream code already did unedited: `declared_value=fd.declared.value` writes JSON `null` for both states and restores the defect at the database layer with every kernel test green. The claim "makes the mistake unavailable" was false as written.
+
+**Pass two, on the fix for pass one.** Three corrections, all verified against the code before being accepted:
+
+- **The migration would have deleted every human decision in the system.** The revised spec said "delete existing rows, nothing durable depends on them until 1.5.4". False: `_reset` deletes only `state=OPEN`, `resolve_discrepancy` writes `RESOLVED` when a human clears an item, and `DiscrepancyState` has exactly two members — so resolved rows are the *entire* durable human-authored state. An operator clears forty discrepancies, the migration runs, and the week never happened, with no error. It also contradicted §23.4, written the same morning.
+- **"Three call sites become three compile errors" was true of one.** `PlaneValue` reaches `service.py` and nothing else: `_serialize` reads off the Django model, and `api.ts` is hand-written with an unchecked cast. The boundary guarded domain-to-database while everything downstream — where the reader is — was guarded by nothing, under a sentence claiming otherwise. Worse than leaving it open.
+- **The headline claim was still overstated.** `resolve` cannot make the collapse unavailable, because no total eliminator can: `on_absent=lambda: None` reproduces it exactly, and at the database layer that is the *correct* code, since the check constraint requires `NULL` there. What it does is make the decision visible at the call site. The load-bearing protection is that plus the destination shapes, neither alone.
+
+## The finding, which is not about this package
+
+**A boundary interface protects the call sites that import it, and nothing else.** `PlaneValue` is a real boundary for `service.py` and irrelevant to `_serialize`, which reads the same data from the ORM. The instinct that a well-designed type protects "downstream" is wrong wherever downstream re-reads from storage rather than receiving the type — and that is most of a web application.
+
+The generalisation for the packages ahead: **ask which call sites import the type, and protect the rest by their own destination contracts.** For 1.5.3 and 1.5.4, whose results reach the same API and the same UI, this is the difference between a precedence decision that is explainable in the kernel and one that is explainable to the operator reading it.
+
+A second finding, smaller and sharper: the 0-versus-`False` conflation that motivated `PlaneValue`'s custom equality **reappeared inside the determinism test written to check it**, and was caught by Hypothesis rather than by review. Hardening a type does not harden the code that reasons about it.
+
+## Process facts
+
+**`makemigrations` ran in the background and silently overwrote the hand-written migration**, replacing it with schema operations only and dropping the `RunPython` step whose `WHERE` clause is the entire safety property. Caught by reading the file, not by any gate — the suite passes either way, because the deleted step only matters to data that exists in production and not in a test database. This is the project's own named failure class, from the 1.4.5 empty commit, recurring in the package that closes a defect about silent collapse. **A generated file that overwrites a hand-written one is a merge, not a regeneration, and nothing in the toolchain says so.**
+
+**The spec-first order earned its cost here, for a reason specific to it.** The two review passes happened against claims with no implementation making them look correct. The public-`.value` defect in particular would have been invisible in a normal-order review: the code would have compiled, passed, and shipped, and the reviewer would have been reading a green diff.
+
+## Carried forward
+
+- **CF-6 remains open**, scheduled to 1.5.1, and is untouched by this package.
+- **§10's all-attributes-required limit now has a second consequence**, recorded in DESIGN §13: it makes declared-absent unreachable through intent ingestion, so the end-to-end version of the wire-contract test cannot be written until that limit lifts.
+- **`present: boolean | null` is a three-state type in TypeScript**, and the third state exists only for rows predating this package. It empties under §23.4's retention policy and the type does not.
+
+## Next
+
+1.5.1, identity matching, in the normal order — §12 is marked Decided and already carries the strategy table, confidence, error bias, and a corpus with expected outcomes. **CF-6 is that package's first item**, because a confirmed match that does not survive a run makes strategy 1 unimplementable.

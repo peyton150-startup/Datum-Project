@@ -28,6 +28,19 @@ jobs:
         run: ruff check .
       - name: Type check (kernel modules)
         run: mypy datum/reconcile datum/intent datum/graph
+      # CF-3, the sharp edge. scripts/gen_ts_enums.py is the single source of
+      # truth binding Python enums to TypeScript, and nothing verified that the
+      # generated file still matched its source -- so the two languages could
+      # disagree about what `open` or `partial` means with CI green.
+      #
+      # Checked in this job rather than the web one because it needs Python and
+      # its dependencies, which are already installed here. Both jobs run on
+      # every push and pull request, so a hand-edited enums.ts is caught either
+      # way; the only difference is not installing Python twice.
+      - name: Generated enums match their Python source
+        run: |
+          python scripts/gen_ts_enums.py
+          git diff --exit-code -- web/src/enums.ts
       - name: Tests + coverage
         run: pytest
       # --no-cov is load-bearing: without it this second pytest run overwrites
@@ -48,3 +61,38 @@ jobs:
       - name: Kernel branch coverage gate
         run: |
           coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100
+
+  # CF-3. Until this job existed, everything under web/ had zero automated
+  # protection: the review queue, the API client, and the generated enums.
+  # Nothing blocked it technically -- it waited by choice, and the standing cost
+  # was that every web/ change was protected only by someone remembering to run
+  # three commands. This is the same failure class as the Ratchet incident named
+  # against work package 1.1.2: the safety net existed but was not covering the
+  # thing.
+  #
+  # A separate job rather than steps in the build job, because Python and Node
+  # share nothing here and a failure should say which language broke.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: web}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # Caching keeps this inside the free-tier budget the project is
+          # constrained to; without it every run re-downloads the whole tree.
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # ci, not install: it installs exactly the lockfile and fails if
+      # package.json and the lock disagree, so a dependency cannot drift in
+      # unnoticed the way the enums did.
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      # Runs tsc before vite, so this is the type check as well as the build.
+      - name: Type check and build
+        run: npm run build
+      - name: Tests
+        run: npm test

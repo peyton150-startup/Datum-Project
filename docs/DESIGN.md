@@ -78,7 +78,7 @@ The system has a **barricade** (ADR-008). Outside it, all data is untrusted. Ins
 | Intent document fails schema validation | Yes | Reject the whole revision, keep the previous one active |
 | Two declared resources claim the same identity | Yes | Reject at intent validation |
 | Diff engine receives a match whose two sides have different kinds | No | Assert. This is a bug. |
-| Precedence policy has no rule covering a field | Yes | Decide in phase 4 (default intent-wins vs hard error) |
+| Precedence policy has no rule covering a field | Yes | **Neither silent nor fatal.** The field yields an undecidable-precedence discrepancy and the run completes. Decided 2026-07-30, §23.6 |
 
 Exceptions crossing a module boundary carry that module's abstraction, not a lower one. No empty except blocks without a comment. Every exception message includes the identifiers needed to find the thing that failed. Offensive in development, graceful in production.
 
@@ -344,13 +344,35 @@ The correctness kernel. Highest review standard, reviewed by the model that did 
 - Orphan detection: declared-not-discovered and discovered-not-declared are different discrepancy types.
 - **Complexity ceiling:** no routine exceeds cyclomatic complexity 10, enforced in CI. If comparison logic needs more branching, it is a table.
 
+**WBS 1.5.2 is spec-first, decided 2026-07-30, and the reason is the second bullet above.** "Comparison semantics per attribute type" names five questions — sets versus lists, null versus absent, case and whitespace, numeric precision, timestamps and zones — and answers none of them. This section is a list of things to decide, not a decision.
+
+That is easy to miss because §12 sits next to it and is genuinely finished: matching has its strategy table, its confidence assignment, its error bias, and an adversarial corpus with expected outcomes, all written before its code. The diff engine has no equivalent. §12's corpus is about matching and does not exercise a single comparison rule. **The largest package in phase 4, and the one this document calls the correctness kernel, is the least specified thing in it** — which is precisely the shape of package where a wrong rule gets implemented, confirmed by tests written to match it, and handed over self-consistent.
+
+This section's own corpus, in the sense §12 has one, is part of 1.5.2's specification rather than of its implementation.
+
 ## 14. Precedence policy
 
-TO WRITE. Policy shape and granularity. Resolution order when several rules match. **Explainability is a hard requirement:** given a field, the engine returns the rule that decided it and why. Versioning, and what happens to open discrepancies when the policy changes. Implement as a lookup, not a conditional chain.
+**Specified before implementation (WBS 1.5.3 is spec-first).** Still TO WRITE: policy shape and granularity, resolution order when several rules match, versioning, and what happens to open discrepancies when the policy changes. Implement as a lookup, not a conditional chain.
+
+**Decided already, and binding on that specification:**
+
+- **Explainability is structural, not procedural.** Given a field, evaluation returns the rule that decided it *as part of the result type*. A log line satisfies the wording of D6 and not the requirement; a return type makes an unexplainable decision unrepresentable. The quality objectives' enforcement column reads "nothing yet" against D6 today, and this is what closes it.
+- **The result is a closed pair of cases:** a decision carrying its deciding rule, or an explicit undecidable. There is no third case in which a rule is synthesized to satisfy the type, because a synthesized rule is a silent default wearing the explainability guarantee as a costume.
+- **A missing rule does not fail the run** (§23.6). It fails the field, which becomes queue work.
+- **Rules are keyed on `(kind, field)` with no tenant dimension**, because kinds are global (§23). If that reopens, this table migrates with `Kind` and the RLS policies, together.
 
 ## 15. Discrepancy lifecycle
 
-TO WRITE. The state machine drawn, with allowed transitions and who may perform each. Suppression: required reason, required expiry, behavior on expiry. What a rediscovery of already-suppressed drift does. Immutability of transition history, enforced in the database.
+**Specified before implementation (WBS 1.5.4 is spec-first).** Still TO WRITE: the state machine drawn, with allowed transitions and who may perform each; suppression's required reason, required expiry, and behavior on expiry; what a rediscovery of already-suppressed drift does; immutability of transition history, enforced in the database.
+
+**Decided already, and binding on that specification:**
+
+- **A discrepancy is field-scoped, and its identity across runs is `(tenant, kind, scope, name, discrepancy_type, field_name)`** (§23.2), enforced by two partial unique indexes rather than one whole-table constraint. This is what lets a re-detected drift find its suppressed record instead of duplicating it — the named risk against this package.
+- **Terminal states distinguish who closed the record.** Human resolution and system closure are different facts, and a record vacated by an intent revision must not claim a reviewer looked at it (D11).
+- **Suppression is scoped to the record, not to the natural key.** A resource deleted from intent and later re-added gets fresh open records; the old suppression stays in history, inert (§23). Under a natural-key identity, resurrection is the default behaviour, so preventing it is a design act rather than an omission.
+- **Retention is per discrepancy, age-based, terminal states only.** Open records are never pruned; transition history is never pruned (§23.4).
+
+The current implementation has none of this. `run_reconciliation` deletes and rewrites every open discrepancy each run, `DiscrepancyState` carries two of the five states D7 requires, and `datum/workflow/models.py` is an empty file. The lifecycle is where discrepancy records stop being disposable, and every decision above exists because that transition is one-way.
 
 ## 16. API
 
@@ -417,11 +439,47 @@ See `docs/adr/`. Each ADR: context, options considered, decision, consequences, 
 **Open, answered when a second kind arrives:**
 8. How does a collector that owns more than one kind scope absence? Today one collector owns one kind, enforced by assertion, and absence is scoped by `(tenant, collector_name)`. A multi-kind collector needs the `Collector` protocol to declare the set of kinds it is responsible for, and absence scoped by `(tenant, collector_name, kind)` — so a run producing zero records for a kind it owns can still correctly infer absence for that kind, while never touching a kind it does not own. This joins the null-vs-absent simplification (§24) and the all-attributes-required limit (§10) in the cluster of things a second kind forces; they are revisited together, because a second kind is the event that turns each of them from a simplification into a defect.
 
-**Open, but not needed until phase 4:**
-2. Does a discrepancy attach to a field, a resource, or both?
-4. How much drift history is retained, and is it per resource or per discrepancy? *(Phase 2 raises the stakes on this: full-rebuild projection grows rows per revision, so retention is now about the declared plane too, not only drift history.)*
-5. Is the synthetic estate generator a permanent part of the product or a test fixture?
-6. Does a missing precedence rule default to intent-wins, or is it a hard error?
+**Resolved at the opening of phase 4 (2026-07-30), before the code that assumes them:**
+
+These four were deferred as independent questions. They are not independent. Five of the six decisions taken that day are the same question wearing different hats — **when does a discrepancy acquire a durable identity, and what is that identity made of?** Attachment defines it, suppression depends on it, retention bounds it, intent deletion tests it, and re-adding a deleted resource attacks it. They were answered from that rule rather than one at a time, because four locally sensible answers that do not compose is the failure mode available here.
+
+2. ~~Does a discrepancy attach to a field, a resource, or both?~~ **A field**, and the identity that follows is `(tenant, kind, scope, name, discrepancy_type, field_name)`.
+
+   The stakes are not display; the review queue may group by resource either way. The stakes are identity across runs, which is the named risk against 1.5.4 — re-detected drift duplicating suppressed records. Once suppression is durable, re-detection must find the existing record rather than write a second one, and that needs a stable key.
+
+   Take `field_name` out of that key and a record's *content* changes between runs while its *identity* does not. Someone suppresses drift on `replicas`; months later the same resource drifts on `image`, matches the same identity, and is covered by the earlier suppression with the earlier reason attached. The suppression outlives the fact it was made about, and nothing surfaces — the queue is merely quieter than it should be. Field-level identity makes that unrepresentable: a new field is a new record.
+
+   Accepted cost: a fifty-field drift is fifty rows. That is what D8's bulk actions are for; it is a UI problem, not a schema one.
+
+   **Enforced by a partial unique index, not a plain one.** `FIELD` rows carry a `field_name`; orphan rows do not, and Postgres treats NULLs as distinct, so a single unique constraint over the six columns would let duplicate orphans through while appearing to prevent them. Two partial indexes — one `WHERE field_name IS NOT NULL`, one `WHERE field_name IS NULL`. A constraint that looks enforced and is not is this project's own named failure class.
+
+4. ~~How much drift history is retained, and is it per resource or per discrepancy?~~ **Per discrepancy, age-based, terminal states only.** Open records are never pruned. Resolved, vacated, and expired-suppressed records are pruned after a configured age. Transition history is never pruned, because D11 requires history to survive the resource. The declared plane keeps a separate policy, because its growth is per intent revision — bounded by commit rate — while discrepancy growth is per collector run times drifted fields, which is faster by an order of magnitude and multiplied by the field-level decision above.
+
+   Decided now rather than later because nothing currently retains anything: `run_reconciliation` deletes and rewrites every open discrepancy each run, and that accidental bound disappears the moment suppression makes records durable. Retrofitting a policy means deciding what to do with rows already accumulated under none.
+
+5. ~~Is the synthetic estate generator a permanent part of the product or a test fixture?~~ **A fixture, plus a seeding command. No UI, no API surface, no support commitment.**
+
+   The fixture/feature framing was a false binary: D14 requires a public demo seeded with drift, so the generator already has a phase 5 job that is not a test. Answering "fixture" flatly and discovering that dependency in phase 5 is how fixture-grade code gets promoted to production. "Invoked by a management command during demo seeding" and "a user-facing capability with docs and a support story" are different commitments, and only the first is taken.
+
+   **The standing tension, recorded because it will pull:** the risk already named against 1.2.3 is generated drift too tidy to be a real test. Two audiences pull opposite ways — the demo wants drift that reads well, the adversarial corpus wants drift designed to break the matcher. When they conflict, the corpus wins, because the demo has a person looking at it and the corpus does not.
+
+6. ~~Does a missing precedence rule default to intent-wins, or is it a hard error?~~ **Neither exactly: the field yields an undecidable-precedence discrepancy and the run completes.**
+
+   The error-versus-default framing left out the question that decides whether strictness is livable — the *blast radius*. Reconciliation is a batch job over a whole estate in one transaction, so a raise on one uncovered field kills reconciliation for the entire tenant. Phase 3 already answered the analogous question for collectors: one bad record does not take the good ones with it. The same shape applies. Precedence for that field is undecidable, so it surfaces in the queue as work to do, and every other field reconciles.
+
+   This keeps both properties that mattered. Nothing is silently decided, so the result type's guarantee holds — `evaluate` returns either a decision carrying its deciding rule or an explicit `Undecidable`, and there is no third case where a rule is invented to satisfy the type. And the estate still reconciles, so a gap in policy is a queue item rather than an outage.
+
+   A silent intent-wins default was refused on the reversal asymmetry this document already used to defer optionality in §10: loosening later breaks nothing, tightening later breaks every install that leaned on the default — and worse, nothing recorded which fields were deliberate and which were forgotten.
+
+**Also resolved 2026-07-30**, from the project plan's own known-incompleteness note, which scheduled them before phase 4 rather than during it:
+
+- **An intent revision deletes a resource with open discrepancies.** Those records are **system-closed to a state distinct from human resolution**, carrying the system actor and the revision that vacated them. D11 auditability is the reason for the distinct state: nobody reviewed those records, and a record that says `RESOLVED` claims somebody did. The resource then reappears at the next run as `DISCOVERED_UNDECLARED` on its own, which is simply true — it is in the estate and nobody declares it. No cascade is involved; `Discrepancy` denormalizes the natural key and holds no foreign key to either plane, which is what lets history survive the resource.
+
+- **A deleted resource that is later re-added does not inherit its earlier suppressions.** Suppression is scoped to the record, and the record closed at deletion; the re-added resource gets fresh open records. Old suppressions remain in history, inert. This follows directly from the identity rule rather than being a separate policy: a suppression must never outlive the fact it was made about, and a resource can be deleted and re-added with entirely different attributes. Under a natural-key identity, resurrection is the *default* behaviour and has to be prevented deliberately, which is why it is written down rather than left to emerge.
+
+- **Kinds are global only.** `Kind.name` is already globally unique, so this ratifies the status quo rather than changing it, and precedence rules stay keyed on `(kind, field)` with no tenant dimension. Timing is the reason it is answered now: precedence rules are per kind and per field, so tenant-defined kinds would put a tenant dimension in the precedence table — and 1.5.3 is being written now. Deciding after 1.5.3 ships means migrating the precedence model as well as the kind model. **Trigger to reopen:** a tenant needs a kind the project will not ship globally. The reversal then touches `Kind`, the RLS policies, and the precedence table together.
+
+**Open, still not due:**
 
 ## 24. How this design could fail
 

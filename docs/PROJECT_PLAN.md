@@ -52,7 +52,7 @@ This column exists so an objective with nothing behind it is visible *before* it
 | Intent correctness | Whole-revision validation that accumulates every error before rejecting, four blocking layers, and branch coverage gated at 100% |
 | A conflict never surfaces as the database's exception | Conversion at the intent boundary for both ways a race loses — constraint and transaction rollback — and a review-checklist line |
 | Read-only toward the estate | **Intent only.** No mechanism prevents a collector from issuing a write; ADR-007 and the `Collector` protocol's documented prohibitions are all that stand there. The protocol gives an adapter no writing tool, which is weak enforcement rather than none |
-| Precedence explainability (D6) | **Nothing yet.** Phase 4 work. See the Phase 4 entry condition at the end of this document |
+| Precedence explainability (D6) | **Still nothing, but the mechanism is now decided rather than aspirational.** As of 2026-07-30, evaluation returns the deciding rule inside its result type, and a missing rule returns an explicit undecidable rather than a synthesized one — so there is no case where the type is satisfied by inventing a rule. Structural once 1.5.3 ships; this row stays "nothing" until it does, because a decision is not an enforcement |
 | Review queue usability (D8) | **Nothing yet.** `dont-make-me-think-ui` is bound to 1.5.5, and the keyboard path is the only part with a test |
 | Whole-system understandability | The construction conventions, the two-tier review rule, and CI refusing unformatted or lint-failing code |
 | Performance | Nothing, deliberately. Nothing here is tuned until measured, and the benchmark is scheduled per phase close rather than enforced per commit |
@@ -118,6 +118,8 @@ The first draft specified what the system does and skipped what it must be. Each
 | Accessibility | Review queue is fully keyboard operable. | Manual pass, no mouse |
 
 **Known incompleteness, flagged rather than guessed:** retention policy for drift history, behavior when an intent revision deletes a resource with open discrepancies, and whether tenants may define their own kinds or only use global ones. These are resolved before phase 4, not now. Flagging them is deliberate: an iterative project is allowed to leave requirements open, but it is not allowed to leave them unnoticed.
+
+**All three were answered at the opening of phase 4 on 2026-07-30, on the schedule this note set.** Rationale in DESIGN §23; the decisions themselves are summarised in "Phase 4 opening decisions" at the end of this document. Recorded here rather than only there because the value of a flagged gap is that someone can check it closed on time, and that check has to be possible from where the flag was raised.
 
 ### Stakeholders
 
@@ -622,6 +624,10 @@ The specific instance, and the reason this is a condition rather than advice: **
 
 # START HERE at the opening of Phase 4
 
+> **STATUS as of 2026-07-30: every decision this section demanded has been made.** All six questions are answered in DESIGN §23, and the spec-first call is made below. **Read "Phase 4 opening decisions" at the end of this document first** — it carries the answers. This section is kept unedited as the record of what was due and why, because the reasoning for *when* a question becomes expensive is worth more than the answer it produced.
+>
+> The one thing below that did not survive contact: the spec-first default it proposed was drawn on code tier, and tier turned out to be the wrong predictor. See the decisions section.
+
 Written at Phase 3 close for whoever opens Phase 4, which may be a session with no memory of this one. Nothing below is a suggestion; each item is a decision that must be made *before* the code that depends on it, and each one has a reason it cannot be deferred again.
 
 Phase 4 is the largest phase and the whole of the critical path: matching, diff, precedence, discrepancy lifecycle, and two UIs. It is also where four questions deliberately left open finally come due, because Phase 4 is the thing that needed them.
@@ -665,3 +671,56 @@ So the honest answer is that the balance has shifted and the decision should be 
 - **Two collectors exist and each owns one kind.** Kubernetes has a live path (`DATUM_K8S_LIVE=1` to run it); OCI reads recorded payloads only, and D3 is recorded as met-minus-the-live-read for that reason.
 - **The review tiers are three now, not two** — kernel, boundary, bulk. See CLAUDE.md. Boundary code gets non-authoring review, and the reason is in the Phase 3 close.
 - **The quality objectives have an enforcement column.** Two entries read "nothing yet"; one of them is precedence explainability, which is Phase 4's job.
+
+---
+
+# Phase 4 opening decisions (2026-07-30)
+
+Seven decisions, taken before any Phase 4 code. Full rationale for the six question-answers is in DESIGN §23, §14, and §15; this is the index and the two findings that only appeared while deciding.
+
+| Decision | Answer | Written in |
+|---|---|---|
+| §23.2 Discrepancy attachment | **Field**, identity `(tenant, kind, scope, name, type, field_name)`, two partial unique indexes | DESIGN §23.2, §15 |
+| §23.6 Missing precedence rule | **Undecidable discrepancy, run completes.** Not silent, not fatal | DESIGN §23.6, §6, §14 |
+| §23.4 Retention | **Per discrepancy, age-based, terminal states only.** Open never pruned, history never pruned | DESIGN §23.4 |
+| §23.5 Estate generator | **Fixture plus a seeding command.** No UI, no API, no support commitment | DESIGN §23.5 |
+| Intent deletes a resource with open discrepancies | **System-closed to a state distinct from human resolution**, carrying actor and revision | DESIGN §23 |
+| Re-added resource inherits suppressions? | **No.** Suppression is scoped to the record, not the natural key | DESIGN §23 |
+| Spec-first, and for which packages | **1.5.0, 1.5.2, 1.5.3, 1.5.4.** 1.5.1 excluded | below, and DESIGN §13 |
+
+## The first finding: six of these were one question
+
+They were deferred separately and read as independent. They are not. Five of the seven are the same question wearing different hats — **when does a discrepancy acquire a durable identity, and what is that identity made of?** Attachment defines it. Suppression depends on it. Retention bounds it. Intent deletion tests it. Re-adding a deleted resource attacks it.
+
+Answered one at a time in the order the START HERE section listed them, they would have produced four locally sensible answers that do not compose. The resurrection case shows why: under a natural-key identity, a deleted-then-re-added resource inherits its old suppressions *by default*, silently, and nothing in the attachment question or the retention question would have surfaced that. It is only visible once the identity rule is written down as a rule.
+
+**The transferable part is not the answer, it is the grouping.** A list of deferred questions accumulates in the order the questions were noticed, which is unrelated to the order they depend on each other. Sorting them before answering them cost one pass and changed three answers.
+
+## The second finding: the spec-first default was drawn on the wrong axis
+
+The START HERE section proposed spec-first for 1.5.3 and 1.5.4, with 1.5.1 and 1.5.2 taking the normal order because DESIGN §12's adversarial corpus already acts as a specification written before the code. **That reasoning does not survive reading §12 and §13 next to each other.**
+
+§12 (matching, 1.5.1) is marked **Decided**. It carries the strategy priority table, confidence per strategy, the error-bias rule, the one-to-one Postgres constraint, and a seven-case corpus with expected outcomes. That is a specification, written before the code, already reviewed.
+
+§13 (diff engine, 1.5.2) carries four bullets, one of which lists five comparison-semantics questions and answers none of them, and it has no corpus. **§12's corpus is about matching and does not exercise a single comparison rule.** The claim that it covered both packages was made by proximity, not by reading.
+
+So the largest package in the phase, which this design calls the correctness kernel, was scheduled for the normal order on the strength of a specification belonging to a different package.
+
+| Package | Spec state before this decision | Order |
+|---|---|---|
+| 1.5.0 Null-versus-absent | §24 names the defect; no representation decided | **Spec-first**, short |
+| 1.5.1 Matching | §12 Decided — rules, confidence, corpus with outcomes | Normal |
+| 1.5.2 Diff engine | §13 — five open questions, no corpus | **Spec-first** |
+| 1.5.3 Precedence | §14 TO WRITE | **Spec-first** |
+| 1.5.4 Lifecycle | §15 TO WRITE | **Spec-first** |
+| 1.5.5, 1.5.6 UIs | Bulk | Normal |
+
+1.5.0 earns a short pass despite being one week and sitting first on the critical path, because its output is a **cross-language representation**: "absent" must be expressible in the `declared_value` and `discovered_value` JSONB columns, in the API schema, and in the generated TypeScript, and `null` is already taken. This repository has a CI enum-drift check precisely because cross-language disagreement is a known failure mode here.
+
+**The rule that replaces the tier heuristic: spec-first is earned by a package whose rules are not yet written down, not by a package's code tier.** Tier predicts how carefully code is reviewed. It does not predict whether anyone has decided what the code should do, and those are different gaps with different remedies.
+
+## What this does not decide
+
+The two gates set at Phase 3 close stand unchanged and needed no new decision: 1.5.0 completes before 1.5.3 and 1.5.4, and interfaces are built before the bulk work sitting on them. DESIGN §23.8 (multi-kind collector absence) remains open and not due; its trigger is still unfired, since each collector owns exactly one kind.
+
+Nothing here schedules work. The next act is 1.5.0's specification.

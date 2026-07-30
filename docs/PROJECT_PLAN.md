@@ -389,13 +389,13 @@ The escape hatch above fired exactly as written. Phase 2 replaces the document f
 
 **CF-2 is done in 1.3.1 and removed from 1.4.5.** Work package 1.4.5 now carries CF-1 and CF-3 only. This is the cheap outcome the deferral decision was designed to allow, not a reversal of it.
 
-Until 1.4.5 runs, the mitigations below are what stands between these defects and a user.
+All three are now fixed. The mitigations below are kept as the record of what stood between each defect and a user while it was deferred, and of which package actually closed it.
 
 | ID | Defect | Owning module | Mitigation while deferred |
 |---|---|---|---|
-| CF-1 | Collector drops good records on one bad record | `datum/discovery/collector.py` | Single-record fixture only. Do not point the collector at a multi-record source before 1.4.5. |
+| CF-1 | ~~Collector drops good records on one bad record~~ | `datum/discovery/collector.py` | **Fixed 2026-07-29 in 1.4.1.** Folded into the collector framework rather than patched: the fetch/normalize split means an adapter is never handed the collection it would have to abort. |
 | CF-2 | ~~Duplicate declared identity caught by a DB constraint, not the validator~~ | `datum/intent/documents.py`, `ingest.py` | **Fixed 2026-07-27 in 1.3.1.** No longer deferred; see the update above. |
-| CF-3 | CI never builds or tests `web/` | `.github/workflows/ci.yml` | `npm run lint`, `npm run build`, and `npm test` all pass locally and must be run by hand before any `web/` change is pushed. |
+| CF-3 | ~~CI never builds or tests `web/`~~ | `.github/workflows/ci.yml` | **Fixed 2026-07-29 in 1.4.5.** A `web` job runs lint, type check, build, and tests; the Python job asserts the generated enums still match their source. No `web/` change depends on anyone remembering three commands. |
 
 ### CF-1 → **1.4.4 Partial-failure and idempotency handling** (Phase 3, Discovery) · executed in **1.4.5**
 

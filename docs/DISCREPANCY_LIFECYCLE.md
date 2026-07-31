@@ -1,6 +1,6 @@
 # WBS 1.5.4: Discrepancy Lifecycle
 
-**Status:** Specification (to be decided)
+**Status:** Specification (revised 2026-07-30)
 
 **Scope:** The state machine for discrepancies: transitions, who may perform each, suppression semantics, rediscovery, and retention.
 
@@ -207,17 +207,21 @@ class DiscrepancyState(TextChoices):
     MUTED = "muted"            # System: discovered resource gone (no action possible)
 ```
 
-### Decision 2: Linear Transitions (No Re-opening)
+### Decision 2: Linear Human Transitions, Automatic System Reversions
 ```
-OPEN →┬→ RESOLVED
-      ├→ SUPPRESSED (with expiry date)
-      ├→ INVALIDATED (system-initiated)
-      └→ MUTED (system-initiated)
+OPEN →┬→ RESOLVED (human action; terminal)
+      ├→ SUPPRESSED (human action; soft terminal)
+      ├→ INVALIDATED (system action; terminal)
+      └→ MUTED (system action; terminal)
 
-Suppressed can auto-revert to OPEN if suppression expires and discrepancy re-detected.
+Automatic reversions (system-driven, not human re-opening):
+  SUPPRESSED → OPEN (only if suppression expiry passes and discrepancy still exists)
+  RESOLVED → OPEN (only if discrepancy is re-detected in next run)
 ```
 
-### Decision 3: Suppression = Expiry + Reason
+**Clarification:** "No re-opening" means humans cannot manually transition RESOLVED or SUPPRESSED back to OPEN. Only automatic system processes can revert these states. This preserves operator intent while allowing the system to resurface persistent problems.
+
+### Decision 3: Suppression = Expiry + Reason, Decoupled from Retention
 ```python
 class Discrepancy(models.Model):
     # ... existing fields ...
@@ -229,7 +233,8 @@ class Discrepancy(models.Model):
     suppressed_by: CharField(null=True)  # Username who suppressed it
     suppressed_at: DateTimeField(null=True)  # When suppression started
     suppression_reason: TextField(null=True)  # Why suppressed (required if state=SUPPRESSED)
-    suppression_expires_at: DateTimeField(null=True)  # null = permanent
+    suppression_expires_at: DateTimeField(null=True)  # When operator wants to review again
+                                                       # null = never auto-reopen, but still subject to retention
 
     # System-initiated closure
     invalidated_at: DateTimeField(null=True)  # When system invalidated (declared gone)
@@ -239,17 +244,36 @@ class Discrepancy(models.Model):
     muted_reason: CharField(null=True)  # e.g., "discovered_resource_absent"
 ```
 
-### Decision 4: Rediscovery = Extend Suppression (Silent)
-- If suppressed discrepancy is re-detected before expiry: update values, keep suppressed, extend expiry by original duration
-- Example: suppressed 1 day ago with 7-day expiry (6 days remaining). Re-detected → expiry becomes +7 days from now
-- Operator sees in history that it re-detected, but queue doesn't reopen
+**Suppression Semantics:**
+- `suppression_expires_at = NULL`: Operator never wants to revisit this. System will **never auto-reopen** it.
+- `suppression_expires_at = TIMESTAMP`: Auto-reopen on that date (if discrepancy still exists).
+- **Independent from retention:** Retention policy (90 days) applies to SUPPRESSED records regardless of expiry setting. Rows are deleted after 90 days in terminal state; audit history is kept forever in DiscrepancyTransition.
 
-### Decision 5: System Closure on Next Reconciliation Run
+### Decision 4: Rediscovery = Keep Original Expiry, Track Re-detection
+- If suppressed discrepancy is re-detected: update values, keep expiry unchanged, add DiscrepancyTransition record
+- Example: suppressed with 7-day expiry (expires 2026-08-30). Re-detected on 2026-08-15 → expiry stays 2026-08-30 (no change)
+- Operator sees in history that it re-detected (transition record), but queue doesn't reopen and expiry doesn't slide
+- **Rationale:** Prevents indefinite deferral of chronic bugs. Original expiry is hard commitment; rediscoveries just add audit trail.
+
+### Decision 4b: RESOLVED Rediscovery = Revert to OPEN, Track Persistence
+- If RESOLVED discrepancy is re-detected in next reconciliation run: transition back to OPEN, add DiscrepancyTransition record
+- Example: operator resolved discrepancy (marked as "no action needed"). Next run detects same discrepancy → state returns to OPEN
+- Queue shows it again; operator can re-resolve or suppress
+- **Rationale:** Ensures operator learns if resolution didn't stick. Prevents silent accumulation of resolved-but-persistent issues.
+
+### Decision 5: Identity Persistence Across Runs (Stateful)
+- Same logical discrepancy identity `(tenant, kind, scope, name, discrepancy_type, field_name)` maps to same row across reconciliation runs
+- Rows are reused, not created fresh each run
+- Unique constraint allows only one row per identity in active states (OPEN, RESOLVED, SUPPRESSED)
+- Terminal states (INVALIDATED, MUTED) are excluded from uniqueness, allowing history rows
+- **Implementation:** During reconciliation, look up existing row by identity before creating new one; update if found
+
+### Decision 6: System Closure on Next Reconciliation Run
 - During `_invalidate_unanchored` (matching phase): detect declared resources that vanished → mark their discrepancies INVALIDATED
 - During diff phase: detect discovered resources that vanished (is_absent=True) → mark their discrepancies MUTED
 - Operators see the state transition in history
 
-### Decision 6: Full Audit Trail via History Table
+### Decision 7: Full Audit Trail via History Table
 ```python
 class DiscrepancyTransition(models.Model):
     discrepancy: ForeignKey(Discrepancy)
@@ -264,17 +288,29 @@ class DiscrepancyTransition(models.Model):
     values_at_transition: JSONField  # Snapshot of declared/discovered values
 ```
 
-### Decision 7: Hybrid Permissions
+### Decision 8: Hybrid Permissions
 - **Humans:** OPEN → RESOLVED, OPEN → SUPPRESSED (via workflow UI)
-- **System:** OPEN → INVALIDATED (on declared deletion), OPEN → MUTED (on discovered absence)
+- **System:** OPEN → INVALIDATED (on declared deletion), OPEN → MUTED (on discovered absence), RESOLVED → OPEN (on rediscovery)
 - Each transition logged with actor
 
-### Decision 8: OPEN Never Pruned, Terminal 90 Days
-- CI job runs daily:
-  - Delete `RESOLVED` and `SUPPRESSED` (expires_at passed) older than 90 days
-  - Keep `INVALIDATED` and `MUTED` for 90 days (audit trail)
-  - Keep all `DiscrepancyTransition` records forever (immutable history)
-- Tenants cannot override retention (simplifies admin)
+### Decision 9: OPEN Never Pruned, Terminal 90 Days, Suppression Independent from Retention
+
+**Retention Policy (for Discrepancy table):**
+- `OPEN` records: kept indefinitely (never deleted unless manually closed)
+- `RESOLVED` records: deleted after 90 days in terminal state
+- `SUPPRESSED` records: deleted after 90 days in terminal state (regardless of `suppression_expires_at`)
+- `INVALIDATED` and `MUTED` records: deleted after 90 days in terminal state
+
+**Suppression Semantics (independent of retention):**
+- `suppression_expires_at = NULL`: Never auto-reopen, but still subject to 90-day retention
+- `suppression_expires_at = TIMESTAMP`: Auto-reopen on that date if discrepancy still detected, then subject to 90-day retention
+
+**Audit Trail (DiscrepancyTransition):**
+- All transition records kept forever (never pruned)
+- Provides immutable history even after main Discrepancy row is deleted
+- This decouples workflow visibility (suppression expiry) from data retention (90 days)
+
+**Rationale:** Suppression expiry controls operator workflow (when to review), retention controls table hygiene (when to delete old records). These are independent policies. Without DiscrepancyTransition, operator can query history; with it, audit trail persists forever.
 
 ---
 
@@ -283,32 +319,33 @@ class DiscrepancyTransition(models.Model):
 ```
 ┌─────────────┐
 │   OPEN      │ ← Initial state (detected by diff engine)
-└──┬──────┬──┬┘
-   │      │  │
-   │      │  └──────────────────────┐
-   │      │                         │
-   ▼      ▼                         ▼
-┌─────────────────┐   ┌──────────────────────┐
-│   RESOLVED      │   │   SUPPRESSED         │
-│ (acknowledged)  │   │ (expires_at = null   │
-└─────────────────┘   │  OR timestamp)       │
-                      └────────┬─────────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    │                     │
-         (expires_at passes)   (re-detected)
-                    │                     │
-                    ▼                     ▼
-            [Revert to OPEN]      [Extend expiry]
-                                (stay SUPPRESSED)
+└──┬──────┬──┬────────────────────┬─────────────┐
+   │      │  │                    │             │
+   │      │  │ (human)            │ (system)    │ (system)
+   ▼      ▼  ▼                    ▼             ▼
+┌──────────────────┐  ┌────────────────────┐  ┌──────────────────┐
+│   RESOLVED       │  │   SUPPRESSED       │  │  INVALIDATED     │
+│ (acknowledged)   │  │ (expires_at or     │  │ (declared gone)  │
+│                  │  │  NULL)             │  │                  │
+└────────┬─────────┘  └────────┬───────────┘  └──────────────────┘
+         │                     │
+    (re-detected)          (expires or re-detected)
+         │                     │
+         │              ┌──────┴────────┐
+         │              │               │
+         └─────┬────────┘               ▼
+               │                    [Keep expiry,
+               │                     track in history]
+               │
+               ▼
+          [Revert to OPEN]
 
-Parallel (system-initiated):
-
-OPEN ──────────────→ INVALIDATED
-(declared deleted)   (immutable history)
+Parallel (system-initiated, terminal):
 
 OPEN ──────────────→ MUTED
-(discovered absent)  (immutable history)
+(discovered absent)  (resource gone)
+
+**Key:** Human transitions are deterministic and explicit. System transitions (rediscovery) are automatic. Terminal states are immutable; only DiscrepancyTransition records grow.
 ```
 
 ---
@@ -325,39 +362,51 @@ OPEN ──────────────→ MUTED
 - Human clicks "Suppress for 7 days" with reason "known drift, team working on it"
 - Expected: state → SUPPRESSED, suppression_expires_at=now+7d, reason stored, transition logged
 
-### Scenario 3: Rediscovery Before Expiry
-- Discrepancy SUPPRESSED, expires in 3 days
-- Next reconciliation run: same discrepancy re-detected
-- Expected: values updated, suppression_expires_at extended to now+7d (original duration), state stays SUPPRESSED
+### Scenario 3: Rediscovery Before Expiry (SUPPRESSED)
+- Discrepancy SUPPRESSED, expires 2026-08-30
+- Next reconciliation run on 2026-08-15: same discrepancy re-detected
+- Expected: values updated, suppression_expires_at stays 2026-08-30 (unchanged), DiscrepancyTransition records "re-detected on 2026-08-15"
 
 ### Scenario 4: Suppression Expires, No Rediscovery
-- Discrepancy SUPPRESSED, expires today
-- No new reconciliation run
-- CI cleanup job runs tomorrow
-- Expected: deleted (90+ days after SUPPRESSED)
+- Discrepancy SUPPRESSED with expires_at=2026-08-30, created 2026-07-30
+- On 2026-09-30, CI cleanup job runs (90 days after state change)
+- Expected: deleted from Discrepancy table; DiscrepancyTransition records remain
 
-### Scenario 5: Declared Resource Deleted
+### Scenario 5: Suppression with NULL expires_at (Never Reopen)
+- Discrepancy SUPPRESSED with expires_at=NULL, created 2026-07-30
+- Next run: same discrepancy re-detected
+- Expected: values updated, state stays SUPPRESSED, never auto-reopens
+- On 2026-09-30, CI cleanup job deletes record after 90 days (retention independent of expiry)
+
+### Scenario 6: RESOLVED Rediscovery
+- Discrepancy RESOLVED (alice marked "no action needed"), created 2026-07-30
+- Next reconciliation run detects same discrepancy still exists
+- Expected: state → OPEN, DiscrepancyTransition records "re-detected on 2026-08-01", queue shows it again
+- Operator can re-resolve or suppress it this time
+
+### Scenario 7: Declared Resource Deleted
 - Discrepancy exists on `Deployment.cpu`
 - Intent commit deletes the Deployment
 - Next reconciliation run
 - Expected: during matching phase, resource vanishes, discrepancy → INVALIDATED, reason="declared_resource_deleted"
 
-### Scenario 6: Discovered Resource Vanishes
+### Scenario 8: Discovered Resource Vanishes
 - Discrepancy exists on `Deployment.labels`
 - Collector detects resource gone (is_absent=True)
 - Next reconciliation run
 - Expected: during diff phase, no discovered snapshot, discrepancy → MUTED, reason="discovered_resource_absent"
 
-### Scenario 7: Transition History Immutable
-- Discrepancy: OPEN → RESOLVED (alice) → [RESOLVED deleted after 90d]
+### Scenario 9: Transition History Immutable
+- Discrepancy: OPEN → RESOLVED (alice, 2026-07-30) → OPEN (system re-detected, 2026-08-01) → SUPPRESSED (bob, 2026-08-01)
+- On 2026-10-01, SUPPRESSED record deleted (90+ days in terminal state)
 - Later query to DiscrepancyTransition table
-- Expected: transitions still there, showing full history
+- Expected: all transitions still there, showing full history even though main row is deleted
 
-### Scenario 8: Re-added Resource Gets Fresh OPEN
-- Resource deleted from intent, discrepancies → INVALIDATED
-- Resource re-added to intent
-- Next reconciliation run detects discrepancy
-- Expected: new OPEN record (different identity per run? or resurrect INVALIDATED?)
+### Scenario 10: Stateful Row Identity Across Runs
+- Run 1: Field `replicas` differs → Discrepancy created (id=D1)
+- Run 2: Same field, same resource → Lookup by identity finds D1, update with new values
+- Run 3: Field matches → Same D1 row still exists but values updated to "match"
+- Expected: same row (id=D1) reused; not creating new rows per run
 
 ---
 
@@ -433,7 +482,70 @@ class DiscrepancyTransition(models.Model):
 
 ## Implementation Notes
 
-- Suppression expiry is checked during reconciliation: if SUPPRESSED record exists and expires_at < now, it can transition back to OPEN
-- Cleanup job (`datum/workflow/tasks.py`): daily purge of terminal records older than 90 days
-- Workflow UI: needs RESOLVED and SUPPRESSED buttons with reason fields
-- History immutability: delete operations only on main Discrepancy table after retention period; Transition records never deleted
+- **Rediscovery logic:** During reconciliation, look up existing discrepancy by identity `(tenant, kind, scope, name, discrepancy_type, field_name)` before creating new one. If found:
+  - RESOLVED → revert to OPEN, create transition record
+  - SUPPRESSED → update values, keep expiry unchanged, create transition record
+  - Otherwise create new OPEN record
+
+- **Expiry checking:** During reconciliation, if SUPPRESSED record has `expires_at < now`:
+  - If discrepancy still detected: revert to OPEN
+  - If discrepancy not detected: stay SUPPRESSED (will be deleted by retention job)
+
+- **Retention job** (`datum/workflow/tasks.py`): daily purge of terminal records older than 90 days:
+  ```python
+  for state in [RESOLVED, SUPPRESSED, INVALIDATED, MUTED]:
+      Discrepancy.objects.filter(
+          state=state,
+          created_at__lt=now - 90 days
+      ).delete()
+  # DiscrepancyTransition records NEVER deleted
+  ```
+
+- **Workflow UI:** needs RESOLVED and SUPPRESSED buttons with reason fields; suppression form asks for expiry date (with "never" option for NULL)
+
+- **History immutability:** Delete operations only on main Discrepancy table after retention period; Transition records kept forever for audit trail
+
+---
+
+## Architectural Decisions Resolved
+
+### Concern 1: "Linear transitions" vs "auto-revert on expiry" ✅
+- **Resolution:** Clarified distinction between human re-opening (forbidden) and automatic system reversion (allowed)
+- **Implementation:** Only system can revert RESOLVED→OPEN or SUPPRESSED→OPEN via rediscovery logic
+
+### Concern 2: Rediscovery extends expiry indefinitely ✅
+- **Resolution:** Chose Option C (keep original expiry)
+- **Rationale:** Prevents eternal deferral. Rediscovery updates values but expiry date is hard deadline set by operator
+- **Audit:** DiscrepancyTransition records track every rediscovery, so operator can see pattern
+
+### Concern 3: INVALIDATED/MUTED consolidation ✅
+- **Resolution:** Keep separate states
+- **Rationale:** Mirrors Match model pattern; provides semantic clarity in state name
+
+### Concern 4: RESOLVED rediscovery undefined ✅
+- **Resolution:** Chose Option C (revert to OPEN)
+- **Rationale:** Ensures operator learns if resolution didn't stick; prevents silent accumulation of unresolved drift
+
+### Concern 5: Identity persistence model ✅
+- **Resolution:** Chose Option B (stateful, reuse rows across runs)
+- **Rationale:** Matches current code intent (rows represent logical discrepancies, not run artifacts)
+- **Implementation:** Look up by identity before creating; update if found
+
+### Concern 6: Unique constraint allows resurrection ✅
+- **Resolution:** Intentional per DESIGN 12
+- **Rationale:** INVALIDATED/MUTED excluded from uniqueness; same identity can be OPEN again after terminal state
+- **Pattern:** New OPEN record created, not resurrection of old row
+
+### Concern 7: Retention vs suppression independence ✅
+- **Resolution:** Chose Option B revised (NULL = never reopen, independent from retention)
+- **Rationale:** Decouples workflow visibility (expiry) from data hygiene (90-day retention)
+- **Benefit:** Solves "permanent suppression living forever" problem without coupling concerns
+
+### Concern 8: Mutable row vs immutable history ✅
+- **Resolution:** Explicit in schema and implementation notes
+- **Clarification:** Discrepancy row is mutable (values, states update); DiscrepancyTransition is immutable (audit trail)
+
+### Concern 9: MUTED naming clarity ✅
+- **Resolution:** Keep MUTED, document meaning
+- **Rationale:** Mirrors Match.INVALIDATED pattern; consistency across boundaries
+- **Documentation:** Comments explain "discovered resource disappeared, nothing to reconcile"

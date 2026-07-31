@@ -13,7 +13,13 @@ from datum.enums import (
 from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
 from datum.reconcile.diff import reconcile
-from datum.reconcile.domain import DiscrepancySet, MatchDecision, MatchResult, NaturalKey, ResourceSnapshot
+from datum.reconcile.domain import (
+    DiscrepancySet,
+    MatchDecision,
+    MatchResult,
+    NaturalKey,
+    ResourceSnapshot,
+)
 from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
 

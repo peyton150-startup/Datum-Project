@@ -85,6 +85,30 @@ def test_a_written_match_carries_the_anchor_it_was_decided_about(intent_repo):
     assert match.discovered_provider_id == "uid-web-1"
 
 
+def test_two_pairs_in_one_run_get_two_distinct_anchors(intent_repo):
+    """The shape the defect actually took, reproduced at its narrowest.
+
+    Both pairs are the same kind in the same scope, so the anchor differs by
+    name alone -- the least distinguishing case, and the one an empty anchor
+    collapses. `uq_active_match_per_declared` is unique over the four columns,
+    so before the fix the second write raised IntegrityError rather than
+    producing a wrong row: two matches existing at all is the assertion.
+    """
+    ingest_revision(TENANT, intent_repo("fixtures/intent-repo-v2"))
+    run_collector(from_recording("fixtures/k8s/deployments-pair.json"), TENANT)
+
+    run_reconciliation(TENANT)
+
+    anchors = {
+        (m.declared_kind, m.declared_scope, m.declared_name, m.discovered_provider_id)
+        for m in Match.objects.filter(tenant_id=TENANT)
+    }
+    assert anchors == {
+        ("Deployment", "default", "web", "uid-web-1"),
+        ("Deployment", "default", "api", "uid-api-1"),
+    }
+
+
 def test_a_confirmed_match_survives_a_rerun_undemoted(intent_repo):
     """The matcher re-derives a confirmed pairing every run; the row must not be rewritten.
 

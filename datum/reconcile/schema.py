@@ -87,9 +87,7 @@ class FieldConfig:
     def _validate_comparison_config(self) -> None:
         """Validate mode and parameters based on field type."""
         if not self.comparison:
-            raise InvalidComparisonMode(
-                f"Field {self.field_name}: comparison config is empty"
-            )
+            raise InvalidComparisonMode(f"Field {self.field_name}: comparison config is empty")
 
         mode = self.comparison.get("mode")
         if not mode:

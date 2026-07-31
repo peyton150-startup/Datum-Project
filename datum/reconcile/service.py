@@ -3,6 +3,7 @@ from django.utils import timezone
 
 from datum.discovery.models import DiscoveredResource
 from datum.enums import (
+    ACTIVE_MATCH_STATES,
     HUMAN_MATCH_STATES,
     DiscrepancyState,
     DiscrepancyType,
@@ -141,20 +142,56 @@ def _write_matches(
     declared_rows: list[DeclaredResource],
     discovered_rows: list[DiscoveredResource],
 ) -> None:
+    """Record this run's pairings, without overwriting what a human decided.
+
+    Every row carries the four anchor columns, not only the convenience foreign
+    keys. The anchor is what a match is *about* (CF-6); a row written without
+    one anchors to `('', '', '')`, which is both unfindable by
+    `_stored_decisions` and indistinguishable from every other such row -- the
+    active-match unique index refuses the second one as soon as a run pairs more
+    than a single resource.
+
+    A pair the matcher derived from a standing confirmed decision already has a
+    row, and keeps it. Writing a fresh proposal for it would demote a human's
+    decision to a proposal and collide with it on the same index.
+    """
     declared_by_key: dict[NaturalKey, DeclaredResource] = {
         _snapshot(row).natural_key: row for row in declared_rows
     }
     discovered_by_key: dict[NaturalKey, DiscoveredResource] = {
         _snapshot(row).natural_key: row for row in discovered_rows
     }
+    decided = _anchors_holding_an_active_match(tenant_id)
     for pair in match_result.pairs:
+        anchor = pair.declared.natural_key
+        if anchor in decided:
+            continue
+        kind, _tenant, scope, name = anchor
         Match.objects.create(
             tenant_id=tenant_id,
-            declared_resource=declared_by_key[pair.declared.natural_key],
+            declared_kind=kind,
+            declared_scope=scope,
+            declared_name=name,
+            discovered_provider_id=pair.discovered.provider_id,
+            declared_resource=declared_by_key[anchor],
             discovered_resource=discovered_by_key[pair.discovered.natural_key],
             strategy=pair.strategy,
             confidence=pair.confidence,
         )
+
+
+def _anchors_holding_an_active_match(tenant_id: str) -> set[NaturalKey]:
+    """The declared identities that already have a live match row.
+
+    Read after `_reset` and `_invalidate_unanchored` have run, so what remains
+    is exactly the confirmed decisions still anchored to both planes. Rejections
+    are absent by design: they are terminal rather than active, and the matcher
+    has already refused to pair them.
+    """
+    return {
+        (row.declared_kind, str(tenant_id), row.declared_scope, row.declared_name)
+        for row in Match.objects.filter(tenant_id=tenant_id, state__in=ACTIVE_MATCH_STATES)
+    }
 
 
 def _write_discrepancies(tenant_id: str, discrepancy_set: DiscrepancySet) -> None:

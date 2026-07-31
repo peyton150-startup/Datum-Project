@@ -123,7 +123,9 @@ Read this before picking anything up. It is the state a session ended in, not a 
 
 **Where the work is.** Everything from the previous handoff is merged. `main` is CI-green — verified, not inferred. One PR is open:
 
-- **PR #32** `fix/reconcile-run-exclusion` — CI green, **awaiting non-authoring review**. Kernel + boundary tier, authored by Claude Opus 5. That review was dispatched at the end of the session; its verdict may not have been seen. **Check the PR for review comments before merging.** It closes #30 automatically.
+- **PR #32** `fix/reconcile-run-exclusion` — CI green, closes #30 automatically. Kernel + boundary tier, authored by Claude Opus 5.
+
+  **Its non-authoring review has NOT happened. Do this before merging — it is the first task of the next session.** A reviewer was dispatched at the end of the previous session and the process exited before it reported, so no verdict exists anywhere: not in the PR, not in this file. Do not merge on the assumption it was reviewed. Re-dispatch it (mechanism at the end of this file) against `git diff main...fix/reconcile-run-exclusion`, and **post the verdict as a PR comment as soon as it lands** rather than holding it in the conversation — that is exactly how the first one was lost.
 
 The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` mentioned in the previous handoff are both gone — the stash was verified to be superseded Phase 2D work containing the absence-collapsing defect, and dropped (recoverable at `0145390` until gc).
 
@@ -131,7 +133,7 @@ The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` men
 
 **What is next, in order.**
 
-1. **Land PR #32** once its review is read.
+1. **Get PR #32 reviewed, then land it.** The review has not happened — see above. This is the first task, not a formality: the change is kernel tier and touches the barricade two other modules are written against.
 2. **Settle #34 and #35** — both concern `version`/`identity` presence handling, and both must be answered before 2I.
 3. **Phase 2G**, then **2H**. 2H is still the sharp one; see its entry above.
 
@@ -151,6 +153,7 @@ The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` men
 - **A test whose docstring claims more than it demonstrates is this project's recurring failure mode.** Phases 2B–2E each passed their own tests while collapsing absence into null, because every phase tested both-absent and both-null and none tested one against the other. The same thing recurred in #28's migration test, which claimed to hold two `if`s apart while covering three of four combinations. Branch coverage does not catch this and cannot.
 - **Concurrency claims need reproducing, not reasoning.** The #32 race was reproduced with two threads before being fixed, and the reproduction is now a permanent regression test. A first draft of that design also asserted PostgreSQL exposes uncommitted reads under READ COMMITTED, which is false; it was caught in review. Verify database semantics against the database.
 - **`pytest` locally needs Postgres on port 5544**, and the tools need `python -m`. Both are in the gate block above.
+- **A review verdict that lives only in the conversation does not survive the session.** One review was dispatched and lost exactly that way when the process exited — the work was done and paid for, and none of it reached the PR. Post a subagent's verdict to the PR as a comment the moment it arrives, before summarising it in chat. The same applies to any finding worth acting on: this file and the issue tracker are the only two places that persist.
 
 ## Phase 4 Code Review (WBS 1.5.1–1.5.4)
 
@@ -167,7 +170,7 @@ The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` men
 - [x] Verify CI passes on main — green as of 2026-07-31, confirmed on the merge commit rather than inferred
 - [x] Run the full suite against Postgres, not just the kernel subset — 632 passing on port 5544
 - [x] Non-authoring review of Phase 2F and the presence fix, both kernel tier — done by Claude Sonnet, verdict *approve with changes*; the changes are issues #33, #34, #35
-- [ ] Non-authoring review of PR #32 — dispatched, verdict may be unread. Check the PR.
+- [ ] Non-authoring review of PR #32 — **not done.** Dispatched once; the process exited before it reported and no verdict survived. Re-run it.
 - [ ] Validate determinism properties hold for reconciliation
 - [ ] Spot-check integration: schema loading → comparison → discrepancy creation
 - [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation

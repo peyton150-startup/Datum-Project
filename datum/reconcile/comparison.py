@@ -238,3 +238,241 @@ def _compare_tolerance(
     steps.append(f"Result: {is_equal}")
 
     return is_equal
+
+
+def compare_string(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Compare string fields using mode-specific logic.
+
+    Modes:
+        - exact: No transformations, compare as-is
+        - lowercase: Convert both sides to lowercase before comparing
+        - trim: Strip leading/trailing whitespace from both sides
+        - normalize: lowercase + trim + collapse internal whitespace
+
+    Args:
+        declared: Value from declared plane
+        discovered: Value from discovered plane
+        field_config: Configuration with mode and parameters
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    mode: Any = field_config.comparison.get("mode")
+    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    steps: list[str] = []
+
+    # Handle absent/null cases
+    def get_value(plane_val: PlaneValue) -> Any:
+        return plane_val.resolve(
+            on_absent=lambda: None,
+            on_present=lambda v: v,
+        )
+
+    declared_val = get_value(declared)
+    discovered_val = get_value(discovered)
+
+    # If either is None/absent, they must both be None/absent to match
+    if declared_val is None or discovered_val is None:
+        is_equal = declared_val == discovered_val
+        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
+        return (
+            is_equal,
+            AuditLogEntry(
+                kind_name=kind_name,
+                field_name=field_config.field_name,
+                field_type="string",
+                comparison_mode=mode,
+                declared_raw=declared_val,
+                declared_transformed=declared_val,
+                discovered_raw=discovered_val,
+                discovered_transformed=discovered_val,
+                result=is_equal,
+                steps=steps,
+            ),
+        )
+
+    # Convert to string if not already
+    declared_str = str(declared_val)
+    discovered_str = str(discovered_val)
+
+    # Mode-specific comparison
+    if mode == "exact":
+        declared_transformed = declared_str
+        discovered_transformed = discovered_str
+        is_equal = _compare_exact_string_mode(declared_transformed, discovered_transformed, steps)
+    elif mode == "lowercase":
+        declared_transformed = declared_str.lower()
+        discovered_transformed = discovered_str.lower()
+        is_equal = _compare_lowercase(
+            declared_str, declared_transformed, discovered_str, discovered_transformed, steps
+        )
+    elif mode == "trim":
+        declared_transformed = declared_str.strip()
+        discovered_transformed = discovered_str.strip()
+        is_equal = _compare_trim(
+            declared_str, declared_transformed, discovered_str, discovered_transformed, steps
+        )
+    elif mode == "normalize":
+        declared_transformed = _normalize_string(declared_str)
+        discovered_transformed = _normalize_string(discovered_str)
+        is_equal = _compare_normalize(
+            declared_str, declared_transformed, discovered_str, discovered_transformed, steps
+        )
+    else:
+        steps.append(f"Unknown mode: {mode}")
+        is_equal = False
+        declared_transformed = declared_str
+        discovered_transformed = discovered_str
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=kind_name,
+            field_name=field_config.field_name,
+            field_type="string",
+            comparison_mode=mode,
+            declared_raw=declared_val,
+            declared_transformed=declared_transformed,
+            discovered_raw=discovered_val,
+            discovered_transformed=discovered_transformed,
+            result=is_equal,
+            steps=steps,
+        ),
+    )
+
+
+def _compare_exact_string_mode(
+    declared_str: str,
+    discovered_str: str,
+    steps: list[str],
+) -> bool:
+    """Compare strings with no transformation.
+
+    Args:
+        declared_str: Declared plane string
+        discovered_str: Discovered plane string
+        steps: List to append comparison steps to
+
+    Returns:
+        True if strings match exactly
+    """
+    steps.append("Mode: exact")
+    steps.append(f"Declared: {declared_str!r}")
+    steps.append(f"Discovered: {discovered_str!r}")
+
+    is_equal = declared_str == discovered_str
+    steps.append(f"Result: {is_equal}")
+
+    return is_equal
+
+
+def _compare_lowercase(
+    declared_raw: str,
+    declared_transformed: str,
+    discovered_raw: str,
+    discovered_transformed: str,
+    steps: list[str],
+) -> bool:
+    """Compare strings after converting to lowercase.
+
+    Args:
+        declared_raw: Raw declared value
+        declared_transformed: Lowercase declared value
+        discovered_raw: Raw discovered value
+        discovered_transformed: Lowercase discovered value
+        steps: List to append comparison steps to
+
+    Returns:
+        True if lowercase versions match
+    """
+    steps.append("Mode: lowercase")
+    steps.append(f"Declared raw: {declared_raw!r}")
+    steps.append(f"Declared transformed: {declared_transformed!r}")
+    steps.append(f"Discovered raw: {discovered_raw!r}")
+    steps.append(f"Discovered transformed: {discovered_transformed!r}")
+
+    is_equal = declared_transformed == discovered_transformed
+    steps.append(f"Result: {is_equal}")
+
+    return is_equal
+
+
+def _compare_trim(
+    declared_raw: str,
+    declared_transformed: str,
+    discovered_raw: str,
+    discovered_transformed: str,
+    steps: list[str],
+) -> bool:
+    """Compare strings after stripping whitespace.
+
+    Args:
+        declared_raw: Raw declared value
+        declared_transformed: Trimmed declared value
+        discovered_raw: Raw discovered value
+        discovered_transformed: Trimmed discovered value
+        steps: List to append comparison steps to
+
+    Returns:
+        True if trimmed versions match
+    """
+    steps.append("Mode: trim")
+    steps.append(f"Declared raw: {declared_raw!r}")
+    steps.append(f"Declared transformed: {declared_transformed!r}")
+    steps.append(f"Discovered raw: {discovered_raw!r}")
+    steps.append(f"Discovered transformed: {discovered_transformed!r}")
+
+    is_equal = declared_transformed == discovered_transformed
+    steps.append(f"Result: {is_equal}")
+
+    return is_equal
+
+
+def _normalize_string(text: str) -> str:
+    """Normalize string: lowercase + trim + collapse internal whitespace.
+
+    Args:
+        text: String to normalize
+
+    Returns:
+        Normalized string
+    """
+    # lowercase + trim + collapse internal whitespace
+    return " ".join(text.lower().split())
+
+
+def _compare_normalize(
+    declared_raw: str,
+    declared_transformed: str,
+    discovered_raw: str,
+    discovered_transformed: str,
+    steps: list[str],
+) -> bool:
+    """Compare strings after normalization.
+
+    Normalization: lowercase + trim + collapse internal whitespace.
+
+    Args:
+        declared_raw: Raw declared value
+        declared_transformed: Normalized declared value
+        discovered_raw: Raw discovered value
+        discovered_transformed: Normalized discovered value
+        steps: List to append comparison steps to
+
+    Returns:
+        True if normalized versions match
+    """
+    steps.append("Mode: normalize")
+    steps.append(f"Declared raw: {declared_raw!r}")
+    steps.append(f"Declared transformed: {declared_transformed!r}")
+    steps.append(f"Discovered raw: {discovered_raw!r}")
+    steps.append(f"Discovered transformed: {discovered_transformed!r}")
+
+    is_equal = declared_transformed == discovered_transformed
+    steps.append(f"Result: {is_equal}")
+
+    return is_equal

@@ -64,22 +64,77 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 - Confirm no later-phase scope was pulled forward.
 - If you are closing a phase, walk its acceptance criteria in writing and state any not met plainly, rather than redefining them.
 
+## WBS 1.5.2: Diff Engine Implementation Status
+
+**Overall Status:** Phase 2C complete. Phases 2D–2J remain.
+
+**Completed:**
+- ✅ Phase 2A: Schema Validation (52 tests, 99% coverage) — PR ready
+- ✅ Phase 2B: Numeric Comparison (44 tests, 96% coverage) — PR ready
+- ✅ Phase 2C: String Comparison (44 tests) — PR ready
+
+**Remaining Phases (in order):**
+1. **Phase 2D: List Comparison** (3 hours)
+   - Modes: ordered, unordered_multiset, set
+   - 25+ test cases covering duplicates, empty lists, nulls, nested lists
+   - File: `datum/reconcile/comparison.py` — add `compare_list()` and 4 helpers
+   - File: `tests/kernel/test_comparison_list.py` — create with 25+ tests
+
+2. **Phase 2E: Timestamp Comparison** (2 hours)
+   - Modes: string (exact), semantic_utc, semantic_resource_tz
+   - Precision levels: day, hour, minute, second
+   - 20+ test cases with timezone handling
+   - File: `datum/reconcile/comparison.py` — add `compare_timestamp()` and 3 helpers
+   - File: `tests/kernel/test_comparison_timestamp.py` — create with 20+ tests
+
+3. **Phase 2F: Object Comparison** (3 hours)
+   - Modes: opaque (hash), version (extract field), identity (extract id), ignore (always match), recurse(depth)
+   - 20+ test cases with nested objects, key order independence
+   - File: `datum/reconcile/comparison.py` — add `compare_object()` and 5 helpers
+   - File: `tests/kernel/test_comparison_object.py` — create with 20+ tests
+
+4. **Phase 2G: Logging Infrastructure** (2 hours)
+   - AuditLogEntry structure already defined in comparison.py
+   - Implement 3 logging levels: debug (all), discrepancy (mismatches only), sampled_audit (every Nth)
+   - File: `datum/reconcile/comparison.py` — add `_write_audit_log()` and logging config
+
+5. **Phase 2H: Integration & Refactoring** (2 hours)
+   - Update `_field_discrepancies()` in `datum/reconcile/diff.py` to use `compare_field()` dispatcher
+   - Update `reconcile()` to accept `schema_map` parameter
+   - Add `_load_comparison_schemas()` to `datum/reconcile/service.py`
+   - Update `run_reconciliation()` to pass schema to reconcile()
+   - Handle MissingFieldConfig gracefully (log error, treat as discrepancy)
+   - Files: `datum/reconcile/diff.py`, `datum/reconcile/service.py`
+
+6. **Phase 2I: Adversarial Corpus Tests** (5 hours)
+   - 150+ test cases from DIFF_SEMANTICS.md across all 5 types
+   - 14 null/missing/empty cases across all types
+   - Property-based tests for determinism using Hypothesis
+   - File: `tests/kernel/test_diff_comparison.py` — comprehensive adversarial corpus
+   - File: `tests/kernel/test_diff_determinism.py` — property-based determinism tests
+
+7. **Phase 2J: Schema Seeders & Documentation** (1 hour)
+   - Migration to seed default Kind.attribute_schema for existing kinds (Deployment, ComputeInstance)
+   - Documentation for configuring schema for new kinds
+   - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, update `docs/DIFF_SEMANTICS.md`
+
 ## Phase 4 Code Review (WBS 1.5.1–1.5.4)
 
-**IMPORTANT:** All code written in Phase 4 (WBS 1.5.1 through WBS 1.5.4) must be rechecked in the next session before proceeding to Phase 5. This includes:
+**IMPORTANT:** All Phase 4 code must be rechecked in the next session before proceeding to Phase 5. This includes:
 
-- **WBS 1.5.1** (Identity Matching with CF-6 fix): Migration, matcher updates, 6 cross-run corpus tests
-- **WBS 1.5.2** (Diff Engine): Schema validation (Phase 2A complete), comparison handlers (Phases 2B–2F), logging, integration, adversarial corpus (150+ tests)
-- **WBS 1.5.3** (Precedence Policy): PrecedenceRule model, resolve functions, soft deletes
-- **WBS 1.5.4** (Discrepancy Lifecycle): State machine, DiscrepancyTransition table, rediscovery logic, retention policy
+- **WBS 1.5.1** (Identity Matching with CF-6 fix): PR ready for merge
+- **WBS 1.5.2** (Diff Engine): Phases 2A–2C complete (3 PRs), 2D–2J pending
+- **WBS 1.5.3** (Precedence Policy): Spec document complete, implementation pending
+- **WBS 1.5.4** (Discrepancy Lifecycle): Spec document complete, implementation pending
 
 **Checklist for next session:**
+- [ ] Merge Phase 2A, 2B, 2C PRs to main
 - [ ] Run full test suite (including existing tests to ensure no regressions)
-- [ ] Verify all PRs are merged to main
-- [ ] Confirm CI passes on main
+- [ ] Verify CI passes on main
 - [ ] Check branch coverage for all kernel modules (≥100%)
 - [ ] Validate determinism properties hold for reconciliation
 - [ ] Spot-check integration: schema loading → comparison → discrepancy creation
 - [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation
+- [ ] Begin Phase 2D (list comparison) or Phase 2E (timestamp comparison) based on priority
 
 This delay protects against integration issues across the 4 WBS items and allows human review before Phase 5.

@@ -1,19 +1,26 @@
 # WBS 1.5.3: Precedence Policy
 
-**Status:** Specification (to be decided)
+**Status:** Specification (revised 2026-07-30)
 
-**Scope:** When a discrepancy is detected on a field, which plane's value is authoritative? The precedence policy is a lookup table `(kind, field)` → rule that decides.
+**Scope:** When a discrepancy is detected on a field, which source wins? The precedence policy is a lookup table `(kind, field)` → rule that decides which plane's value is authoritative. Rules are versioned for immutable audit trails. Tenant customization is deferred to v2 (complexity burden unclear).
 
 ---
 
-## Core Principles (Already Decided)
+## Core Principles
 
 From DESIGN §14:
 
-- **Explainability is structural.** The result includes the deciding rule; it's not hidden in a log or synthesized. `resolve_field()` returns `(authoritative_value, deciding_rule)` or `Undecidable`, never a default.
+- **Explainability is structural.** The result includes the deciding rule; it's not hidden in a log or synthesized. Query functions return `(authoritative_value, deciding_rule)` or `Undecidable`, never a default.
 - **Missing rule → undecidable.** A field with no precedence rule becomes queue work. It does not fall back to "declared wins" or "discovered wins."
-- **Rules keyed on `(kind, field)`.** No tenant dimension. Kinds are global; if that changes, rules migrate with kinds.
-- **Implement as a lookup, not conditionals.** If comparison logic needs branches, it's a table. Precedence rules are definitely a table.
+- **Rules keyed on `(kind, field)` globally.** No tenant dimension in v1. Kinds are global; if that changes, rules migrate with kinds.
+- **Implement as a lookup, not conditionals.** If resolution logic needs branches, it's a table. Precedence rules are definitely a table.
+
+### Two Separate Concerns
+
+This spec addresses **source selection** (which plane is authoritative). Reconciliation **operators** (what to do with selected values) are separate:
+
+- **Precedence:** DECLARED_AUTHORITATIVE, DISCOVERED_AUTHORITATIVE (binary choice)
+- **Operators:** USE_MAX, USE_MIN, MERGE_LISTS (transformations, handled elsewhere)
 
 ---
 
@@ -138,150 +145,276 @@ From DESIGN §14:
 
 ## Proposal: Balanced Decisions
 
-Based on simplicity + explainability + operator control:
+Based on simplicity + explainability + auditability. **Tenant overrides are deferred to v2** because the complexity-to-value ratio is unclear without demonstrated customer need. This keeps v1 deterministic and focused.
 
-### Decision 1: Per-Kind Default + Per-Tenant Override
-- **Global base:** A default precedence rule table `(kind, field)`
-- **Tenant override:** Each tenant can override rules for kinds they use
-- **Storage:** `Kind.precedence_rules` (JSON) + `TenantKindOverrides` table
+### Decision 1: Global Rules Only (No Tenant Overrides in v1)
+- One precedence rule per `(kind, field)` globally
+- No `TenantPrecedenceOverride` table in v1
+- Rationale:
+  - Tenant overrides introduce a lookup hierarchy that complicates both logic and debugging
+  - No demonstrated need yet; can add if customers request it
+  - Without them, every decision is fully deterministic: same (kind, field, version) → same rule → same behavior
+  - If needed later, migration path is clear: add tenant table, update resolution to check tenant first
 
-### Decision 2: Enum of Operators
+**Future v2 Addition:** If tenants need custom precedence:
+```
+Question: Should tenants redefine semantics of a kind?
+Answer: Only if they have demonstrated need. Otherwise, use kind's global definition.
+```
+
+### Decision 2: Binary Precedence Only (Not Reconciliation Operators)
 ```python
 class PrecedenceOperator(TextChoices):
-    DECLARED_AUTHORITATIVE = "declared"      # Use declared value
-    DISCOVERED_AUTHORITATIVE = "discovered"  # Use discovered value
-    USE_MAX = "max"                          # For numeric fields
-    USE_MIN = "min"                          # For numeric fields
-    MERGE_LISTS = "merge"                    # For list fields (union)
-    INTERSECTION_LISTS = "intersection"      # For list fields (intersection)
-    UNDECIDABLE = "undecidable"             # Field has no rule
+    DECLARED_AUTHORITATIVE = "declared"      # Source is declared plane
+    DISCOVERED_AUTHORITATIVE = "discovered"  # Source is discovered plane
+    # Note: USE_MAX, MERGE_LISTS, etc. are NOT precedence rules.
+    #       They are reconciliation operators, handled separately in diff/comparison logic.
 ```
+
+**Rationale:** Precedence answers "which source wins?" not "how to combine them." Conflating these leads to confusion. Example: "Is MERGE_LISTS authoritative?" doesn't make sense—only sources can be authoritative.
 
 ### Decision 3: Exact Match + Explicit Fallback
-- Look up exact `(kind, field)`
+- Look up exact `(kind, field)` tuple
 - If not found: explicitly return `Undecidable`
 - No hidden defaults or cascades
-- Requires configuration per field
+- Requires configuration per field (explicit over implicit)
 
-### Decision 4: Immutable Rules with Versioning
-- Each `PrecedenceRule` has a `version` integer
-- Increment when the rule changes
-- Each `Discrepancy` stores `applied_rule_version`
-- Operators can see "what rule was in effect when this was decided"
+### Decision 4: Immutable Rules with Rule ID for Audit
+- Each rule is immutable; changes create new rules (not versions of old ones)
+- Each rule has a unique `id` (UUID) and `kind_field_composite_id` tuple
+- **Don't use version numbers alone** for audit trails
+- **Reason:** Different fields in same kind might change at different times:
+  - `Deployment.replicas` → v1 (old, unchanging)
+  - `Deployment.cpu` → v2 (new, changed)
+  - Audit log entry "Rule v2" is ambiguous: which field?
 
-### Decision 5: Lock In Old Rule for OPEN Discrepancies
-- When a rule changes, OPEN items keep the old rule
-- New discrepancies use the new rule
-- Operator review is stable and not disrupted
-- Clear audit trail: "this was decided by Rule v2"
-
-### Decision 6: Store Rule ID + Operator in Discrepancy
-- `Discrepancy.precedence_rule_id` (foreign key)
-- `Discrepancy.precedence_operator` (enum value, for quick display)
-- Compact and queryable
-- Operator can click through to see the rule definition
-
----
-
-## Schema Design
-
+**Schema:**
 ```python
-# Kind model gains:
-class Kind(models.Model):
-    name: str
-    tenant_id: UUID  # Always NULL (global)
-    # ... existing fields ...
-    default_precedence: JSONField = None  # Optional default rules per field
-
-# New table:
 class PrecedenceRule(models.Model):
+    id: UUID = models.UUIDField(primary_key=True, default=uuid4)
     kind: ForeignKey(Kind)
     field_name: str
-    operator: CharField(choices=PrecedenceOperator)
-    version: int = 1
-    created_at: DateTimeField
-    updated_at: DateTimeField
-    reason: TextField  # Why this rule?
+    operator: CharField(choices=PrecedenceOperator)  # DECLARED_AUTHORITATIVE or DISCOVERED_AUTHORITATIVE
+    created_at: DateTimeField(auto_now_add=True)
+
+    # Human-readable audit trail
+    created_by: CharField(max_length=255)  # Username or "system"
+    reason: TextField  # Why this rule? (required)
 
     class Meta:
-        unique_together = [["kind", "field_name", "version"]]
-        index_together = [["kind", "field_name"]]
+        # Single active rule per (kind, field)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "field_name"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="uq_kind_field_active_rule"
+            )
+        ]
 
-# Tenant-level overrides:
-class TenantPrecedenceOverride(models.Model):
-    tenant_id: UUID
-    kind: ForeignKey(Kind)
-    field_name: str
-    operator: CharField(choices=PrecedenceOperator)
-    version: int = 1
-    created_at: DateTimeField
-
-    class Meta:
-        unique_together = [["tenant_id", "kind", "field_name", "version"]]
-
-# Update Discrepancy model:
-class Discrepancy(models.Model):
-    # ... existing fields ...
-    precedence_rule: ForeignKey(PrecedenceRule, null=True, blank=True)
-    precedence_operator: CharField(choices=PrecedenceOperator, null=True)
-    authoritative_plane: CharField(choices=Plane)  # Already exists, now filled by rule
+    def __str__(self):
+        return f"Rule({self.kind.name}.{self.field_name} → {self.operator}) [ID: {self.id}]"
 ```
 
----
+### Decision 5: Two Query Functions (Not One)
 
-## Resolution Function
+**Problem:** A single `resolve_field()` can mean two different things:
+1. **Current resolution:** What's the rule NOW? (for new discrepancies)
+2. **Historical resolution:** What was the rule THEN? (for auditing old discrepancies)
+
+**Solution:** Two separate functions:
 
 ```python
-def resolve_field(
+def resolve_field_current(
     kind: Kind,
     field_name: str,
     declared_value: PlaneValue,
-    discovered_value: PlaneValue,
-    tenant_id: UUID
+    discovered_value: PlaneValue
 ) -> tuple[PlaneValue, PrecedenceRule] | Undecidable:
     """
-    Apply precedence rules to decide a field's authoritative value.
+    Resolve a field's authoritative value using CURRENT rules.
+    Used when processing NEW discrepancies.
 
-    Returns either (value, rule) or Undecidable.
-
-    Resolution order:
-    1. Check tenant-level override for (tenant, kind, field)
-    2. Check kind-level rule for (kind, field)
-    3. Return Undecidable (no rule found)
+    Returns: (authoritative_value, active_rule) or Undecidable
     """
-
-    # Try tenant override first
-    override = TenantPrecedenceOverride.objects.filter(
-        tenant_id=tenant_id,
+    rule = PrecedenceRule.objects.filter(
         kind=kind,
-        field_name=field_name
-    ).order_by("-version").first()
-
-    if override:
-        rule = override
-    else:
-        # Try kind default
-        rule = PrecedenceRule.objects.filter(
-            kind=kind,
-            field_name=field_name
-        ).order_by("-version").first()
+        field_name=field_name,
+        deleted_at__isnull=True  # Only active rules
+    ).first()
 
     if not rule:
         return Undecidable(kind=kind, field=field_name, reason="No precedence rule")
 
-    # Apply the operator
-    operator = PrecedenceOperator(rule.operator)
-
-    if operator == PrecedenceOperator.DECLARED_AUTHORITATIVE:
+    if rule.operator == "declared":
         return (declared_value, rule)
-    elif operator == PrecedenceOperator.DISCOVERED_AUTHORITATIVE:
+    elif rule.operator == "discovered":
         return (discovered_value, rule)
-    elif operator == PrecedenceOperator.USE_MAX:
-        # Numeric fields only
-        return (max(declared_value._value, discovered_value._value), rule)
-    # ... etc for other operators
+    else:
+        # Should never happen with two operators
+        return Undecidable(kind=kind, field=field_name, reason=f"Unknown operator: {rule.operator}")
 
-    return Undecidable(kind=kind, field=field_name, reason=f"Unknown operator: {rule.operator}")
+
+def resolve_field_historical(rule_id: UUID, declared_value, discovered_value):
+    """
+    Resolve a field's authoritative value using a HISTORICAL rule.
+    Used when auditing or understanding OLD discrepancies.
+
+    Returns: (authoritative_value, rule_definition)
+
+    This function never returns Undecidable because the rule existed when the
+    discrepancy was created. If the rule has since been deleted, we still apply it.
+    """
+    rule = PrecedenceRule.objects.get(id=rule_id)
+
+    if rule.operator == "declared":
+        return (declared_value, rule)
+    elif rule.operator == "discovered":
+        return (discovered_value, rule)
+```
+
+**Rationale:** This prevents accidental use of current rules when historical rules are needed, and vice versa. The function name makes the intent explicit.
+
+### Decision 6: Store Rule ID in Discrepancy (Immutable Snapshot)
+```python
+class Discrepancy(models.Model):
+    # ... existing fields ...
+    # Precedence snapshot at creation time
+    applied_precedence_rule_id: UUID = models.ForeignKey(PrecedenceRule, null=True, on_delete=models.PROTECT)
+    applied_precedence_operator: CharField(choices=PrecedenceOperator, null=True)
+
+    # Both fields denormalized for reporting without joins
+```
+
+**Why `on_delete=PROTECT`:** Rules are never actually deleted; only marked deleted. So this FK is forever valid.
+
+### Decision 7: Kind Schema Changes (Deletion, Rename)
+- **Field removed from kind schema:** Rules remain in DB. They're harmless but orphaned.
+  - Queries simply don't look them up (field no longer has a discrepancy)
+  - Operators can view them in audit trail for historical reference
+
+- **Kind renamed:** Kind FK prevents orphaning (cascade delete is NOT used).
+  - Administrators must manually migrate rules or delete orphaned rules before deleting the kind
+  - Alternative: soft-delete kind, keep rules for historical queries
+
+**Recommendation:** Make Kind soft-deletable (add `deleted_at` column) to preserve rule history forever.
+
+---
+
+## Updated Schema Design
+
+```python
+# Updated Kind model:
+class Kind(models.Model):
+    name: str
+    tenant_id: UUID  # Always NULL (global)
+    # ... existing fields ...
+    deleted_at: DateTimeField(null=True, blank=True)  # Soft delete for history preservation
+
+# Single source of truth for rules:
+class PrecedenceRule(models.Model):
+    id: UUID = models.UUIDField(primary_key=True, default=uuid4)
+    kind: ForeignKey(Kind)
+    field_name: str
+    operator: CharField(choices=PrecedenceOperator)  # Only: DECLARED_AUTHORITATIVE or DISCOVERED_AUTHORITATIVE
+
+    created_at: DateTimeField(auto_now_add=True)
+    created_by: CharField(max_length=255)  # Username or "system"
+    reason: TextField  # Why this rule? (required, for audit trail)
+
+    deleted_at: DateTimeField(null=True, blank=True)  # Soft delete, preserves history
+
+    class Meta:
+        # Single active rule per (kind, field)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "field_name"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="uq_active_kind_field_rule"
+            ),
+            # Rules only reference kinds and fields that exist in the schema
+            models.CheckConstraint(
+                check=models.Q(operator__in=["declared", "discovered"]),
+                name="ck_valid_operator"
+            )
+        ]
+
+    def __str__(self):
+        return f"Rule({self.kind.name}.{self.field_name} → {self.operator}) [ID: {self.id}]"
+
+# Update Discrepancy model:
+class Discrepancy(models.Model):
+    # ... existing fields ...
+    # Immutable snapshot of which rule decided this discrepancy
+    applied_precedence_rule_id: UUID = models.ForeignKey(
+        PrecedenceRule,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT  # Rules never deleted, only soft-deleted
+    )
+    applied_precedence_operator: CharField(
+        choices=PrecedenceOperator,
+        null=True,
+        blank=True
+    )
+    # Denormalized for fast queries without joins
+```
+
+---
+
+## Resolution Functions
+
+**v1 Implementation uses two functions to prevent confusion:**
+
+### Current Discrepancies (New)
+```python
+def resolve_field_current(
+    kind: Kind,
+    field_name: str,
+    declared_value: PlaneValue,
+    discovered_value: PlaneValue
+) -> tuple[PlaneValue, PrecedenceRule] | Undecidable:
+    """
+    Resolve using CURRENT (active) rules.
+    Call this when creating NEW discrepancies.
+
+    Returns: (authoritative_value, active_rule) or Undecidable
+    """
+    rule = PrecedenceRule.objects.filter(
+        kind=kind,
+        field_name=field_name,
+        deleted_at__isnull=True  # Only active rules
+    ).first()
+
+    if not rule:
+        return Undecidable(kind=kind, field=field_name, reason="No precedence rule")
+
+    authoritative_value = (
+        declared_value if rule.operator == "declared" else discovered_value
+    )
+    return (authoritative_value, rule)
+```
+
+### Historical Discrepancies (Audit)
+```python
+def resolve_field_historical(
+    rule_id: UUID,
+    declared_value: PlaneValue,
+    discovered_value: PlaneValue
+) -> tuple[PlaneValue, PrecedenceRule]:
+    """
+    Resolve using a HISTORICAL rule (for audit/explanation).
+    Call this when explaining OLD discrepancies that were decided by a specific rule.
+
+    Always succeeds because the rule was active when the discrepancy was created.
+    Rules are soft-deleted, never hard-deleted.
+
+    Returns: (authoritative_value, rule_definition)
+    """
+    rule = PrecedenceRule.objects.get(id=rule_id)
+    authoritative_value = (
+        declared_value if rule.operator == "declared" else discovered_value
+    )
+    return (authoritative_value, rule)
 ```
 
 ---
@@ -292,56 +425,106 @@ def resolve_field(
 - Field: `Deployment.custom_annotation`
 - No precedence rule defined
 - Discrepancy: declared="value1", discovered="value2"
-- Expected: `Undecidable`, field becomes queue work
+- Expected: `resolve_field_current()` returns `Undecidable`
+- Queue work: operator must decide
 
 ### Scenario 2: Declared Authoritative
 - Field: `Deployment.replicas`
-- Rule: `DECLARED_AUTHORITATIVE`
+- Active rule: `DECLARED_AUTHORITATIVE`
 - Discrepancy: declared=3, discovered=5
-- Expected: authoritative_value=3, rule stored in Discrepancy
+- Expected: `resolve_field_current()` returns (3, rule)
+- Discrepancy stores rule_id for later audit
 
 ### Scenario 3: Discovered Authoritative
 - Field: `Deployment.image`
-- Rule: `DISCOVERED_AUTHORITATIVE`
+- Active rule: `DISCOVERED_AUTHORITATIVE`
 - Discrepancy: declared="v1.0", discovered="v1.1"
-- Expected: authoritative_value="v1.1", rule stored
+- Expected: `resolve_field_current()` returns ("v1.1", rule)
 
-### Scenario 4: Tenant Override
-- Kind rule: `Deployment.replicas` = `DECLARED_AUTHORITATIVE`
-- Tenant override: `Deployment.replicas` = `DISCOVERED_AUTHORITATIVE`
-- Discrepancy: declared=3, discovered=5
-- Expected: authoritative_value=5 (tenant rule wins)
+### Scenario 4: Rule Change — Old Discrepancy Audited Historically
+- Discrepancy created with rule_id=abc (DECLARED_AUTHORITATIVE)
+- Declared: declared=3, discovered=5
+- Later, rule changed to DISCOVERED_AUTHORITATIVE (new rule_id=xyz)
+- Expected: `resolve_field_historical(rule_id=abc, ...)` still returns 3
+- New discrepancies use rule_id=xyz (returns 5)
+- Audit trail is clear: two different rules, two different outcomes
 
-### Scenario 5: Rule Change on OPEN Discrepancy
-- Field: `Deployment.env`, rule v1 = `DECLARED_AUTHORITATIVE`
-- OPEN discrepancy created with rule v1
-- Rule v2 issued: `DISCOVERED_AUTHORITATIVE`
-- Expected: OPEN discrepancy keeps rule v1, new discrepancies use v2
+### Scenario 5: Rule Immutability (no "versioning")
+- Rule created: `Deployment.cpu` = DECLARED_AUTHORITATIVE (id=abc)
+- Operator decides to change to DISCOVERED_AUTHORITATIVE
+- Action: Create NEW rule (id=xyz), soft-delete old rule (id=abc)
+- Old discrepancies still reference abc (immutable)
+- New discrepancies reference xyz
+- Audit trail: full rule object stored per discrepancy, no ambiguity
 
-### Scenario 6: Numeric Operators
-- Field: `Deployment.cpu`, rule = `USE_MAX`
-- Discrepancy: declared=2, discovered=4
-- Expected: authoritative_value=4
+### Scenario 6: Rule Audit Trail (No Ambiguity)
+- `Deployment.replicas` rule_id=abc created at 2026-01-01
+- `Deployment.cpu` rule_id=def created at 2026-01-15
+- Log entry: "Rule changed 2026-02-01"
+- **With version numbers only:** Which field? Ambiguous!
+- **With UUIDs:** rule_id=abc or def is explicit; zero confusion
 
-### Scenario 7: List Merge
-- Field: `Deployment.labels`, rule = `MERGE_LISTS`
-- Discrepancy: declared=[a, b], discovered=[b, c]
-- Expected: authoritative_value=[a, b, c] (union)
+### Scenario 7: Operator Type Mismatch (Prevented by Schema)
+- Attempt: Create rule `Deployment.image` (string) with operator=USE_MAX
+- **Schema constraint:** Operator must be DECLARED_AUTHORITATIVE or DISCOVERED_AUTHORITATIVE
+- USE_MAX is not a precedence operator; it's a reconciliation operator
+- Result: Constraint violation; invalid rule cannot be created
+- (USE_MAX would be handled in comparison/diff logic, not precedence)
+
+### Scenario 8: Kind Deleted (Soft Delete)
+- Rule exists: `Deployment.cpu` = DECLARED_AUTHORITATIVE (rule_id=abc)
+- Kind is soft-deleted: `Deployment.deleted_at = 2026-02-01`
+- Rule remains in DB (FK still valid)
+- Discrepancies referencing rule_id=abc can still be audited
+- Query for active rules filters out soft-deleted kinds
+- Historical queries still work
 
 ---
 
 ## Implementation Notes
 
-- Lookup is O(1): query by `(tenant, kind, field)` with ordering by version descending
-- Rules are immutable; updates create new versions
-- Backfill: generate default rules for all existing kinds (e.g., Deployment, ComputeInstance)
-- UI: kind author can define rules, tenant can override rules
+- **Lookup complexity:** O(log n) database lookup by (kind, field), not O(1). Practically fast but technically indexed query.
+- **Rules are immutable:** Changes create new rules, old rules soft-deleted
+- **No versioning per field:** Each rule is a separate object with unique UUID; audit trails are unambiguous
+- **No tenant overrides in v1:** Complexity deferred until demonstrated need
+- **Soft deletes everywhere:** Kind, Rule, Discrepancy—preserve history forever
+- **Backfill:** Generate default rules for all existing kinds (e.g., Deployment, ComputeInstance)
+- **UI:** Kind admin can define rules; no tenant customization in v1
 
 ---
 
-## Open Questions (For Design Review)
+## Migration Path to v2 (Future, If Needed)
 
-1. Should rules be versioned per-kind or globally? (Current: per-rule)
-2. Should tenant overrides require approval, or immediate?
-3. What happens if an operator becomes invalid (e.g., `USE_MAX` on a string field)? Error? Silent fallback?
-4. Can rules reference other fields (e.g., "use MAX if both > threshold")? Or always simple?
+**If customers request tenant-specific rules:**
+
+1. Add `TenantPrecedenceOverride` table (same schema as PrecedenceRule, but with tenant_id)
+2. Update `resolve_field_current()` to check tenant override first:
+   ```python
+   # Try tenant override
+   rule = TenantPrecedenceOverride.objects.filter(
+       tenant_id=tenant_id,
+       kind=kind,
+       field_name=field_name,
+       deleted_at__isnull=True
+   ).first()
+
+   if not rule:
+       # Fall back to global rule
+       rule = PrecedenceRule.objects.filter(...).first()
+   ```
+3. Discrepancy stores both `applied_precedence_rule_id` and `applied_tenant_precedence_override_id` (nullable)
+4. Document trade-off: each tenant override adds complexity; only add if value is demonstrated
+
+---
+
+## Open Questions Resolved
+
+1. ✅ **Separate current vs historical API?** Yes: `resolve_field_current()` and `resolve_field_historical()`
+2. ✅ **Single source of truth?** Yes: PrecedenceRule only, no JSON on Kind
+3. ✅ **Tenant customization?** Deferred to v2; no demonstrated need in v1
+4. ✅ **Audit trail uniqueness?** UUID per rule, not version numbers (prevents ambiguity)
+5. ✅ **Precedence vs operators?** Separated: only DECLARED/DISCOVERED in this table; operators go elsewhere
+6. ✅ **Type constraints on operators?** Yes: check constraint enforces valid operators at schema level
+7. ✅ **Operator implementation versioning?** Not needed in v1 (only two operators, stable semantics)
+8. ✅ **Kind schema changes (delete/rename)?** Soft delete; rules preserved forever
+9. ✅ **Version inheritance (global → tenant)?** N/A; no tenant overrides in v1

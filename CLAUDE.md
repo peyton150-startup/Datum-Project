@@ -66,80 +66,112 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 
 ## WBS 1.5.2: Diff Engine Implementation Status
 
-**Overall Status:** Phases 2A–2E complete. Phases 2F–2J remain.
+**Overall Status:** Phases 2A–2F complete and merged (2A–2E) or on branch (2F). Phases 2G–2J remain.
 
-**IMPORTANT CI NOTE:** Before merging any Phase 2D–2E code to main, ensure the full test suite passes on CI pipelines. This includes:
-- ✅ All kernel unit tests (100% branch coverage)
-- ✅ Type checking (`mypy --strict` on kernel modules)
-- ✅ Linting (`ruff check` and `ruff format`)
-- ✅ Cyclomatic complexity < 10 per function
-- ✅ No regressions in existing tests
+**Merged to main (PRs #18–#25):** 2A Schema Validation, 2B Numeric, 2C String, 2D List, 2E Timestamp.
 
-**Completed:**
-- ✅ Phase 2A: Schema Validation (52 tests, 99% coverage) — PR ready
-- ✅ Phase 2B: Numeric Comparison (44 tests, 96% coverage) — PR ready
-- ✅ Phase 2C: String Comparison (44 tests) — PR ready
-- ✅ Phase 2D: List Comparison (31 tests) — Unified PR ready
-- ✅ Phase 2E: Timestamp Comparison (23 tests) — Unified PR ready
+**On branch, in review order — each is cut from the one above it:**
 
-**Phase 2D & 2E (Unified):**
-- Branch: `feat/wbs-1.5.2-phase-2d-2e-list-timestamp`
-- Total tests: 54 (31 list + 23 timestamp)
-- Status: All tests passing, ready for CI validation
-- Phase 2D Modes: ordered, unordered_multiset, set
-- Phase 2E Modes: string, semantic_utc, semantic_resource_tz
-- Files: `datum/reconcile/comparison.py`, `tests/kernel/test_comparison_list.py`, `tests/kernel/test_comparison_timestamp.py`
-- Note: Combined into single PR to avoid git conflicts
+1. `fix/ci-green` — repairs CI gates that were already failing on main
+2. `feat/wbs-1.5.2-phase-2f-object-comparison` — Phase 2F
+3. `fix/wbs-1.5.2-comparison-presence-and-coverage` — the absent/null fix and the coverage gate
+
+**Do not trust a phase's "tests passing" as "CI passing."** They are different claims, and this section previously conflated them. `main` at `b98fca9` failed three CI gates: `ruff format --check`, `ruff check` (2 × E501 in comparison.py from 2D, 1 × F401 and 5 × F841 in test_matcher.py from WBS 1.5.1), and `mypy` (bare `list` annotations, missing dateutil stubs, an unannotated migration). The kernel branch-coverage gate was also failing — comparison.py at 95%, schema.py at 99%. All are fixed on the branches above. Before claiming CI-green, run all five locally:
+
+```
+ruff format --check .
+ruff check .
+mypy datum/reconcile datum/intent datum/graph
+pytest
+coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100
+```
+
+The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests error with `OperationalError` and only the kernel subset is meaningful.
+
+**Two findings worth carrying forward:**
+
+- **`python-dateutil` was an undeclared dependency.** Phase 2E imports it directly; it resolved only as a transitive dependency of `kubernetes`. Now declared.
+- **Phases 2B–2E collapsed absence into null.** All four read their planes with `resolve(on_absent=lambda: None, ...)`, making `missing` and `null` indistinguishable, against row one of the Null / Missing / Empty table. Latent because `diff.py` still uses `PlaneValue.__eq__`; it would have gone live at Phase 2H with every phase's own tests still green. Fixed on the third branch, with presence now travelling beside the value through one shared routine. **Phase 2H must not reintroduce it** — that phase is exactly where the latent defect becomes real.
 
 **Remaining Phases (in order):**
-1. **Phase 2F: Object Comparison** (3 hours)
-   - Modes: opaque (hash), version (extract field), identity (extract id), ignore (always match), recurse(depth)
-   - 20+ test cases with nested objects, key order independence
-   - File: `datum/reconcile/comparison.py` — add `compare_object()` and 5 helpers
-   - File: `tests/kernel/test_comparison_object.py` — create with 20+ tests
-
-2. **Phase 2G: Logging Infrastructure** (2 hours)
+1. **Phase 2G: Logging Infrastructure** (2 hours)
    - AuditLogEntry structure already defined in comparison.py
    - Implement 3 logging levels: debug (all), discrepancy (mismatches only), sampled_audit (every Nth)
    - File: `datum/reconcile/comparison.py` — add `_write_audit_log()` and logging config
 
-3. **Phase 2H: Integration & Refactoring** (2 hours)
+2. **Phase 2H: Integration & Refactoring** (2 hours)
    - Update `_field_discrepancies()` in `datum/reconcile/diff.py` to use `compare_field()` dispatcher
    - Update `reconcile()` to accept `schema_map` parameter
    - Add `_load_comparison_schemas()` to `datum/reconcile/service.py`
    - Update `run_reconciliation()` to pass schema to reconcile()
    - Handle MissingFieldConfig gracefully (log error, treat as discrepancy)
    - Files: `datum/reconcile/diff.py`, `datum/reconcile/service.py`
+   - **The sharp edge.** This phase replaces `PlaneValue.__eq__` — which gets absence right — with the comparison functions, which had to be fixed to get it right. `tests/kernel/test_null_versus_absent.py` and `tests/kernel/test_comparison_presence.py` are the two that must both stay green through it; the first tests the rule through `diff.py`, the second through the comparison functions, and 2H is where the two paths meet.
 
-4. **Phase 2I: Adversarial Corpus Tests** (5 hours)
+3. **Phase 2I: Adversarial Corpus Tests** (5 hours)
    - 150+ test cases from DIFF_SEMANTICS.md across all 5 types
    - 14 null/missing/empty cases across all types
    - Property-based tests for determinism using Hypothesis
    - File: `tests/kernel/test_diff_comparison.py` — comprehensive adversarial corpus
    - File: `tests/kernel/test_diff_determinism.py` — property-based determinism tests
 
-5. **Phase 2J: Schema Seeders & Documentation** (1 hour)
+4. **Phase 2J: Schema Seeders & Documentation** (1 hour)
    - Migration to seed default Kind.attribute_schema for existing kinds (Deployment, ComputeInstance)
    - Documentation for configuring schema for new kinds
    - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, update `docs/DIFF_SEMANTICS.md`
+
+## Session handoff — 2026-07-31
+
+Read this before picking up WBS 1.5.2. It is the state a session ended in, not a plan.
+
+**Where the work is.** Four commits across three branches, stacked. Each branch is cut from the one above, so they merge in this order or not at all. They were unpushed when this was written — run `git fetch --all --prune && git branch -vv` first and believe that over this paragraph:
+
+```
+main                                                 b98fca9
+ └─ fix/ci-green                                     9bd34a9
+     └─ feat/wbs-1.5.2-phase-2f-object-comparison    e53db10
+         └─ fix/wbs-1.5.2-comparison-presence-and-coverage
+                     4c55391 presence, 08e7d90 coverage, plus this doc commit
+```
+
+`backup/main-30af0a2-stale-claudemd` holds a superseded local CLAUDE.md commit that was never pushed. Delete it once you are satisfied nothing was lost.
+
+**What was done.** Phase 2F (`compare_object`, five modes, 56 tests). A kernel fix making absence and null distinct in all five comparison types, which they were not. The kernel branch-coverage gate taken from failing to 100% on every `datum/reconcile` module. Repairs to CI gates that were already red on `main`.
+
+**What is next, in order.**
+
+1. Non-authoring review of the two kernel-tier branches. Phase 2F and the presence fix were both written by Claude Opus 5, so the reviewer must be a different model. This is a merge gate, not a nicety.
+2. Merge the stack bottom-up, confirming CI green on each.
+3. Phase 2G, then 2H. **2H is the sharp one** — see its entry above.
+
+**What would have bitten the next session, had nobody written it down.**
+
+- `main` was red on CI while the status section claimed the opposite. Verify gates, do not infer them from a green `pytest`.
+- The comparison functions collapsed absence into null. Every phase's own tests passed anyway, because each tested both-absent and both-null and none tested one against the other. When a rule spans several modules, test it in one file across all of them — `tests/kernel/test_comparison_presence.py` is that file now, and a sixth comparison type has to be added to it.
+- `pytest` locally errors ~165 tests without Postgres. `docker-compose up -d` first, or you are only running the kernel subset and will misread the coverage gate.
+
+**Two open questions this session did not answer,** both deliberately left rather than guessed:
+
+- `version` and `identity` modes report a discrepancy when the key is missing on both sides, even though the two objects are identical. DIFF_SEMANTICS says "fail if not present" without saying which failure. The kernel reading — cannot compare, so cannot affirm — is what shipped, and it matches what `compare_list` does with a non-list. Worth confirming against intent before 2I builds a corpus on top of it.
+- `AuditLogEntry.declared_raw` is still `None` for both absent and null. Presence is carried by the transformed field instead. If 2G persists audit entries, that pair needs presence flags the way `Discrepancy` already has them.
 
 ## Phase 4 Code Review (WBS 1.5.1–1.5.4)
 
 **IMPORTANT:** All Phase 4 code must be rechecked in the next session before proceeding to Phase 5. This includes:
 
-- **WBS 1.5.1** (Identity Matching with CF-6 fix): PR ready for merge
-- **WBS 1.5.2** (Diff Engine): Phases 2A–2C complete (3 PRs), 2D–2J pending
+- **WBS 1.5.1** (Identity Matching with CF-6 fix): merged
+- **WBS 1.5.2** (Diff Engine): Phases 2A–2E merged, 2F on branch, 2G–2J pending
 - **WBS 1.5.3** (Precedence Policy): Spec document complete, implementation pending
 - **WBS 1.5.4** (Discrepancy Lifecycle): Spec document complete, implementation pending
 
-**Checklist for next session:**
-- [ ] Merge Phase 2A, 2B, 2C PRs to main
-- [ ] Run full test suite (including existing tests to ensure no regressions)
-- [ ] Verify CI passes on main
-- [ ] Check branch coverage for all kernel modules (≥100%)
+**Checklist:**
+- [x] Merge Phase 2A–2E PRs to main
+- [x] Check branch coverage for all kernel modules (100% on comparison, diff, domain, matcher, schema)
+- [ ] Verify CI passes on main — it does not today; see the three branches above
+- [ ] Run the full suite against Postgres, not just the kernel subset
+- [ ] Non-authoring review of Phase 2F and the presence fix, both kernel tier
 - [ ] Validate determinism properties hold for reconciliation
 - [ ] Spot-check integration: schema loading → comparison → discrepancy creation
 - [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation
-- [ ] Begin Phase 2D (list comparison) or Phase 2E (timestamp comparison) based on priority
 
 This delay protects against integration issues across the 4 WBS items and allows human review before Phase 5.

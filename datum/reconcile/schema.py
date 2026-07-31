@@ -5,6 +5,7 @@ to comparison functions. Each field must have an explicit comparison config;
 no defaults are inferred.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -95,17 +96,19 @@ class FieldConfig:
                 f"Field {self.field_name}: 'mode' key is required in comparison config"
             )
 
-        # Type-specific validation
-        if self.field_type == "list":
-            self._validate_list_config(mode)
-        elif self.field_type == "numeric":
-            self._validate_numeric_config(mode)
-        elif self.field_type == "string":
-            self._validate_string_config(mode)
-        elif self.field_type == "timestamp":
-            self._validate_timestamp_config(mode)
-        elif self.field_type == "object":
-            self._validate_object_config(mode)
+        # A table rather than an if-chain, per the construction conventions:
+        # repeated branching on one value is a lookup. It also removes the
+        # fall-through an if/elif chain leaves behind -- unreachable, because
+        # __post_init__ has already rejected any type not in VALID_FIELD_TYPES,
+        # but still a branch the 100% gate counts against the kernel.
+        validators: dict[str, Callable[[str], None]] = {
+            "list": self._validate_list_config,
+            "numeric": self._validate_numeric_config,
+            "string": self._validate_string_config,
+            "timestamp": self._validate_timestamp_config,
+            "object": self._validate_object_config,
+        }
+        validators[self.field_type](mode)
 
     def _validate_list_config(self, mode: str) -> None:
         """Validate list-type comparison config."""

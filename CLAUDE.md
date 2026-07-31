@@ -66,39 +66,44 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 
 ## WBS 1.5.2: Diff Engine Implementation Status
 
-**Overall Status:** Phase 2C complete. Phases 2D–2J remain.
+**Overall Status:** Phases 2A–2E complete. Phases 2F–2J remain.
+
+**IMPORTANT CI NOTE:** Before merging any Phase 2D–2E code to main, ensure the full test suite passes on CI pipelines. This includes:
+- ✅ All kernel unit tests (100% branch coverage)
+- ✅ Type checking (`mypy --strict` on kernel modules)
+- ✅ Linting (`ruff check` and `ruff format`)
+- ✅ Cyclomatic complexity < 10 per function
+- ✅ No regressions in existing tests
 
 **Completed:**
 - ✅ Phase 2A: Schema Validation (52 tests, 99% coverage) — PR ready
 - ✅ Phase 2B: Numeric Comparison (44 tests, 96% coverage) — PR ready
 - ✅ Phase 2C: String Comparison (44 tests) — PR ready
+- ✅ Phase 2D: List Comparison (31 tests) — Unified PR ready
+- ✅ Phase 2E: Timestamp Comparison (23 tests) — Unified PR ready
+
+**Phase 2D & 2E (Unified):**
+- Branch: `feat/wbs-1.5.2-phase-2d-2e-list-timestamp`
+- Total tests: 54 (31 list + 23 timestamp)
+- Status: All tests passing, ready for CI validation
+- Phase 2D Modes: ordered, unordered_multiset, set
+- Phase 2E Modes: string, semantic_utc, semantic_resource_tz
+- Files: `datum/reconcile/comparison.py`, `tests/kernel/test_comparison_list.py`, `tests/kernel/test_comparison_timestamp.py`
+- Note: Combined into single PR to avoid git conflicts
 
 **Remaining Phases (in order):**
-1. **Phase 2D: List Comparison** (3 hours)
-   - Modes: ordered, unordered_multiset, set
-   - 25+ test cases covering duplicates, empty lists, nulls, nested lists
-   - File: `datum/reconcile/comparison.py` — add `compare_list()` and 4 helpers
-   - File: `tests/kernel/test_comparison_list.py` — create with 25+ tests
-
-2. **Phase 2E: Timestamp Comparison** (2 hours)
-   - Modes: string (exact), semantic_utc, semantic_resource_tz
-   - Precision levels: day, hour, minute, second
-   - 20+ test cases with timezone handling
-   - File: `datum/reconcile/comparison.py` — add `compare_timestamp()` and 3 helpers
-   - File: `tests/kernel/test_comparison_timestamp.py` — create with 20+ tests
-
-3. **Phase 2F: Object Comparison** (3 hours)
+1. **Phase 2F: Object Comparison** (3 hours)
    - Modes: opaque (hash), version (extract field), identity (extract id), ignore (always match), recurse(depth)
    - 20+ test cases with nested objects, key order independence
    - File: `datum/reconcile/comparison.py` — add `compare_object()` and 5 helpers
    - File: `tests/kernel/test_comparison_object.py` — create with 20+ tests
 
-4. **Phase 2G: Logging Infrastructure** (2 hours)
+2. **Phase 2G: Logging Infrastructure** (2 hours)
    - AuditLogEntry structure already defined in comparison.py
    - Implement 3 logging levels: debug (all), discrepancy (mismatches only), sampled_audit (every Nth)
    - File: `datum/reconcile/comparison.py` — add `_write_audit_log()` and logging config
 
-5. **Phase 2H: Integration & Refactoring** (2 hours)
+3. **Phase 2H: Integration & Refactoring** (2 hours)
    - Update `_field_discrepancies()` in `datum/reconcile/diff.py` to use `compare_field()` dispatcher
    - Update `reconcile()` to accept `schema_map` parameter
    - Add `_load_comparison_schemas()` to `datum/reconcile/service.py`
@@ -106,14 +111,14 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
    - Handle MissingFieldConfig gracefully (log error, treat as discrepancy)
    - Files: `datum/reconcile/diff.py`, `datum/reconcile/service.py`
 
-6. **Phase 2I: Adversarial Corpus Tests** (5 hours)
+4. **Phase 2I: Adversarial Corpus Tests** (5 hours)
    - 150+ test cases from DIFF_SEMANTICS.md across all 5 types
    - 14 null/missing/empty cases across all types
    - Property-based tests for determinism using Hypothesis
    - File: `tests/kernel/test_diff_comparison.py` — comprehensive adversarial corpus
    - File: `tests/kernel/test_diff_determinism.py` — property-based determinism tests
 
-7. **Phase 2J: Schema Seeders & Documentation** (1 hour)
+5. **Phase 2J: Schema Seeders & Documentation** (1 hour)
    - Migration to seed default Kind.attribute_schema for existing kinds (Deployment, ComputeInstance)
    - Documentation for configuring schema for new kinds
    - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, update `docs/DIFF_SEMANTICS.md`

@@ -1,0 +1,13 @@
+{
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "metadata": {"name": "web", "namespace": "default", "uid": "uid-web-1"},
+      "spec": {"replicas": 5}
+    },
+    {
+      "metadata": {"name": "api", "namespace": "default", "uid": "uid-api-1"},
+      "spec": {"replicas": 2}
+    }
+  ]
+}

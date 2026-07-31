@@ -105,12 +105,14 @@ def test_backfill_leaves_a_row_with_no_foreign_keys_unanchored():
     assert match.discovered_provider_id is None
 
 
-def test_backfill_anchors_each_side_independently():
+def test_backfill_anchors_the_discovered_side_when_the_declared_row_is_gone():
     """One side present and the other gone is the realistic upgrade case.
 
     `DeclaredResource` rows are rebuilt per revision, so by the time an upgrade
     runs, a match may well have lost one foreign key and kept the other. The
-    two `if`s are separate for this reason and the test holds them apart.
+    two `if`s are separate for this reason, and this test and its mirror below
+    hold them apart: each asserts that the surviving side is copied *and* that
+    the missing side is left empty rather than filled from the other.
     """
     match = _match(state=MatchState.INVALIDATED, discovered_resource=_discovered())
 
@@ -119,3 +121,25 @@ def test_backfill_anchors_each_side_independently():
     match.refresh_from_db()
     assert match.discovered_provider_id == "uid-web-1"
     assert (match.declared_kind, match.declared_scope, match.declared_name) == ("", "", "")
+
+
+def test_backfill_anchors_the_declared_side_when_the_discovered_row_is_gone():
+    """The mirror, which completes the four present/absent combinations.
+
+    Branch coverage was already satisfied without this case -- each `if` had
+    both outcomes exercised somewhere across the other three tests -- which is
+    exactly why the gate could not have asked for it. The claim being tested is
+    the one branch coverage cannot make: that the two `if`s are independent in
+    both directions, not merely that both have been entered and skipped.
+    """
+    match = _match(state=MatchState.INVALIDATED, declared_resource=_declared())
+
+    backfill_anchor_from_fks(apps, None)
+
+    match.refresh_from_db()
+    assert (match.declared_kind, match.declared_scope, match.declared_name) == (
+        "Deployment",
+        "default",
+        "web",
+    )
+    assert match.discovered_provider_id is None

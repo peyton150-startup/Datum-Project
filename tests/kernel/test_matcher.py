@@ -1,6 +1,6 @@
 import pytest
 
-from datum.enums import Confidence, MatchState, MatchStrategy
+from datum.enums import Confidence, MatchStrategy
 from datum.reconcile.domain import MatchDecision, ResourceSnapshot
 from datum.reconcile.matcher import match_resources
 
@@ -176,7 +176,7 @@ def test_rejected_match_is_not_reproposed():
     )
 
     # Next run: the same pairing would naturally match
-    result = match_resources([snap("web")], [snap("web", provider_id="uid1")], [rejection])
+    result = match_resources(declared, discovered, [rejection])
 
     # But the rejection suppresses it
     assert not result.pairs
@@ -203,11 +203,7 @@ def test_confirmed_match_with_new_provider_id_is_natural_key_fallback():
     )
 
     # Second run: discovered resource has new provider_id (was recreated)
-    result = match_resources(
-        [snap("web")],
-        [snap("web", provider_id="uid2")],
-        [decision],
-    )
+    result = match_resources(declared, [snap("web", provider_id="uid2")], [decision])
 
     # Binding looks for uid1, does not find it. Natural key matches instead.
     assert len(result.pairs) == 1
@@ -273,6 +269,6 @@ def test_discovered_resource_with_no_provider_id_cannot_be_confirmed():
     # (which is a stateless function), it can be passed through. The check
     # constraint in models.py is the actual enforcement.
     # For now, the matcher accepts it but the domain layer would reject it.
-    result = match_resources([snap("web")], [snap("web", provider_id=None)], [decision])
+    result = match_resources(declared, discovered, [decision])
     # The matcher would propose by natural key since provider_id is None
     assert len(result.pairs) == 1

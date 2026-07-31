@@ -39,3 +39,6 @@ valkey-data/
 .claude-flow/
 .claude/
 .swarm/
+# Per-invocation scratch files dropped in the repo root, each holding only the
+# working directory path. 116 had accumulated before this line existed.
+tmpclaude-*-cwd

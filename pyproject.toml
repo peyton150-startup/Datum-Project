@@ -15,6 +15,11 @@ dependencies = [
     "pydantic==2.*",
     "pyyaml==6.*",
     "kubernetes==31.*",
+    # Declared because reconcile/comparison.py imports it directly (WBS 1.5.2
+    # Phase 2E). It resolved anyway as a transitive dependency of kubernetes,
+    # which is the failure this line removes: a direct import held up by
+    # somebody else's requirement moves or disappears without notice.
+    "python-dateutil==2.*",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +31,7 @@ dev = [
     "ruff==0.6.*",
     "mypy==1.11.*",
     "django-stubs==5.*",
+    "types-python-dateutil==2.*",
     "pre-commit==3.*",
 ]
 

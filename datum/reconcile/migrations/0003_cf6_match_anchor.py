@@ -18,11 +18,13 @@ deleted. Terminal and never revived -- a re-created resource is re-proposed
 and re-decided (DESIGN 12, cross-run corpus).
 """
 
+from typing import Any
+
 import django.db.models.deletion
 from django.db import migrations, models
 
 
-def backfill_anchor_from_fks(apps, schema_editor):
+def backfill_anchor_from_fks(apps: Any, schema_editor: Any) -> None:
     """Populate the four anchor columns from the foreign key rows.
 
     This runs after the anchor fields are added but before they become the

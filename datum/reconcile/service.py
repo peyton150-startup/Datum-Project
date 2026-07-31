@@ -1,4 +1,5 @@
-from django.db import transaction
+import logging
+
 from django.utils import timezone
 
 from datum.discovery.models import DiscoveredResource
@@ -12,6 +13,7 @@ from datum.enums import (
 )
 from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
+from datum.locks import locked_run
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import (
     DiscrepancySet,
@@ -23,12 +25,52 @@ from datum.reconcile.domain import (
 from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
 
+logger = logging.getLogger(__name__)
+
 # Either plane's row: both carry the natural-key columns and an attributes blob.
 ResourceRow = DeclaredResource | DiscoveredResource
 
+# What this tenant's reconciliation excludes on. Shares a key space with
+# collector names, so a collector may not be called "reconcile" -- collector
+# names are class attributes in this repo rather than configuration, so a
+# collision is visible in review rather than reachable at runtime.
+RECONCILE_OPERATION = "reconcile"
 
-@transaction.atomic
-def run_reconciliation(tenant_id: str) -> None:
+
+def run_reconciliation(tenant_id: str) -> bool:
+    """Reconcile both planes for one tenant, unless a run is already in flight.
+
+    Returns whether **this call executed a run**. False means another session
+    held the lock and this call did nothing. It is deliberately not a success
+    signal: True says the run reached its commit, not that anything was found,
+    changed, or repaired. A run over a perfectly consistent estate and a run
+    that writes forty discrepancies both return True.
+
+    A second run is skipped rather than queued, for the reason section 11 gives
+    for collector runs: the later run would read the same estate and the two
+    would race on the same rows to no benefit.
+    """
+    with locked_run(tenant_id, RECONCILE_OPERATION) as running:
+        if not running:
+            logger.info(
+                "reconciliation skipped: another run holds the lock",
+                extra={"tenant_id": tenant_id, "operation": RECONCILE_OPERATION},
+            )
+            return False
+        _reconcile_once(tenant_id)
+        return True
+
+
+def _reconcile_once(tenant_id: str) -> None:
+    """One reconciliation pass, inside the transaction `locked_run` opened.
+
+    Carries no `@transaction.atomic` of its own: the lock must be held across
+    the commit, so the transaction belongs to the caller that holds the lock.
+    Decorating this function would open a second, nested transaction and leave
+    the outer one still correct but pointless -- and decorating it *instead* of
+    using `locked_run` would release the lock before the commit, which is the
+    defect this whole change exists to prevent.
+    """
     declared_rows = _active_declared(tenant_id)
     discovered_rows = _present_discovered(tenant_id)
     declared = [_snapshot(row) for row in declared_rows]

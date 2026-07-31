@@ -66,27 +66,21 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 
 ## WBS 1.5.2: Diff Engine Implementation Status
 
-**Overall Status:** Phases 2A–2F complete and merged (2A–2E) or on branch (2F). Phases 2G–2J remain.
+**Overall Status:** Phases 2A–2F complete and **all merged to main**. Phases 2G–2J remain. `main` is CI-green.
 
-**Merged to main (PRs #18–#25):** 2A Schema Validation, 2B Numeric, 2C String, 2D List, 2E Timestamp.
+**Merged to main:** 2A Schema Validation, 2B Numeric, 2C String, 2D List, 2E Timestamp (PRs #18–#25); 2F Object Comparison and the absent/null presence fix (PR #27); the CF-6 anchor write half (PR #28) and its test completion (PR #29).
 
-**On branch, in review order — each is cut from the one above it:**
-
-1. `fix/ci-green` — repairs CI gates that were already failing on main
-2. `feat/wbs-1.5.2-phase-2f-object-comparison` — Phase 2F
-3. `fix/wbs-1.5.2-comparison-presence-and-coverage` — the absent/null fix and the coverage gate
-
-**Do not trust a phase's "tests passing" as "CI passing."** They are different claims, and this section previously conflated them. `main` at `b98fca9` failed three CI gates: `ruff format --check`, `ruff check` (2 × E501 in comparison.py from 2D, 1 × F401 and 5 × F841 in test_matcher.py from WBS 1.5.1), and `mypy` (bare `list` annotations, missing dateutil stubs, an unannotated migration). The kernel branch-coverage gate was also failing — comparison.py at 95%, schema.py at 99%. All are fixed on the branches above. Before claiming CI-green, run all five locally:
+**Do not trust a phase's "tests passing" as "CI passing."** They are different claims, and this section once conflated them — `main` was red for three gates while the status section said otherwise. Before claiming CI-green, run all five locally. **The bare commands do not resolve on this machine; use `python -m`:**
 
 ```
-ruff format --check .
-ruff check .
-mypy datum/reconcile datum/intent datum/graph
-pytest
-coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100
+python -m ruff format --check .
+python -m ruff check .
+python -m mypy datum/reconcile datum/intent datum/graph
+python -m pytest
+python -m coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*,datum/locks.py" --fail-under=100
 ```
 
-The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests error with `OperationalError` and only the kernel subset is meaningful.
+The full suite needs Postgres (`docker-compose up -d`), and the compose Postgres is on **port 5544** while settings default to 5432 — set `POSTGRES_PORT=5544` or ~165 tests error with `OperationalError` and only the kernel subset is meaningful. A coverage gate that never executed reports nothing, not success.
 
 **Two findings worth carrying forward:**
 
@@ -98,6 +92,8 @@ The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests er
    - AuditLogEntry structure already defined in comparison.py
    - Implement 3 logging levels: debug (all), discrepancy (mismatches only), sampled_audit (every Nth)
    - File: `datum/reconcile/comparison.py` — add `_write_audit_log()` and logging config
+   - **`AuditLogEntry._kind_name` is always `"unknown"` today.** Nothing sets it; it is inert scaffolding waiting for 2H. Do not assume audit entries carry a kind name.
+   - `AuditLogEntry.declared_raw` is `None` for both absent and null, with presence carried only by the transformed field. If 2G persists audit entries, that pair needs presence flags the way `Discrepancy` already has them.
 
 2. **Phase 2H: Integration & Refactoring** (2 hours)
    - Update `_field_discrepancies()` in `datum/reconcile/diff.py` to use `compare_field()` dispatcher
@@ -109,6 +105,7 @@ The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests er
    - **The sharp edge.** This phase replaces `PlaneValue.__eq__` — which gets absence right — with the comparison functions, which had to be fixed to get it right. `tests/kernel/test_null_versus_absent.py` and `tests/kernel/test_comparison_presence.py` are the two that must both stay green through it; the first tests the rule through `diff.py`, the second through the comparison functions, and 2H is where the two paths meet.
 
 3. **Phase 2I: Adversarial Corpus Tests** (5 hours)
+   - **Settle issues #34 and #35 before writing the corpus.** Both concern how `version`/`identity` handle presence, and a 150-case corpus written over current behaviour will encode it as intended — a corpus is far harder to change than a function. #34 is a confirmed defect; #35 is a decision nobody has made.
    - 150+ test cases from DIFF_SEMANTICS.md across all 5 types
    - 14 null/missing/empty cases across all types
    - Property-based tests for determinism using Hypothesis
@@ -120,58 +117,64 @@ The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests er
    - Documentation for configuring schema for new kinds
    - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, update `docs/DIFF_SEMANTICS.md`
 
-## Session handoff — 2026-07-31
+## Session handoff — 2026-07-31 (second session of the day; supersedes the first)
 
-Read this before picking up WBS 1.5.2. It is the state a session ended in, not a plan.
+Read this before picking anything up. It is the state a session ended in, not a plan. **Run `git fetch --all --prune && gh pr list && gh issue list` first and believe that over this section.**
 
-**Where the work is.** Four commits across three branches, stacked. Each branch is cut from the one above, so they merge in this order or not at all. They were unpushed when this was written — run `git fetch --all --prune && git branch -vv` first and believe that over this paragraph:
+**Where the work is.** Everything from the previous handoff is merged. `main` is CI-green — verified, not inferred. One PR is open:
 
-```
-main                                                 b98fca9
- └─ fix/ci-green                                     9bd34a9
-     └─ feat/wbs-1.5.2-phase-2f-object-comparison    e53db10
-         └─ fix/wbs-1.5.2-comparison-presence-and-coverage
-                     4c55391 presence, 08e7d90 coverage, plus this doc commit
-```
+- **PR #32** `fix/reconcile-run-exclusion` — CI green, closes #30 automatically. Kernel + boundary tier, authored by Claude Opus 5.
 
-`backup/main-30af0a2-stale-claudemd` holds a superseded local CLAUDE.md commit that was never pushed. Delete it once you are satisfied nothing was lost.
+  **Its non-authoring review has NOT happened. Do this before merging — it is the first task of the next session.** A reviewer was dispatched at the end of the previous session and the process exited before it reported, so no verdict exists anywhere: not in the PR, not in this file. Do not merge on the assumption it was reviewed. Re-dispatch it (mechanism at the end of this file) against `git diff main...fix/reconcile-run-exclusion`, and **post the verdict as a PR comment as soon as it lands** rather than holding it in the conversation — that is exactly how the first one was lost.
 
-**What was done.** Phase 2F (`compare_object`, five modes, 56 tests). A kernel fix making absence and null distinct in all five comparison types, which they were not. The kernel branch-coverage gate taken from failing to 100% on every `datum/reconcile` module. Repairs to CI gates that were already red on `main`.
+The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` mentioned in the previous handoff are both gone — the stash was verified to be superseded Phase 2D work containing the absence-collapsing defect, and dropped (recoverable at `0145390` until gc).
+
+**What was done.** The CF-6 anchor write half (#28) — `_write_matches` wrote no anchor columns, so every match row anchored to `('', '', '')`, and a second pair in one run collided. That defect was hiding a second: a re-run wrote a fresh proposal over a standing confirmed decision. Test completion for it (#29). Non-authoring reviews of Phase 2F, the presence fix, and #28 — the merge gate the previous handoff listed first. Reconciliation run exclusion (#32).
 
 **What is next, in order.**
 
-1. Non-authoring review of the two kernel-tier branches. Phase 2F and the presence fix were both written by Claude Opus 5, so the reviewer must be a different model. This is a merge gate, not a nicety.
-2. Merge the stack bottom-up, confirming CI green on each.
-3. Phase 2G, then 2H. **2H is the sharp one** — see its entry above.
+1. **Get PR #32 reviewed, then land it.** The review has not happened — see above. This is the first task, not a formality: the change is kernel tier and touches the barricade two other modules are written against.
+2. **Settle #34 and #35** — both concern `version`/`identity` presence handling, and both must be answered before 2I.
+3. **Phase 2G**, then **2H**. 2H is still the sharp one; see its entry above.
+
+**Open issues, all logged so none of this lives only in a chat transcript:**
+
+| | |
+|---|---|
+| #31 | `intent/ingest.py` — the two remaining DESIGN §11 races. Scoped to the Git webhook, which §11 says makes them certain. Do not reach for the advisory lock there: those are check-then-insert writes, not runs. |
+| #33 | `recurse(N)` / `tolerance(N)` crash rather than degrade when a malformed parameter reaches them past the barricade. Two phases, one mistake. |
+| #34 | **Confirmed defect.** `version`/`identity` report `null` and the string `"None"` as equal, because the inner comparison stringifies. Before 2I. |
+| #35 | **Decision needed.** Both-sides-absent reporting a discrepancy is inconsistent with row 4 of the Null/Missing/Empty table. Before 2I. |
 
 **What would have bitten the next session, had nobody written it down.**
 
-- `main` was red on CI while the status section claimed the opposite. Verify gates, do not infer them from a green `pytest`.
-- The comparison functions collapsed absence into null. Every phase's own tests passed anyway, because each tested both-absent and both-null and none tested one against the other. When a rule spans several modules, test it in one file across all of them — `tests/kernel/test_comparison_presence.py` is that file now, and a sixth comparison type has to be added to it.
-- `pytest` locally errors ~165 tests without Postgres. `docker-compose up -d` first, or you are only running the kernel subset and will misread the coverage gate.
-
-**Two open questions this session did not answer,** both deliberately left rather than guessed:
-
-- `version` and `identity` modes report a discrepancy when the key is missing on both sides, even though the two objects are identical. DIFF_SEMANTICS says "fail if not present" without saying which failure. The kernel reading — cannot compare, so cannot affirm — is what shipped, and it matches what `compare_list` does with a non-list. Worth confirming against intent before 2I builds a corpus on top of it.
-- `AuditLogEntry.declared_raw` is still `None` for both absent and null. Presence is carried by the transformed field instead. If 2G persists audit entries, that pair needs presence flags the way `Discrepancy` already has them.
+- **A gate that never executed reports nothing, not success.** Each gate hid the next this session: ruff and mypy hid a test failure, which hid a coverage gap. Run all five, in order, and read the exit code.
+- **`main` was red on CI for a full session while the status section claimed otherwise.** Verify; do not infer from a green `pytest`.
+- **A test whose docstring claims more than it demonstrates is this project's recurring failure mode.** Phases 2B–2E each passed their own tests while collapsing absence into null, because every phase tested both-absent and both-null and none tested one against the other. The same thing recurred in #28's migration test, which claimed to hold two `if`s apart while covering three of four combinations. Branch coverage does not catch this and cannot.
+- **Concurrency claims need reproducing, not reasoning.** The #32 race was reproduced with two threads before being fixed, and the reproduction is now a permanent regression test. A first draft of that design also asserted PostgreSQL exposes uncommitted reads under READ COMMITTED, which is false; it was caught in review. Verify database semantics against the database.
+- **`pytest` locally needs Postgres on port 5544**, and the tools need `python -m`. Both are in the gate block above.
+- **A review verdict that lives only in the conversation does not survive the session.** One review was dispatched and lost exactly that way when the process exited — the work was done and paid for, and none of it reached the PR. Post a subagent's verdict to the PR as a comment the moment it arrives, before summarising it in chat. The same applies to any finding worth acting on: this file and the issue tracker are the only two places that persist.
 
 ## Phase 4 Code Review (WBS 1.5.1–1.5.4)
 
 **IMPORTANT:** All Phase 4 code must be rechecked in the next session before proceeding to Phase 5. This includes:
 
-- **WBS 1.5.1** (Identity Matching with CF-6 fix): merged
-- **WBS 1.5.2** (Diff Engine): Phases 2A–2E merged, 2F on branch, 2G–2J pending
+- **WBS 1.5.1** (Identity Matching with CF-6 fix): merged, including the write half (#28) and its run exclusion (#32, pending)
+- **WBS 1.5.2** (Diff Engine): Phases 2A–2F merged, 2G–2J pending
 - **WBS 1.5.3** (Precedence Policy): Spec document complete, implementation pending
 - **WBS 1.5.4** (Discrepancy Lifecycle): Spec document complete, implementation pending
 
 **Checklist:**
 - [x] Merge Phase 2A–2E PRs to main
 - [x] Check branch coverage for all kernel modules (100% on comparison, diff, domain, matcher, schema)
-- [ ] Verify CI passes on main — it does not today; see the three branches above
-- [ ] Run the full suite against Postgres, not just the kernel subset
-- [ ] Non-authoring review of Phase 2F and the presence fix, both kernel tier
+- [x] Verify CI passes on main — green as of 2026-07-31, confirmed on the merge commit rather than inferred
+- [x] Run the full suite against Postgres, not just the kernel subset — 632 passing on port 5544
+- [x] Non-authoring review of Phase 2F and the presence fix, both kernel tier — done by Claude Sonnet, verdict *approve with changes*; the changes are issues #33, #34, #35
+- [ ] Non-authoring review of PR #32 — **not done.** Dispatched once; the process exited before it reported and no verdict survived. Re-run it.
 - [ ] Validate determinism properties hold for reconciliation
 - [ ] Spot-check integration: schema loading → comparison → discrepancy creation
 - [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation
+
+**The review gate has a mechanism now.** Kernel-tier code needs a reviewer that is a different model from the author. Dispatch a subagent pinned to another model with a **blind** prompt: give it the diff, CLAUDE.md, and the DESIGN review checklist, and withhold the author's reasoning entirely. A prompt that explains the fix leads the witness. Blind reviews this session found a confirmed equality defect, an unguarded parse, and a design table that was right for the wrong reason — and also produced two incorrect claims about PostgreSQL isolation, so treat findings as claims to verify rather than conclusions.
 
 This delay protects against integration issues across the 4 WBS items and allows human review before Phase 5.

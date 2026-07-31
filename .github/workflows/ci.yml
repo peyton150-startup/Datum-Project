@@ -58,9 +58,18 @@ jobs:
       # invariant, and because CF-1 was a defect in exactly the branch an
       # untested collector never takes: the one where a record is bad and the
       # run has to keep going.
+      #
+      # datum/locks.py joined in phase 4, when reconciliation needed the same
+      # exclusion as collector runs and the mechanism moved out of
+      # datum/discovery -- where it had been gated -- to the top level, where it
+      # would not have been. Boundary tier: it is what run_collector and
+      # run_reconciliation are written against, and its uncovered branch is the
+      # one where the lock is *not* granted, which is the only branch that
+      # matters. Listed as a file rather than a glob so that a future top-level
+      # module has to earn its place here deliberately.
       - name: Kernel branch coverage gate
         run: |
-          coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100
+          coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*,datum/locks.py" --fail-under=100
 
   # CF-3. Until this job existed, everything under web/ had zero automated
   # protection: the review queue, the API client, and the generated enums.

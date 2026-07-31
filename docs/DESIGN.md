@@ -253,15 +253,29 @@ The counter is written by a process other than the one that owns the run, so it 
 
 **The rule: a concurrency conflict is a domain condition, and must surface as a domain exception.** A conflict that reaches the caller as `IntegrityError` has inverted the barricade exactly as CF-2 did — the boundary passed a condition inward and the database caught it. That the database *does* catch it is not the defect. The defect is that the rejection depends on a constraint firing mid-transaction and arrives wearing a lower module's abstraction, so no caller can be written to expect it. CF-2 was one instance of this. It is a class.
 
-Three instances exist today, all reachable, none currently honouring the rule:
+Four instances exist today. Two honour the rule; two do not:
 
 | Where | The race, under READ COMMITTED | What holds integrity | What the caller sees |
 |---|---|---|---|
 | `intent/ingest.py::ingest_revision` | Check-then-insert on `(tenant, commit_sha)`. Two triggers carrying the same commit both read "no existing revision", both project. | `uq_revision_tenant_commit` | `IntegrityError` |
 | `intent/ingest.py::_project` | `UPDATE ... WHERE is_active` then `INSERT is_active=True`. T2's scan cannot see the row T1 has not yet committed, so both may insert an active revision. | `uq_one_active_revision_per_tenant` | `IntegrityError` |
-| `discovery/collector.py::_upsert` | `update_or_create` is a read followed by a write, not one statement. Two overlapping runs may both find no row and both insert. | `uq_discovered_natural_key` | `IntegrityError` |
+| `discovery/collector.py::_upsert` | `update_or_create` is a read followed by a write, not one statement. Two overlapping runs may both find no row and both insert. | `uq_discovered_natural_key` | **Excluded — see below** |
+| `reconcile/service.py::run_reconciliation` | Read both planes, `_reset`, then insert. An *empty* `_reset` DELETE takes no row locks, so two overlapping runs compute the same pairings and both insert. | `uq_active_match_per_declared` | **Excluded by `locked_run`; the later run is skipped** |
 
-None of these is hypothetical. The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. The third is what the collector lock exists to prevent.
+The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. They are tracked separately and are the only two still owing the rule.
+
+**Why `_upsert` is safe, in full.** An earlier version of this table credited the collector lock alone. That is half the reason, and the missing half is the part that can change. `uq_discovered_natural_key` covers `(tenant_id, kind, scope, name)`, so a collision needs two writers on one *kind*:
+
+- two runs of the **same** collector are excluded by `collector_lock`, which wraps `_read_once` and therefore every `_upsert`;
+- two **different** collectors can only collide by emitting the same kind, and none do — `kubernetes` → `Deployment`, `oci` → `ComputeInstance`.
+
+The second condition is a property of the current collector set rather than a guarantee. **A third collector emitting an existing kind reopens this race**, against a table that would otherwise say it was prevented. ADR-001's premise is that adding kinds and collectors is cheap, so that is exactly the change someone makes without expecting to touch concurrency. A table that is right for the wrong reason is worse than one that is wrong: it survives review by looking correct.
+
+**Reconciliation joined the advisory-lock decision rather than the idempotent-insertion one.** A reconciliation run is *a run* — it reads an entire estate, resets, and rewrites — so the argument for excluding collector runs applies to it unchanged, and the exclusion covers the whole read-then-write sequence rather than only the final insert. The race was reproduced before being fixed, and the reproduction is kept as `tests/test_reconciliation_lock.py::test_two_concurrent_runs_no_longer_collide`.
+
+**The lock must be taken outside the caller's transaction**, and this is a general obligation of `run_lock` rather than a reconcile detail. Advisory locks are session-scoped and the context manager releases on exit, so a lock nested *inside* an atomic block is released before the commit it was meant to protect. A second worker then acquires it, begins its own pass before the first transaction commits, and computes from the previously committed state. No dirty read occurs — READ COMMITTED does not permit one — and that is what makes the defect hard to see: the lock is genuinely held for the whole body, and only the commit falls outside it. `locked_run` owns both the lock and the transaction so that the correct composition is the convenient one; `run_lock` remains available for a body that must not hold a transaction, which is why `collector_lock` uses it — a collector holds its lock across a provider read, and wrapping that in a transaction would hold one open across network calls of unbounded duration.
+
+**Rolling deploys leave a window.** While old workers run without the lock and new workers take it, the old worker is invisible to the new worker's exclusion and the race stays open for the length of the deploy. Unavoidable without draining reconciliation first, and stated here so that anyone who needs a zero-race deploy knows to.
 
 **A race has two ways to lose, and the table above only listed one.** Found in review of the first implementation, and worth stating here because the omission was in the design rather than the code. A conflicting write is rejected either by a **constraint** — `IntegrityError`, SQLSTATE class 23 — or by the **transaction manager**, when the database rolls one side back to break a deadlock (`40P01`) or to preserve serializability (`40001`). Those arrive as different exception types: the second is an `OperationalError` and is invisible to any handler watching for `IntegrityError`.
 

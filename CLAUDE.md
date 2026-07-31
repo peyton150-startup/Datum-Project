@@ -83,7 +83,7 @@ ruff format --check .
 ruff check .
 mypy datum/reconcile datum/intent datum/graph
 pytest
-coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*" --fail-under=100
+coverage report --include="datum/reconcile/*,datum/workflow/*,datum/intent/*,datum/discovery/*,datum/locks.py" --fail-under=100
 ```
 
 The full suite needs Postgres (`docker-compose up -d`); without it ~165 tests error with `OperationalError` and only the kernel subset is meaningful.

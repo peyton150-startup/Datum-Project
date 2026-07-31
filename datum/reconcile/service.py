@@ -3,7 +3,6 @@ from django.utils import timezone
 
 from datum.discovery.models import DiscoveredResource
 from datum.enums import (
-    ACTIVE_MATCH_STATES,
     HUMAN_MATCH_STATES,
     DiscrepancyState,
     DiscrepancyType,

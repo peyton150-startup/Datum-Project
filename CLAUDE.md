@@ -63,3 +63,23 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 - Run the daily build and its smoke test locally.
 - Confirm no later-phase scope was pulled forward.
 - If you are closing a phase, walk its acceptance criteria in writing and state any not met plainly, rather than redefining them.
+
+## Phase 4 Code Review (WBS 1.5.1–1.5.4)
+
+**IMPORTANT:** All code written in Phase 4 (WBS 1.5.1 through WBS 1.5.4) must be rechecked in the next session before proceeding to Phase 5. This includes:
+
+- **WBS 1.5.1** (Identity Matching with CF-6 fix): Migration, matcher updates, 6 cross-run corpus tests
+- **WBS 1.5.2** (Diff Engine): Schema validation (Phase 2A complete), comparison handlers (Phases 2B–2F), logging, integration, adversarial corpus (150+ tests)
+- **WBS 1.5.3** (Precedence Policy): PrecedenceRule model, resolve functions, soft deletes
+- **WBS 1.5.4** (Discrepancy Lifecycle): State machine, DiscrepancyTransition table, rediscovery logic, retention policy
+
+**Checklist for next session:**
+- [ ] Run full test suite (including existing tests to ensure no regressions)
+- [ ] Verify all PRs are merged to main
+- [ ] Confirm CI passes on main
+- [ ] Check branch coverage for all kernel modules (≥100%)
+- [ ] Validate determinism properties hold for reconciliation
+- [ ] Spot-check integration: schema loading → comparison → discrepancy creation
+- [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation
+
+This delay protects against integration issues across the 4 WBS items and allows human review before Phase 5.

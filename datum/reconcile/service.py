@@ -3,7 +3,6 @@ from django.utils import timezone
 
 from datum.discovery.models import DiscoveredResource
 from datum.enums import (
-    ACTIVE_MATCH_STATES,
     HUMAN_MATCH_STATES,
     DiscrepancyState,
     DiscrepancyType,
@@ -13,7 +12,13 @@ from datum.enums import (
 from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
 from datum.reconcile.diff import reconcile
-from datum.reconcile.domain import DiscrepancySet, MatchDecision, MatchResult, NaturalKey, ResourceSnapshot
+from datum.reconcile.domain import (
+    DiscrepancySet,
+    MatchDecision,
+    MatchResult,
+    NaturalKey,
+    ResourceSnapshot,
+)
 from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
 

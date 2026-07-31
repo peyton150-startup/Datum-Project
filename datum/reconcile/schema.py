@@ -6,7 +6,7 @@ no defaults are inferred.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 
 class SchemaError(Exception):
@@ -65,7 +65,7 @@ class FieldConfig:
 
     field_name: str
     field_type: str
-    comparison: Dict[str, Any]
+    comparison: dict[str, Any]
     logging: str
 
     def __post_init__(self) -> None:
@@ -220,7 +220,7 @@ class ComparisonSchema:
         fields: Dict mapping field name to FieldConfig
     """
 
-    def __init__(self, kind_name: str, raw_schema: Dict[str, Any]) -> None:
+    def __init__(self, kind_name: str, raw_schema: dict[str, Any]) -> None:
         """Initialize schema from raw Kind.attribute_schema dict.
 
         Args:
@@ -231,10 +231,10 @@ class ComparisonSchema:
             SchemaError: If schema is malformed or missing required configs
         """
         self.kind_name = kind_name
-        self.fields: Dict[str, FieldConfig] = {}
+        self.fields: dict[str, FieldConfig] = {}
         self._validate_and_parse(raw_schema)
 
-    def _validate_and_parse(self, raw_schema: Dict[str, Any]) -> None:
+    def _validate_and_parse(self, raw_schema: dict[str, Any]) -> None:
         """Validate and parse the raw schema into FieldConfig objects.
 
         Args:

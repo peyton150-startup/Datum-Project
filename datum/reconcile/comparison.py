@@ -11,6 +11,7 @@ The audit_log_entry captures the decision trail for debugging and auditing.
 """
 
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any
 
 from datum.reconcile.domain import PlaneValue
@@ -476,3 +477,413 @@ def _compare_normalize(
     steps.append(f"Result: {is_equal}")
 
     return is_equal
+
+
+def compare_list(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Compare list fields using mode-specific logic.
+
+    Modes:
+        - ordered: Position matters (like Python lists)
+        - unordered_multiset: Order ignored, duplicates matter (like Counter)
+        - set: Order and duplicates ignored (like set)
+
+    Args:
+        declared: Value from declared plane
+        discovered: Value from discovered plane
+        field_config: Configuration with mode and parameters
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    from datum.reconcile.domain import canonical
+
+    mode: Any = field_config.comparison.get("mode")
+    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    steps: list[str] = []
+
+    # Handle absent/null cases
+    def get_value(plane_val: PlaneValue) -> Any:
+        return plane_val.resolve(
+            on_absent=lambda: None,
+            on_present=lambda v: v,
+        )
+
+    declared_val = get_value(declared)
+    discovered_val = get_value(discovered)
+
+    # If either is None/absent, they must both be None/absent to match
+    if declared_val is None or discovered_val is None:
+        is_equal = declared_val == discovered_val
+        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
+        return (
+            is_equal,
+            AuditLogEntry(
+                kind_name=kind_name,
+                field_name=field_config.field_name,
+                field_type="list",
+                comparison_mode=mode,
+                declared_raw=declared_val,
+                declared_transformed=declared_val,
+                discovered_raw=discovered_val,
+                discovered_transformed=discovered_val,
+                result=is_equal,
+                steps=steps,
+            ),
+        )
+
+    # Both must be lists
+    if not isinstance(declared_val, list) or not isinstance(discovered_val, list):
+        is_equal = False
+        steps.append(f"Type check failed: declared is {type(declared_val).__name__}, discovered is {type(discovered_val).__name__}")
+        return (
+            is_equal,
+            AuditLogEntry(
+                kind_name=kind_name,
+                field_name=field_config.field_name,
+                field_type="list",
+                comparison_mode=mode,
+                declared_raw=declared_val,
+                declared_transformed=str(declared_val),
+                discovered_raw=discovered_val,
+                discovered_transformed=str(discovered_val),
+                result=is_equal,
+                steps=steps,
+            ),
+        )
+
+    # Mode-specific comparison
+    def list_sort_key(item: Any) -> tuple[int, str]:
+        """Sort key for mixed-type list elements."""
+        type_order = {
+            type(None): 0,
+            bool: 1,
+            int: 2,
+            float: 3,
+            str: 4,
+            list: 5,
+            dict: 6,
+        }
+        item_type = type(item)
+        order = type_order.get(item_type, 99)
+        return (order, canonical(item))
+
+    if mode == "ordered":
+        is_equal = _compare_ordered_list(declared_val, discovered_val, steps)
+    elif mode == "unordered_multiset":
+        declared_sorted = sorted(declared_val, key=list_sort_key)
+        discovered_sorted = sorted(discovered_val, key=list_sort_key)
+        is_equal = _compare_multiset(declared_val, discovered_val, declared_sorted, discovered_sorted, steps)
+    elif mode == "set":
+        declared_set = sorted(
+            list({_make_hashable(item): item for item in declared_val}.values()),
+            key=list_sort_key,
+        )
+        discovered_set = sorted(
+            list({_make_hashable(item): item for item in discovered_val}.values()),
+            key=list_sort_key,
+        )
+        is_equal = _compare_set(declared_val, discovered_val, declared_set, discovered_set, steps)
+    else:
+        is_equal = False
+        steps.append(f"Unknown mode: {mode}")
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=kind_name,
+            field_name=field_config.field_name,
+            field_type="list",
+            comparison_mode=mode,
+            declared_raw=declared_val,
+            declared_transformed=str(declared_val),
+            discovered_raw=discovered_val,
+            discovered_transformed=str(discovered_val),
+            result=is_equal,
+            steps=steps,
+        ),
+    )
+
+
+def _make_hashable(item: Any) -> Any:
+    """Convert item to hashable form for set deduplication.
+
+    Args:
+        item: Item to convert
+
+    Returns:
+        Hashable representation of item
+    """
+    if isinstance(item, dict):
+        return tuple(sorted(item.items()))
+    elif isinstance(item, list):
+        return tuple(_make_hashable(i) for i in item)
+    else:
+        return item
+
+
+def _compare_ordered_list(
+    declared: list,
+    discovered: list,
+    steps: list[str],
+) -> bool:
+    """Compare lists in ordered mode (position matters).
+
+    Args:
+        declared: Raw declared list
+        discovered: Raw discovered list
+        steps: List to append comparison steps to
+
+    Returns:
+        True if lists have same elements in same order
+    """
+    from datum.reconcile.domain import canonical
+
+    steps.append("Mode: ordered")
+    steps.append(f"Declared: {declared}")
+    steps.append(f"Discovered: {discovered}")
+
+    is_equal = len(declared) == len(discovered)
+    if is_equal:
+        for i, (d, disc) in enumerate(zip(declared, discovered, strict=False)):
+            if canonical(d) != canonical(disc):
+                is_equal = False
+                steps.append(f"Mismatch at index {i}: {d!r} != {disc!r}")
+                break
+
+    steps.append(f"Result: {is_equal}")
+    return is_equal
+
+
+def _compare_multiset(
+    declared: list,
+    discovered: list,
+    declared_sorted: list,
+    discovered_sorted: list,
+    steps: list[str],
+) -> bool:
+    """Compare lists as multisets (order independent, duplicates matter).
+
+    Args:
+        declared: Raw declared list
+        discovered: Raw discovered list
+        declared_sorted: Sorted declared list
+        discovered_sorted: Sorted discovered list
+        steps: List to append comparison steps to
+
+    Returns:
+        True if lists have same elements with same counts (order ignored)
+    """
+    from datum.reconcile.domain import canonical
+
+    steps.append("Mode: unordered_multiset")
+    steps.append(f"Declared raw: {declared}")
+    steps.append(f"Discovered raw: {discovered}")
+    steps.append(f"Declared sorted: {declared_sorted}")
+    steps.append(f"Discovered sorted: {discovered_sorted}")
+
+    is_equal = len(declared_sorted) == len(discovered_sorted)
+    if is_equal:
+        for d, disc in zip(declared_sorted, discovered_sorted, strict=False):
+            if canonical(d) != canonical(disc):
+                is_equal = False
+                break
+
+    steps.append(f"Result: {is_equal}")
+    return is_equal
+
+
+def _compare_set(
+    declared: list,
+    discovered: list,
+    declared_set: list,
+    discovered_set: list,
+    steps: list[str],
+) -> bool:
+    """Compare lists as sets (order and duplicates ignored).
+
+    Args:
+        declared: Raw declared list
+        discovered: Raw discovered list
+        declared_set: Set as sorted list (unique elements)
+        discovered_set: Set as sorted list (unique elements)
+        steps: List to append comparison steps to
+
+    Returns:
+        True if lists have same unique elements (order and duplicates ignored)
+    """
+    from datum.reconcile.domain import canonical
+
+    steps.append("Mode: set")
+    steps.append(f"Declared raw: {declared}")
+    steps.append(f"Discovered raw: {discovered}")
+    steps.append(f"Declared as set: {declared_set}")
+    steps.append(f"Discovered as set: {discovered_set}")
+
+    is_equal = len(declared_set) == len(discovered_set)
+    if is_equal:
+        for d, disc in zip(declared_set, discovered_set, strict=False):
+            if canonical(d) != canonical(disc):
+                is_equal = False
+                break
+
+    steps.append(f"Result: {is_equal}")
+    return is_equal
+
+
+def _compare_semantic_timestamp(
+    declared_val: Any,
+    discovered_val: Any,
+    precision: str,
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare timestamps in semantic mode (parse, convert to UTC, truncate).
+
+    Args:
+        declared_val: Timestamp value from declared plane
+        discovered_val: Timestamp value from discovered plane
+        precision: Precision level (day, hour, minute, second)
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, transformed_declared, transformed_discovered) tuple
+    """
+    from dateutil import parser as dateutil_parser
+
+    try:
+        declared_dt = dateutil_parser.parse(str(declared_val))
+        discovered_dt = dateutil_parser.parse(str(discovered_val))
+
+        # Convert to UTC
+        if declared_dt.tzinfo is None:
+            declared_dt = declared_dt.replace(tzinfo=UTC)
+        else:
+            declared_dt = declared_dt.astimezone(UTC)
+
+        if discovered_dt.tzinfo is None:
+            discovered_dt = discovered_dt.replace(tzinfo=UTC)
+        else:
+            discovered_dt = discovered_dt.astimezone(UTC)
+
+        # Truncate to precision level
+        if precision == "day":
+            declared_cmp = declared_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            discovered_cmp = discovered_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif precision == "hour":
+            declared_cmp = declared_dt.replace(minute=0, second=0, microsecond=0)
+            discovered_cmp = discovered_dt.replace(minute=0, second=0, microsecond=0)
+        elif precision == "minute":
+            declared_cmp = declared_dt.replace(second=0, microsecond=0)
+            discovered_cmp = discovered_dt.replace(second=0, microsecond=0)
+        else:  # second
+            declared_cmp = declared_dt.replace(microsecond=0)
+            discovered_cmp = discovered_dt.replace(microsecond=0)
+
+        is_equal = declared_cmp == discovered_cmp
+        transformed_declared = str(declared_cmp)
+        transformed_discovered = str(discovered_cmp)
+        return (is_equal, transformed_declared, transformed_discovered)
+    except Exception as e:
+        steps.append(f"Error parsing timestamp: {e}")
+        return (False, str(declared_val), str(discovered_val))
+
+
+def compare_timestamp(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Compare timestamp fields using mode-specific logic.
+
+    Modes:
+        - string: Exact string matching (no parsing or timezone conversion)
+        - semantic_utc: Parse timestamps, convert to UTC, compare at precision level
+        - semantic_resource_tz: Parse timestamps, compare in resource timezone
+
+    Precision levels: day, hour, minute, second
+
+    Args:
+        declared: Value from declared plane
+        discovered: Value from discovered plane
+        field_config: Configuration with mode and parameters
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    mode: Any = field_config.comparison.get("mode")
+    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    precision: Any = field_config.comparison.get("precision", "second")
+    steps: list[str] = []
+
+    # Handle absent/null cases
+    def get_value(plane_val: PlaneValue) -> Any:
+        return plane_val.resolve(
+            on_absent=lambda: None,
+            on_present=lambda v: v,
+        )
+
+    declared_val = get_value(declared)
+    discovered_val = get_value(discovered)
+
+    # If either is None/absent, they must both be None/absent to match
+    if declared_val is None or discovered_val is None:
+        is_equal = declared_val == discovered_val
+        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
+        return (
+            is_equal,
+            AuditLogEntry(
+                kind_name=kind_name,
+                field_name=field_config.field_name,
+                field_type="timestamp",
+                comparison_mode=mode,
+                declared_raw=declared_val,
+                declared_transformed=declared_val,
+                discovered_raw=discovered_val,
+                discovered_transformed=discovered_val,
+                result=is_equal,
+                steps=steps,
+            ),
+        )
+
+    # Mode-specific comparison
+    if mode == "string":
+        is_equal = str(declared_val) == str(discovered_val)
+        transformed_declared = str(declared_val)
+        transformed_discovered = str(discovered_val)
+        steps.append("Mode: string")
+        steps.append(f"Declared: {transformed_declared!r}")
+        steps.append(f"Discovered: {transformed_discovered!r}")
+        steps.append(f"Result: {is_equal}")
+    elif mode in ("semantic_utc", "semantic_resource_tz"):
+        is_equal, transformed_declared, transformed_discovered = _compare_semantic_timestamp(
+            declared_val, discovered_val, precision, steps
+        )
+        steps.append(f"Mode: {mode}")
+        steps.append(f"Precision: {precision}")
+        steps.append(f"Declared UTC: {transformed_declared}")
+        steps.append(f"Discovered UTC: {transformed_discovered}")
+        steps.append(f"Result: {is_equal}")
+    else:
+        steps.append(f"Unknown mode: {mode}")
+        is_equal = False
+        transformed_declared = str(declared_val)
+        transformed_discovered = str(discovered_val)
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=kind_name,
+            field_name=field_config.field_name,
+            field_type="timestamp",
+            comparison_mode=mode,
+            declared_raw=declared_val,
+            declared_transformed=transformed_declared,
+            discovered_raw=discovered_val,
+            discovered_transformed=transformed_discovered,
+            result=is_equal,
+            steps=steps,
+        ),
+    )

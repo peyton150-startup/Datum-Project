@@ -2,7 +2,7 @@ import pytest
 
 from datum.discovery.collector import run_collector
 from datum.discovery.kubernetes import from_recording
-from datum.enums import DiscrepancyState, DiscrepancyType
+from datum.enums import DiscrepancyState, DiscrepancyType, MatchState
 from datum.intent.ingest import ingest_revision
 from datum.reconcile.models import Discrepancy, Match
 from datum.reconcile.service import run_reconciliation
@@ -57,3 +57,68 @@ def test_declared_but_never_provisioned_is_declared_missing(intent_repo):
     d = Discrepancy.objects.get(tenant_id=TENANT)
     assert d.discrepancy_type == DiscrepancyType.DECLARED_MISSING
     assert d.name == "web"
+
+
+# CF-6's write half. The anchor columns are what a match is about, and the
+# service wrote them nowhere: every row landed on ('', '', ''). One pair per run
+# hid it, because a single empty anchor collides with nothing.
+
+
+def test_a_written_match_carries_the_anchor_it_was_decided_about(intent_repo):
+    """Without this the row is unfindable and uncountable.
+
+    `_stored_decisions` looks a decision up by these four columns, and the
+    active-match index is unique over them. An empty anchor is therefore both a
+    decision that can never be read back and a row that refuses to have a
+    sibling -- the second pair in any run is an IntegrityError.
+    """
+    ingest_revision(TENANT, intent_repo())
+    run_collector(from_recording(FIXTURE), TENANT)
+    run_reconciliation(TENANT)
+
+    match = Match.objects.get(tenant_id=TENANT)
+    assert (match.declared_kind, match.declared_scope, match.declared_name) == (
+        "Deployment",
+        "default",
+        "web",
+    )
+    assert match.discovered_provider_id == "uid-web-1"
+
+
+def test_a_confirmed_match_survives_a_rerun_undemoted(intent_repo):
+    """The matcher re-derives a confirmed pairing every run; the row must not be rewritten.
+
+    A fresh proposal for the same anchor would collide with the human's row on
+    the active-match index, and demote a decision to a proposal if it did not.
+    The row keeps the strategy it was proposed under: it is the human's record,
+    not this run's output.
+    """
+    ingest_revision(TENANT, intent_repo())
+    run_collector(from_recording(FIXTURE), TENANT)
+    run_reconciliation(TENANT)
+    Match.objects.filter(tenant_id=TENANT).update(state=MatchState.CONFIRMED)
+
+    run_reconciliation(TENANT)
+
+    match = Match.objects.get(tenant_id=TENANT)
+    assert match.state == MatchState.CONFIRMED
+    assert match.declared_name == "web"
+
+
+def test_a_confirmed_match_still_has_its_fields_compared(intent_repo):
+    """The nearby case the fix must not break.
+
+    Leaving the match row alone is about the pairing, not about the diff. A
+    confirmed pair is still two resources that can drift, and the run that
+    skips rewriting its row must still report the field that differs.
+    """
+    ingest_revision(TENANT, intent_repo())
+    run_collector(from_recording(FIXTURE), TENANT)
+    run_reconciliation(TENANT)
+    Match.objects.filter(tenant_id=TENANT).update(state=MatchState.CONFIRMED)
+
+    run_reconciliation(TENANT)
+
+    d = Discrepancy.objects.get(tenant_id=TENANT, state=DiscrepancyState.OPEN)
+    assert (d.discrepancy_type, d.field_name) == (DiscrepancyType.FIELD, "replicas")
+    assert (d.declared_value, d.discovered_value) == (3, 5)

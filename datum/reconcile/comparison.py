@@ -10,11 +10,13 @@ Kind.attribute_schema. Each function:
 The audit_log_entry captures the decision trail for debugging and auditing.
 """
 
+import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
 
-from datum.reconcile.domain import PlaneValue
+from datum.reconcile.domain import PlaneValue, canonical
 from datum.reconcile.schema import FieldConfig
 
 
@@ -892,3 +894,409 @@ def compare_timestamp(
             steps=steps,
         ),
     )
+
+
+# --- Object comparison (WBS 1.5.2 Phase 2F) ----------------------------------
+#
+# DIFF_SEMANTICS.md section 5. Five modes, four of them fixed and one
+# parameterized, so the fixed four are a table rather than an if-chain: adding
+# a mode is a row, and no branch can be reached that the table does not name.
+
+OBJECT_MODE_IGNORE = "ignore"
+OBJECT_VERSION_KEY = "version"
+OBJECT_IDENTITY_KEY = "id"
+RECURSE_PREFIX = "recurse("
+FULL_RECURSION = -1
+
+# What each plane said about a field, for the cases where at least one side is
+# not a comparable object. These are the plane's *statement*, not its value:
+# absence and null are two statements, and collapsing them is the defect
+# PlaneValue exists to prevent (DESIGN section 13).
+STATEMENT_ABSENT = "absent"
+STATEMENT_NULL = "null"
+STATEMENT_OBJECT = "object"
+
+# Two planes agree only when they made the same statement AND that statement is
+# one a comparison can affirm. Two sides that both hold a non-object under an
+# object config agree by accident, not by comparison: the configured semantics
+# never ran, so the result is a discrepancy rather than a match. Same rule
+# compare_list applies to a non-list.
+AFFIRMABLE_STATEMENTS = frozenset({STATEMENT_ABSENT, STATEMENT_NULL})
+
+ROOT_PATH = "<root>"
+IGNORED_MARKER = "<ignored>"
+MISSING_KEY_MARKER = "<missing>"
+
+
+def compare_object(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Compare object fields using mode-specific logic.
+
+    Modes:
+        - opaque: Structure-preserving hash of the whole object; no drilling
+        - version: Compare the `version` key only, as strings
+        - identity: Compare the `id` key only, as strings
+        - ignore: Always matches; never produces a discrepancy
+        - recurse(depth): Drill `depth` levels, then compare what is left
+          opaquely. recurse(0) is opaque, recurse(-1) is fully recursive.
+
+    Key order never affects the result, in any mode and at any depth.
+
+    Args:
+        declared: Value from declared plane
+        discovered: Value from discovered plane
+        field_config: Configuration with mode and parameters
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    mode: Any = field_config.comparison.get("mode")
+    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    steps: list[str] = []
+
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+
+    is_equal, declared_transformed, discovered_transformed = _object_comparison(
+        mode, declared_state, discovered_state, steps
+    )
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=kind_name,
+            field_name=field_config.field_name,
+            field_type="object",
+            comparison_mode=mode,
+            declared_raw=declared_state[1],
+            declared_transformed=declared_transformed,
+            discovered_raw=discovered_state[1],
+            discovered_transformed=discovered_transformed,
+            result=is_equal,
+            steps=steps,
+        ),
+    )
+
+
+def _presence_and_value(plane_val: PlaneValue) -> tuple[bool, Any]:
+    """Split a plane's statement into whether it spoke and what it said.
+
+    Keeps presence alongside the value rather than folding absence into None,
+    so `missing` and `null` stay two facts all the way into the comparison.
+    """
+    return plane_val.resolve(
+        on_absent=lambda: (False, None),
+        on_present=lambda v: (True, v),
+    )
+
+
+def _object_comparison(
+    mode: Any,
+    declared_state: tuple[bool, Any],
+    discovered_state: tuple[bool, Any],
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Route one object comparison to its mode, returning result and audit forms.
+
+    Args:
+        mode: Comparison mode from the field config
+        declared_state: (present, value) for the declared plane
+        discovered_state: (present, value) for the discovered plane
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, declared_transformed, discovered_transformed) tuple
+    """
+    if mode == OBJECT_MODE_IGNORE:
+        return _ignored_comparison(steps)
+
+    if not _is_stated_object(*declared_state) or not _is_stated_object(*discovered_state):
+        return _unstated_comparison(declared_state, discovered_state, steps)
+
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
+
+    handler = OBJECT_MODE_HANDLERS.get(mode)
+    if handler is not None:
+        return handler(declared_val, discovered_val, steps)
+
+    if _is_recursion_mode(mode):
+        depth = int(mode[len(RECURSE_PREFIX) : -1])
+        return _compare_recursively(declared_val, discovered_val, depth, steps)
+
+    steps.append(f"Unknown mode: {mode}")
+    return (False, canonical(declared_val), canonical(discovered_val))
+
+
+def _is_stated_object(present: bool, value: Any) -> bool:
+    """True when a plane both mentioned the field and gave it an object value."""
+    return present and isinstance(value, dict)
+
+
+def _is_recursion_mode(mode: Any) -> bool:
+    """True for the parameterized recurse(N) mode."""
+    return isinstance(mode, str) and mode.startswith(RECURSE_PREFIX)
+
+
+def _plane_statement(present: bool, value: Any) -> str:
+    """Name what one plane said about the field, presence included."""
+    if not present:
+        return STATEMENT_ABSENT
+    if value is None:
+        return STATEMENT_NULL
+    if isinstance(value, dict):
+        return STATEMENT_OBJECT
+    return f"non-object:{type(value).__name__}"
+
+
+def _ignored_comparison(steps: list[str]) -> tuple[bool, str, str]:
+    """Report a match without reading either side.
+
+    `ignore` short-circuits ahead of presence and type handling on purpose: a
+    field configured as ignored must never produce a discrepancy, including
+    when one plane omits it entirely.
+    """
+    steps.append("Mode: ignore")
+    steps.append("Result: True (field ignored; never a discrepancy)")
+    return (True, IGNORED_MARKER, IGNORED_MARKER)
+
+
+def _unstated_comparison(
+    declared_state: tuple[bool, Any],
+    discovered_state: tuple[bool, Any],
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two planes when at least one did not state a comparable object.
+
+    Agreement here is agreement on the *statement*: both absent, or both null.
+    Absent against null is a discrepancy, because field absence and an explicit
+    null are different claims (DIFF_SEMANTICS.md, Null / Missing / Empty).
+
+    Args:
+        declared_state: (present, value) for the declared plane
+        discovered_state: (present, value) for the discovered plane
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, declared_transformed, discovered_transformed) tuple
+    """
+    declared_statement = _plane_statement(*declared_state)
+    discovered_statement = _plane_statement(*discovered_state)
+
+    steps.append(f"Declared statement: {declared_statement}")
+    steps.append(f"Discovered statement: {discovered_statement}")
+
+    is_equal = (
+        declared_statement == discovered_statement and declared_statement in AFFIRMABLE_STATEMENTS
+    )
+    steps.append(f"Result: {is_equal}")
+
+    return (is_equal, declared_statement, discovered_statement)
+
+
+def _structure_hash(value: Any) -> str:
+    """Structure-preserving hash of a value.
+
+    Built on `canonical`, which sorts keys at every level, so key order cannot
+    change the hash and a change in structure or content always can.
+    """
+    return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
+
+
+def _compare_opaque(
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two objects as opaque blobs, by structure-preserving hash.
+
+    Args:
+        declared_val: Declared plane object
+        discovered_val: Discovered plane object
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, declared_hash, discovered_hash) tuple
+    """
+    declared_hash = _structure_hash(declared_val)
+    discovered_hash = _structure_hash(discovered_val)
+
+    steps.append("Mode: opaque")
+    steps.append(f"Declared hash: {declared_hash}")
+    steps.append(f"Discovered hash: {discovered_hash}")
+
+    is_equal = declared_hash == discovered_hash
+    steps.append(f"Result: {is_equal}")
+
+    return (is_equal, declared_hash, discovered_hash)
+
+
+def _compare_by_key(
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
+    key: str,
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two objects by one key's value, as strings, ignoring the rest.
+
+    A side missing the key is a discrepancy rather than a match: the comparison
+    the config asked for could not be performed, and a kernel that cannot
+    compare must not claim agreement.
+
+    Args:
+        declared_val: Declared plane object
+        discovered_val: Discovered plane object
+        key: The key carrying the value to compare
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, declared_extracted, discovered_extracted) tuple
+    """
+    stated_on_both = key in declared_val and key in discovered_val
+    declared_extracted = _extracted_key(declared_val, key)
+    discovered_extracted = _extracted_key(discovered_val, key)
+
+    steps.append(f"Comparing on key {key!r}")
+    steps.append(f"Declared {key}: {declared_extracted}")
+    steps.append(f"Discovered {key}: {discovered_extracted}")
+
+    # Presence is checked on the key itself, not on the extracted string: an
+    # object whose value happens to equal the marker must not read as missing.
+    is_equal = stated_on_both and declared_extracted == discovered_extracted
+    steps.append(f"Result: {is_equal}")
+
+    return (is_equal, declared_extracted, discovered_extracted)
+
+
+def _extracted_key(value: dict[str, Any], key: str) -> str:
+    """The string form of one key's value, or a marker when the key is absent."""
+    if key not in value:
+        return MISSING_KEY_MARKER
+    return str(value[key])
+
+
+def _compare_version(
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two objects by their `version` key, ignoring contents."""
+    steps.append("Mode: version")
+    return _compare_by_key(declared_val, discovered_val, OBJECT_VERSION_KEY, steps)
+
+
+def _compare_identity(
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two objects by their `id` key, ignoring contents."""
+    steps.append("Mode: identity")
+    return _compare_by_key(declared_val, discovered_val, OBJECT_IDENTITY_KEY, steps)
+
+
+def _compare_recursively(
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
+    depth: int,
+    steps: list[str],
+) -> tuple[bool, str, str]:
+    """Compare two objects by drilling `depth` levels, then comparing opaquely.
+
+    Recursion changes what the audit trail can say, not what counts as equal:
+    the result matches an opaque comparison at every depth, but a recursive run
+    names the path that diverged instead of two hashes that differ.
+
+    Args:
+        declared_val: Declared plane object
+        discovered_val: Discovered plane object
+        depth: Levels to drill; FULL_RECURSION drills without limit
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, declared_canonical, discovered_canonical) tuple
+    """
+    steps.append(f"Mode: recurse({depth})")
+
+    divergence = _first_divergence(declared_val, discovered_val, depth, "")
+    is_equal = divergence is None
+    if not is_equal:
+        steps.append(f"Diverged at: {divergence}")
+    steps.append(f"Result: {is_equal}")
+
+    return (is_equal, canonical(declared_val), canonical(discovered_val))
+
+
+def _first_divergence(
+    declared_val: Any,
+    discovered_val: Any,
+    depth: int,
+    path: str,
+) -> str | None:
+    """The path of the first difference in sorted key order, or None if none.
+
+    Keys are walked over the union of both sides in sorted order, so the answer
+    does not depend on either side's insertion order and a key present on only
+    one side is a difference rather than a skip.
+
+    Args:
+        declared_val: Declared plane value at this path
+        discovered_val: Discovered plane value at this path
+        depth: Levels still available to drill at this path
+        path: Dotted path walked so far
+
+    Returns:
+        The dotted path of the first divergence, or None if the values agree
+    """
+    if not _is_drillable(declared_val, discovered_val, depth):
+        return _opaque_divergence(declared_val, discovered_val, path)
+
+    remaining = _remaining_depth(depth)
+    for key in sorted(set(declared_val) | set(discovered_val)):
+        child_path = _joined_path(path, key)
+        if key not in declared_val or key not in discovered_val:
+            return child_path
+        found = _first_divergence(declared_val[key], discovered_val[key], remaining, child_path)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_drillable(declared_val: Any, discovered_val: Any, depth: int) -> bool:
+    """True when both sides are objects and there is depth left to spend.
+
+    Depth 0 is what makes recurse(0) and opaque the same comparison.
+    """
+    return depth != 0 and isinstance(declared_val, dict) and isinstance(discovered_val, dict)
+
+
+def _remaining_depth(depth: int) -> int:
+    """Full recursion never runs out; a finite depth spends one level per drill."""
+    if depth == FULL_RECURSION:
+        return FULL_RECURSION
+    return depth - 1
+
+
+def _opaque_divergence(declared_val: Any, discovered_val: Any, path: str) -> str | None:
+    """Compare two values whole, naming the path when they differ."""
+    if canonical(declared_val) == canonical(discovered_val):
+        return None
+    return path or ROOT_PATH
+
+
+def _joined_path(path: str, key: str) -> str:
+    """Extend a dotted path by one key."""
+    if not path:
+        return key
+    return f"{path}.{key}"
+
+
+# The fixed modes, as a table. recurse(N) is parameterized and cannot be a row.
+OBJECT_MODE_HANDLERS: dict[str, Callable[[Any, Any, list[str]], tuple[bool, str, str]]] = {
+    "opaque": _compare_opaque,
+    "version": _compare_version,
+    "identity": _compare_identity,
+}

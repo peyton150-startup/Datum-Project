@@ -49,6 +49,116 @@ class AuditLogEntry:
     steps: list[str]
 
 
+# --- Presence, shared by every comparison type -------------------------------
+#
+# What a plane *said* about a field, not what it holds. Absence and null are two
+# statements, and collapsing them into None is the defect PlaneValue exists to
+# prevent (DESIGN section 13, DIFF_SEMANTICS Null / Missing / Empty).
+#
+# Encoded once, for the reason diff.py gives for having no sentinel of its own:
+# a second encoding of absence would have to agree with the first. Every
+# comparison type routes its absent, null, and wrong-type cases through this
+# section rather than restating the rule.
+
+STATEMENT_ABSENT = "absent"
+STATEMENT_NULL = "null"
+
+# Two planes agree here only when they made the same statement AND that
+# statement is one a comparison can affirm. Two sides that both hold a value the
+# configured mode could not compare -- a string under a list config, an integer
+# under an object config -- agree by accident, not by comparison. The configured
+# semantics never ran, so the result is a discrepancy rather than a match.
+AFFIRMABLE_STATEMENTS = frozenset({STATEMENT_ABSENT, STATEMENT_NULL})
+
+
+def _presence_and_value(plane_val: PlaneValue) -> tuple[bool, Any]:
+    """Split a plane's statement into whether it spoke and what it said.
+
+    Keeps presence alongside the value rather than folding absence into None,
+    so `missing` and `null` stay two facts all the way into the comparison.
+    """
+    return plane_val.resolve(
+        on_absent=lambda: (False, None),
+        on_present=lambda v: (True, v),
+    )
+
+
+def _states_a_value(present: bool, value: Any) -> bool:
+    """True when a plane mentioned the field and gave it something but null."""
+    return present and value is not None
+
+
+def _states_a_list(present: bool, value: Any) -> bool:
+    """True when a plane both mentioned the field and gave it a list value."""
+    return _states_a_value(present, value) and isinstance(value, list)
+
+
+def _states_an_object(present: bool, value: Any) -> bool:
+    """True when a plane both mentioned the field and gave it an object value."""
+    return _states_a_value(present, value) and isinstance(value, dict)
+
+
+def _plane_statement(present: bool, value: Any) -> str:
+    """Name what one plane said about a field, presence included."""
+    if not present:
+        return STATEMENT_ABSENT
+    if value is None:
+        return STATEMENT_NULL
+    return f"value:{type(value).__name__}"
+
+
+def _unstated_comparison(
+    field_config: FieldConfig,
+    field_type: str,
+    declared_state: tuple[bool, Any],
+    discovered_state: tuple[bool, Any],
+    steps: list[str],
+) -> tuple[bool, AuditLogEntry]:
+    """Compare two planes when at least one did not state a comparable value.
+
+    Agreement here is agreement on the *statement*: both absent, or both null.
+    Absent against null is a discrepancy, because field absence and an explicit
+    null are different claims.
+
+    Args:
+        field_config: Configuration the comparison was asked for
+        field_type: Type name to record on the audit entry
+        declared_state: (present, value) for the declared plane
+        discovered_state: (present, value) for the discovered plane
+        steps: List to append comparison steps to
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    mode: Any = field_config.comparison.get("mode")
+    declared_statement = _plane_statement(*declared_state)
+    discovered_statement = _plane_statement(*discovered_state)
+
+    steps.append(f"Declared statement: {declared_statement}")
+    steps.append(f"Discovered statement: {discovered_statement}")
+
+    is_equal = (
+        declared_statement == discovered_statement and declared_statement in AFFIRMABLE_STATEMENTS
+    )
+    steps.append(f"Result: {is_equal}")
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=field_config.comparison.get("_kind_name", "unknown"),
+            field_name=field_config.field_name,
+            field_type=field_type,
+            comparison_mode=mode,
+            declared_raw=declared_state[1],
+            declared_transformed=declared_statement,
+            discovered_raw=discovered_state[1],
+            discovered_transformed=discovered_statement,
+            result=is_equal,
+            steps=steps,
+        ),
+    )
+
+
 def compare_numeric(
     declared: PlaneValue,
     discovered: PlaneValue,
@@ -76,34 +186,14 @@ def compare_numeric(
     kind_name = field_config.comparison.get("_kind_name", "unknown")
     steps: list[str] = []
 
-    # Handle absent/null cases
-    def get_value(plane_val: PlaneValue) -> Any:
-        return plane_val.resolve(
-            on_absent=lambda: None,
-            on_present=lambda v: v,
-        )
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
 
-    declared_val = get_value(declared)
-    discovered_val = get_value(discovered)
-
-    # If either is None/absent, they must both be None/absent to match
-    if declared_val is None or discovered_val is None:
-        is_equal = declared_val == discovered_val
-        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
-        return (
-            is_equal,
-            AuditLogEntry(
-                kind_name=kind_name,
-                field_name=field_config.field_name,
-                field_type="numeric",
-                comparison_mode=mode,
-                declared_raw=declared_val,
-                declared_transformed=declared_val,
-                discovered_raw=discovered_val,
-                discovered_transformed=discovered_val,
-                result=is_equal,
-                steps=steps,
-            ),
+    if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
+        return _unstated_comparison(
+            field_config, "numeric", declared_state, discovered_state, steps
         )
 
     # Mode-specific comparison
@@ -268,35 +358,13 @@ def compare_string(
     kind_name = field_config.comparison.get("_kind_name", "unknown")
     steps: list[str] = []
 
-    # Handle absent/null cases
-    def get_value(plane_val: PlaneValue) -> Any:
-        return plane_val.resolve(
-            on_absent=lambda: None,
-            on_present=lambda v: v,
-        )
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
 
-    declared_val = get_value(declared)
-    discovered_val = get_value(discovered)
-
-    # If either is None/absent, they must both be None/absent to match
-    if declared_val is None or discovered_val is None:
-        is_equal = declared_val == discovered_val
-        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
-        return (
-            is_equal,
-            AuditLogEntry(
-                kind_name=kind_name,
-                field_name=field_config.field_name,
-                field_type="string",
-                comparison_mode=mode,
-                declared_raw=declared_val,
-                declared_transformed=declared_val,
-                discovered_raw=discovered_val,
-                discovered_transformed=discovered_val,
-                result=is_equal,
-                steps=steps,
-            ),
-        )
+    if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
+        return _unstated_comparison(field_config, "string", declared_state, discovered_state, steps)
 
     # Convert to string if not already
     declared_str = str(declared_val)
@@ -507,58 +575,15 @@ def compare_list(
     kind_name = field_config.comparison.get("_kind_name", "unknown")
     steps: list[str] = []
 
-    # Handle absent/null cases
-    def get_value(plane_val: PlaneValue) -> Any:
-        return plane_val.resolve(
-            on_absent=lambda: None,
-            on_present=lambda v: v,
-        )
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
 
-    declared_val = get_value(declared)
-    discovered_val = get_value(discovered)
-
-    # If either is None/absent, they must both be None/absent to match
-    if declared_val is None or discovered_val is None:
-        is_equal = declared_val == discovered_val
-        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
-        return (
-            is_equal,
-            AuditLogEntry(
-                kind_name=kind_name,
-                field_name=field_config.field_name,
-                field_type="list",
-                comparison_mode=mode,
-                declared_raw=declared_val,
-                declared_transformed=declared_val,
-                discovered_raw=discovered_val,
-                discovered_transformed=discovered_val,
-                result=is_equal,
-                steps=steps,
-            ),
-        )
-
-    # Both must be lists
-    if not isinstance(declared_val, list) or not isinstance(discovered_val, list):
-        is_equal = False
-        steps.append(
-            f"Type check failed: declared is {type(declared_val).__name__}, "
-            f"discovered is {type(discovered_val).__name__}"
-        )
-        return (
-            is_equal,
-            AuditLogEntry(
-                kind_name=kind_name,
-                field_name=field_config.field_name,
-                field_type="list",
-                comparison_mode=mode,
-                declared_raw=declared_val,
-                declared_transformed=str(declared_val),
-                discovered_raw=discovered_val,
-                discovered_transformed=str(discovered_val),
-                result=is_equal,
-                steps=steps,
-            ),
-        )
+    # Absent, null, and not-a-list all land here: none of them is a list this
+    # mode can compare, and the statement rule decides all three the same way.
+    if not _states_a_list(*declared_state) or not _states_a_list(*discovered_state):
+        return _unstated_comparison(field_config, "list", declared_state, discovered_state, steps)
 
     # Mode-specific comparison
     def list_sort_key(item: Any) -> tuple[int, str]:
@@ -825,34 +850,14 @@ def compare_timestamp(
     precision: Any = field_config.comparison.get("precision", "second")
     steps: list[str] = []
 
-    # Handle absent/null cases
-    def get_value(plane_val: PlaneValue) -> Any:
-        return plane_val.resolve(
-            on_absent=lambda: None,
-            on_present=lambda v: v,
-        )
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
 
-    declared_val = get_value(declared)
-    discovered_val = get_value(discovered)
-
-    # If either is None/absent, they must both be None/absent to match
-    if declared_val is None or discovered_val is None:
-        is_equal = declared_val == discovered_val
-        steps.append(f"Null/absent handling: declared={declared_val}, discovered={discovered_val}")
-        return (
-            is_equal,
-            AuditLogEntry(
-                kind_name=kind_name,
-                field_name=field_config.field_name,
-                field_type="timestamp",
-                comparison_mode=mode,
-                declared_raw=declared_val,
-                declared_transformed=declared_val,
-                discovered_raw=discovered_val,
-                discovered_transformed=discovered_val,
-                result=is_equal,
-                steps=steps,
-            ),
+    if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
+        return _unstated_comparison(
+            field_config, "timestamp", declared_state, discovered_state, steps
         )
 
     # Mode-specific comparison
@@ -908,21 +913,6 @@ OBJECT_IDENTITY_KEY = "id"
 RECURSE_PREFIX = "recurse("
 FULL_RECURSION = -1
 
-# What each plane said about a field, for the cases where at least one side is
-# not a comparable object. These are the plane's *statement*, not its value:
-# absence and null are two statements, and collapsing them is the defect
-# PlaneValue exists to prevent (DESIGN section 13).
-STATEMENT_ABSENT = "absent"
-STATEMENT_NULL = "null"
-STATEMENT_OBJECT = "object"
-
-# Two planes agree only when they made the same statement AND that statement is
-# one a comparison can affirm. Two sides that both hold a non-object under an
-# object config agree by accident, not by comparison: the configured semantics
-# never ran, so the result is a discrepancy rather than a match. Same rule
-# compare_list applies to a non-list.
-AFFIRMABLE_STATEMENTS = frozenset({STATEMENT_ABSENT, STATEMENT_NULL})
-
 ROOT_PATH = "<root>"
 IGNORED_MARKER = "<ignored>"
 MISSING_KEY_MARKER = "<missing>"
@@ -960,9 +950,17 @@ def compare_object(
     declared_state = _presence_and_value(declared)
     discovered_state = _presence_and_value(discovered)
 
-    is_equal, declared_transformed, discovered_transformed = _object_comparison(
-        mode, declared_state, discovered_state, steps
-    )
+    # `ignore` short-circuits ahead of presence handling on purpose: a field
+    # configured as ignored must never produce a discrepancy, including when
+    # one plane omits it entirely.
+    if mode == OBJECT_MODE_IGNORE:
+        is_equal, declared_transformed, discovered_transformed = _ignored_comparison(steps)
+    elif not _states_an_object(*declared_state) or not _states_an_object(*discovered_state):
+        return _unstated_comparison(field_config, "object", declared_state, discovered_state, steps)
+    else:
+        is_equal, declared_transformed, discovered_transformed = _object_comparison(
+            mode, declared_state[1], discovered_state[1], steps
+        )
 
     return (
         is_equal,
@@ -981,44 +979,25 @@ def compare_object(
     )
 
 
-def _presence_and_value(plane_val: PlaneValue) -> tuple[bool, Any]:
-    """Split a plane's statement into whether it spoke and what it said.
-
-    Keeps presence alongside the value rather than folding absence into None,
-    so `missing` and `null` stay two facts all the way into the comparison.
-    """
-    return plane_val.resolve(
-        on_absent=lambda: (False, None),
-        on_present=lambda v: (True, v),
-    )
-
-
 def _object_comparison(
     mode: Any,
-    declared_state: tuple[bool, Any],
-    discovered_state: tuple[bool, Any],
+    declared_val: dict[str, Any],
+    discovered_val: dict[str, Any],
     steps: list[str],
 ) -> tuple[bool, str, str]:
     """Route one object comparison to its mode, returning result and audit forms.
 
+    Both sides are known to be objects by the time this runs.
+
     Args:
         mode: Comparison mode from the field config
-        declared_state: (present, value) for the declared plane
-        discovered_state: (present, value) for the discovered plane
+        declared_val: Declared plane object
+        discovered_val: Discovered plane object
         steps: List to append comparison steps to
 
     Returns:
         (is_equal, declared_transformed, discovered_transformed) tuple
     """
-    if mode == OBJECT_MODE_IGNORE:
-        return _ignored_comparison(steps)
-
-    if not _is_stated_object(*declared_state) or not _is_stated_object(*discovered_state):
-        return _unstated_comparison(declared_state, discovered_state, steps)
-
-    declared_val = declared_state[1]
-    discovered_val = discovered_state[1]
-
     handler = OBJECT_MODE_HANDLERS.get(mode)
     if handler is not None:
         return handler(declared_val, discovered_val, steps)
@@ -1031,25 +1010,9 @@ def _object_comparison(
     return (False, canonical(declared_val), canonical(discovered_val))
 
 
-def _is_stated_object(present: bool, value: Any) -> bool:
-    """True when a plane both mentioned the field and gave it an object value."""
-    return present and isinstance(value, dict)
-
-
 def _is_recursion_mode(mode: Any) -> bool:
     """True for the parameterized recurse(N) mode."""
     return isinstance(mode, str) and mode.startswith(RECURSE_PREFIX)
-
-
-def _plane_statement(present: bool, value: Any) -> str:
-    """Name what one plane said about the field, presence included."""
-    if not present:
-        return STATEMENT_ABSENT
-    if value is None:
-        return STATEMENT_NULL
-    if isinstance(value, dict):
-        return STATEMENT_OBJECT
-    return f"non-object:{type(value).__name__}"
 
 
 def _ignored_comparison(steps: list[str]) -> tuple[bool, str, str]:
@@ -1062,39 +1025,6 @@ def _ignored_comparison(steps: list[str]) -> tuple[bool, str, str]:
     steps.append("Mode: ignore")
     steps.append("Result: True (field ignored; never a discrepancy)")
     return (True, IGNORED_MARKER, IGNORED_MARKER)
-
-
-def _unstated_comparison(
-    declared_state: tuple[bool, Any],
-    discovered_state: tuple[bool, Any],
-    steps: list[str],
-) -> tuple[bool, str, str]:
-    """Compare two planes when at least one did not state a comparable object.
-
-    Agreement here is agreement on the *statement*: both absent, or both null.
-    Absent against null is a discrepancy, because field absence and an explicit
-    null are different claims (DIFF_SEMANTICS.md, Null / Missing / Empty).
-
-    Args:
-        declared_state: (present, value) for the declared plane
-        discovered_state: (present, value) for the discovered plane
-        steps: List to append comparison steps to
-
-    Returns:
-        (is_equal, declared_transformed, discovered_transformed) tuple
-    """
-    declared_statement = _plane_statement(*declared_state)
-    discovered_statement = _plane_statement(*discovered_state)
-
-    steps.append(f"Declared statement: {declared_statement}")
-    steps.append(f"Discovered statement: {discovered_statement}")
-
-    is_equal = (
-        declared_statement == discovered_statement and declared_statement in AFFIRMABLE_STATEMENTS
-    )
-    steps.append(f"Result: {is_equal}")
-
-    return (is_equal, declared_statement, discovered_statement)
 
 
 def _structure_hash(value: Any) -> str:

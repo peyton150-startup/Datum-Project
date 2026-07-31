@@ -353,8 +353,8 @@ class TestObjectNonObjectValues:
 
     def test_the_audit_log_names_the_type_that_was_supplied(self):
         _, log = compare_object(PlaneValue.of("oops"), PlaneValue.of({"a": 1}), config("opaque"))
-        assert log.declared_transformed == "non-object:str"
-        assert log.discovered_transformed == "object"
+        assert log.declared_transformed == "value:str"
+        assert log.discovered_transformed == "value:dict"
 
 
 class TestObjectCanonicalValueIdentity:

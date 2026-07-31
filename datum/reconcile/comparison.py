@@ -538,7 +538,10 @@ def compare_list(
     # Both must be lists
     if not isinstance(declared_val, list) or not isinstance(discovered_val, list):
         is_equal = False
-        steps.append(f"Type check failed: declared is {type(declared_val).__name__}, discovered is {type(discovered_val).__name__}")
+        steps.append(
+            f"Type check failed: declared is {type(declared_val).__name__}, "
+            f"discovered is {type(discovered_val).__name__}"
+        )
         return (
             is_equal,
             AuditLogEntry(
@@ -576,7 +579,9 @@ def compare_list(
     elif mode == "unordered_multiset":
         declared_sorted = sorted(declared_val, key=list_sort_key)
         discovered_sorted = sorted(discovered_val, key=list_sort_key)
-        is_equal = _compare_multiset(declared_val, discovered_val, declared_sorted, discovered_sorted, steps)
+        is_equal = _compare_multiset(
+            declared_val, discovered_val, declared_sorted, discovered_sorted, steps
+        )
     elif mode == "set":
         declared_set = sorted(
             list({_make_hashable(item): item for item in declared_val}.values()),
@@ -626,8 +631,8 @@ def _make_hashable(item: Any) -> Any:
 
 
 def _compare_ordered_list(
-    declared: list,
-    discovered: list,
+    declared: list[Any],
+    discovered: list[Any],
     steps: list[str],
 ) -> bool:
     """Compare lists in ordered mode (position matters).
@@ -659,10 +664,10 @@ def _compare_ordered_list(
 
 
 def _compare_multiset(
-    declared: list,
-    discovered: list,
-    declared_sorted: list,
-    discovered_sorted: list,
+    declared: list[Any],
+    discovered: list[Any],
+    declared_sorted: list[Any],
+    discovered_sorted: list[Any],
     steps: list[str],
 ) -> bool:
     """Compare lists as multisets (order independent, duplicates matter).
@@ -697,10 +702,10 @@ def _compare_multiset(
 
 
 def _compare_set(
-    declared: list,
-    discovered: list,
-    declared_set: list,
-    discovered_set: list,
+    declared: list[Any],
+    discovered: list[Any],
+    declared_set: list[Any],
+    discovered_set: list[Any],
     steps: list[str],
 ) -> bool:
     """Compare lists as sets (order and duplicates ignored).

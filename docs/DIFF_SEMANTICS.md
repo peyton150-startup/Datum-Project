@@ -421,9 +421,21 @@ Each field in `attribute_schema` has two concerns:
 When mode is `opaque`, `version`, `identity`, or `ignore`:
 
 1. **Opaque**: Compute a structure-preserving hash of the entire object (including nested structure), compare hashes
-2. **Version**: Extract the `version` field (or fail if not present); compare versions as strings
-3. **Identity**: Extract the `id` field (or fail if not present); compare IDs as strings
+2. **Version**: Compare what each side stated about the `version` key, as strings
+3. **Identity**: Compare what each side stated about the `id` key, as strings
 4. **Ignore**: Always report as matching, never generate discrepancy
+
+For the two keyed modes, the key may be **absent**, **null**, or **valued**, and
+two sides agree only when they made the same statement. Absent on both sides is
+agreement, by the same rule as row 4 of the Null / Missing / Empty table: the key
+is the whole meaning of the field, so two objects that both omit it have said the
+same thing about it. One side absent while the other states a value or a null
+remains a discrepancy, as does null against any string.
+
+Presence and nullity are read off the key, never off a rendered string. `null` is
+not the string `"None"`, and a value that happens to spell a marker — `<missing>`,
+`<null>` — is still a value. A rendering may only ever reach the audit log, never
+a comparison (issues #34, #35).
 
 ### Test Cases (Adversarial Corpus)
 

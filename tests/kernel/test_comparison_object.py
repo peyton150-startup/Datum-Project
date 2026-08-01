@@ -167,6 +167,19 @@ class TestObjectVersion:
         assert compare_values({"version": "<null>"}, {"version": "<null>"}, "version") is True
         assert compare_values({"version": "<null>"}, {"version": None}, "version") is False
 
+    def test_a_version_valued_like_a_statement_word_is_still_a_value(self):
+        """The internal statement words, not just the rendered markers.
+
+        Presence is named internally as "absent" and "null", both of which a
+        provider may emit as ordinary strings. A stated value is tagged, so
+        neither can be mistaken for the statement it spells -- and an untagged
+        implementation would read these as absent and null respectively.
+        """
+        assert compare_values({"version": "absent"}, {"version": "absent"}, "version") is True
+        assert compare_values({"version": "null"}, {"version": "null"}, "version") is True
+        assert compare_values({"version": "absent"}, {}, "version") is False
+        assert compare_values({"version": "null"}, {"version": None}, "version") is False
+
 
 class TestObjectIdentity:
     """identity: compare the `id` key only, ignoring everything else."""
@@ -186,15 +199,21 @@ class TestObjectIdentity:
     def test_a_missing_id_on_both_sides_matches(self):
         """Issue #35, through the other keyed mode.
 
-        `identity` and `version` share one helper, so the rule must hold for
-        both -- and a helper that read the wrong key would pass the version
-        tests alone.
+        The objects carry a differing `version` and no `id` at all, so the
+        fixture discriminates: reading the right key sees absent on both sides
+        and matches, while a helper that read `version` instead would see
+        "v1" against "v2" and report a discrepancy. A fixture carrying neither
+        key would pass either way and prove nothing.
         """
-        assert compare_values({"a": 1}, {"a": 1}, "identity") is True
+        declared = {"version": "v1"}
+        discovered = {"version": "v2"}
+        assert compare_values(declared, discovered, "identity") is True
+        assert compare_values(declared, discovered, "version") is False
 
     def test_a_null_id_is_not_the_string_none(self):
-        """Issue #34, through the other keyed mode."""
+        """Issue #34, through the other keyed mode, both directions."""
         assert compare_values({"id": None}, {"id": "None"}, "identity") is False
+        assert compare_values({"id": "None"}, {"id": None}, "identity") is False
 
     def test_ids_are_compared_as_strings(self):
         assert compare_values({"id": 123}, {"id": "123"}, "identity") is True

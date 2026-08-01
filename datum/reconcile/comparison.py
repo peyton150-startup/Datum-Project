@@ -63,6 +63,12 @@ class AuditLogEntry:
 STATEMENT_ABSENT = "absent"
 STATEMENT_NULL = "null"
 
+# Tags a statement that carries a value, so a provider string can never spell a
+# presence statement. Named once because `_key_statement` writes it and
+# `_rendered_key` strips it: two literals that drifted apart would leave the
+# rendering silently unstripped rather than failing.
+STATEMENT_VALUE_PREFIX = "value:"
+
 # Two planes agree here only when they made the same statement AND that
 # statement is one a comparison can affirm. Two sides that both hold a value the
 # configured mode could not compare -- a string under a list config, an integer
@@ -1130,7 +1136,7 @@ def _key_statement(value: dict[str, Any], key: str) -> str:
         return STATEMENT_ABSENT
     if value[key] is None:
         return STATEMENT_NULL
-    return f"value:{value[key]}"
+    return f"{STATEMENT_VALUE_PREFIX}{value[key]}"
 
 
 def _rendered_key(statement: str) -> str:
@@ -1144,7 +1150,7 @@ def _rendered_key(statement: str) -> str:
         return MISSING_KEY_MARKER
     if statement == STATEMENT_NULL:
         return NULL_KEY_MARKER
-    return statement.removeprefix("value:")
+    return statement.removeprefix(STATEMENT_VALUE_PREFIX)
 
 
 def _compare_version(

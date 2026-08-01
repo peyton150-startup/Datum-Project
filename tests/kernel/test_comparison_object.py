@@ -104,18 +104,51 @@ class TestObjectVersion:
     def test_a_missing_version_on_one_side_is_a_discrepancy(self):
         assert compare_values({"version": "v1"}, {"other": "v1"}, "version") is False
 
-    def test_a_missing_version_on_both_sides_is_a_discrepancy(self):
-        """The configured comparison could not run, so it cannot claim a match.
+    def test_a_missing_version_on_both_sides_matches(self):
+        """Issue #35. Both sides said the same thing about the version: nothing.
 
-        The tempting wrong answer is True: the two objects are identical. But
-        `version` mode says the version key is the whole meaning of the field,
-        and neither side supplied one.
+        The tempting wrong answer is False, on the grounds that the configured
+        comparison could not run. But that reasoning applies just as well to
+        null on both sides, which has always matched -- see the test below.
+        Absence is a statement, and two identical statements agree.
         """
-        assert compare_values({"a": 1}, {"a": 1}, "version") is False
+        assert compare_values({"a": 1}, {"a": 1}, "version") is True
+
+    def test_a_null_version_on_both_sides_matches(self):
+        """The case the both-absent reading had to stay consistent with."""
+        assert compare_values({"version": None}, {"version": None}, "version") is True
+
+    def test_an_absent_version_against_a_null_one_is_a_discrepancy(self):
+        """Absence and null are two statements, so they do not agree.
+
+        This is the boundary between the two tests above: neither side stating
+        a version matches, but one side stating null while the other stays
+        silent is a real difference.
+        """
+        assert compare_values({}, {"version": None}, "version") is False
+        assert compare_values({"version": None}, {}, "version") is False
 
     def test_versions_are_compared_as_strings(self):
         """1 and "1" are the same version; the spec says compare as strings."""
         assert compare_values({"version": 1}, {"version": "1"}, "version") is True
+
+    def test_a_null_version_is_not_the_string_none(self):
+        """Issue #34. `str(None)` is `"None"`, which a provider may emit.
+
+        The mirror of the marker test below: stringifying before comparing
+        made a declared null and a discovered `"None"` indistinguishable, so
+        a real discrepancy went unreported.
+        """
+        assert compare_values({"version": None}, {"version": "None"}, "version") is False
+        assert compare_values({"version": "None"}, {"version": None}, "version") is False
+
+    def test_two_string_none_versions_still_match(self):
+        """The nearby case that must not be broken by the fix for #34.
+
+        `"None"` is an ordinary string. Two of them agree; it is only the
+        collision with real null that was wrong.
+        """
+        assert compare_values({"version": "None"}, {"version": "None"}, "version") is True
 
     def test_a_version_valued_like_the_missing_marker_is_still_a_value(self):
         """Presence is read off the key, not off the extracted string.
@@ -124,6 +157,15 @@ class TestObjectVersion:
         stringify to the marker it uses for absence.
         """
         assert compare_values({"version": "<missing>"}, {"version": "<missing>"}, "version") is True
+
+    def test_a_version_valued_like_the_null_marker_is_still_a_value(self):
+        """The same trap as the marker test above, for the null marker.
+
+        A value of `"<null>"` renders like null in the audit log, and must
+        still not be treated as null when deciding.
+        """
+        assert compare_values({"version": "<null>"}, {"version": "<null>"}, "version") is True
+        assert compare_values({"version": "<null>"}, {"version": None}, "version") is False
 
 
 class TestObjectIdentity:
@@ -141,8 +183,35 @@ class TestObjectIdentity:
     def test_a_missing_id_on_one_side_is_a_discrepancy(self):
         assert compare_values({"id": "123"}, {"name": "123"}, "identity") is False
 
+    def test_a_missing_id_on_both_sides_matches(self):
+        """Issue #35, through the other keyed mode.
+
+        `identity` and `version` share one helper, so the rule must hold for
+        both -- and a helper that read the wrong key would pass the version
+        tests alone.
+        """
+        assert compare_values({"a": 1}, {"a": 1}, "identity") is True
+
+    def test_a_null_id_is_not_the_string_none(self):
+        """Issue #34, through the other keyed mode."""
+        assert compare_values({"id": None}, {"id": "None"}, "identity") is False
+
     def test_ids_are_compared_as_strings(self):
         assert compare_values({"id": 123}, {"id": "123"}, "identity") is True
+
+    def test_the_audit_log_distinguishes_an_absent_key_from_a_null_one(self):
+        """A log that spelled both the same could not explain the verdict.
+
+        The two statements decide differently, so a reader has to be able to
+        tell which one each side made.
+        """
+        _, absent_log = compare_object(
+            PlaneValue.of({}), PlaneValue.of({"id": "x"}), config("identity")
+        )
+        _, null_log = compare_object(
+            PlaneValue.of({"id": None}), PlaneValue.of({"id": "x"}), config("identity")
+        )
+        assert absent_log.declared_transformed != null_log.declared_transformed
 
     def test_the_version_key_is_not_consulted(self):
         """Each keyed mode reads its own key. A shared helper could mix them up."""

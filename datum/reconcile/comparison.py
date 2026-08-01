@@ -916,6 +916,7 @@ FULL_RECURSION = -1
 ROOT_PATH = "<root>"
 IGNORED_MARKER = "<ignored>"
 MISSING_KEY_MARKER = "<missing>"
+NULL_KEY_MARKER = "<null>"
 
 
 def compare_object(
@@ -1072,9 +1073,22 @@ def _compare_by_key(
 ) -> tuple[bool, str, str]:
     """Compare two objects by one key's value, as strings, ignoring the rest.
 
-    A side missing the key is a discrepancy rather than a match: the comparison
-    the config asked for could not be performed, and a kernel that cannot
-    compare must not claim agreement.
+    Compares what each side *said* about the key, not the string it renders to.
+    Three statements are possible -- the key is absent, the key is null, or the
+    key carries a value -- and two sides agree only when they made the same one.
+
+    Absent on both sides is agreement (#35). The key is the whole meaning of the
+    field here, so two objects that both omit it have said the same thing about
+    it, which is row 4 of the Null / Missing / Empty table and the rule
+    `AFFIRMABLE_STATEMENTS` states for every other comparison type. The reading
+    this replaced called it a discrepancy on the grounds that nothing could be
+    compared -- but it called null-on-both-sides a match, and null is no more
+    comparable than absent. One rule had to cover both.
+
+    Null is not the string spelling of itself (#34). `str(None)` is `"None"`,
+    which a provider may legitimately emit as a value, so stringifying first
+    made a declared null and a discovered `"None"` indistinguishable. Presence
+    and nullity are read off the key, and only a stated value is ever rendered.
 
     Args:
         declared_val: Declared plane object
@@ -1085,27 +1099,52 @@ def _compare_by_key(
     Returns:
         (is_equal, declared_extracted, discovered_extracted) tuple
     """
-    stated_on_both = key in declared_val and key in discovered_val
-    declared_extracted = _extracted_key(declared_val, key)
-    discovered_extracted = _extracted_key(discovered_val, key)
+    declared_statement = _key_statement(declared_val, key)
+    discovered_statement = _key_statement(discovered_val, key)
+
+    declared_extracted = _rendered_key(declared_statement)
+    discovered_extracted = _rendered_key(discovered_statement)
 
     steps.append(f"Comparing on key {key!r}")
     steps.append(f"Declared {key}: {declared_extracted}")
     steps.append(f"Discovered {key}: {discovered_extracted}")
 
-    # Presence is checked on the key itself, not on the extracted string: an
-    # object whose value happens to equal the marker must not read as missing.
-    is_equal = stated_on_both and declared_extracted == discovered_extracted
+    # Statements are compared, never the rendered strings. The markers below are
+    # for the audit log, so an object whose value happens to equal one of them
+    # must not read as absent or null.
+    is_equal = declared_statement == discovered_statement
     steps.append(f"Result: {is_equal}")
 
     return (is_equal, declared_extracted, discovered_extracted)
 
 
-def _extracted_key(value: dict[str, Any], key: str) -> str:
-    """The string form of one key's value, or a marker when the key is absent."""
+def _key_statement(value: dict[str, Any], key: str) -> str:
+    """Name what one object said about one key, presence and nullity included.
+
+    The inner-key counterpart of `_plane_statement`, and it reuses that
+    section's constants rather than restating absence a second time. A stated
+    value carries its string form, because comparing values as strings is the
+    configured semantics here -- `1` and `"1"` are the same version.
+    """
     if key not in value:
+        return STATEMENT_ABSENT
+    if value[key] is None:
+        return STATEMENT_NULL
+    return f"value:{value[key]}"
+
+
+def _rendered_key(statement: str) -> str:
+    """The audit log's spelling of one key statement.
+
+    Rendering is one-way on purpose: two different statements may never render
+    alike into a *decision*, only into the log, because the decision was already
+    made on the statements themselves.
+    """
+    if statement == STATEMENT_ABSENT:
         return MISSING_KEY_MARKER
-    return str(value[key])
+    if statement == STATEMENT_NULL:
+        return NULL_KEY_MARKER
+    return statement.removeprefix("value:")
 
 
 def _compare_version(

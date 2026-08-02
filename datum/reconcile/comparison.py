@@ -17,7 +17,13 @@ from datetime import UTC
 from typing import Any
 
 from datum.reconcile.domain import PlaneValue, canonical
-from datum.reconcile.schema import FieldConfig
+from datum.reconcile.schema import (
+    FieldConfig,
+    recursion_depth_of,
+    states_recursion_mode,
+    states_tolerance_mode,
+    tolerance_of,
+)
 
 
 @dataclass(frozen=True)
@@ -207,9 +213,16 @@ def compare_numeric(
         is_equal = _compare_exact_value(declared_val, discovered_val, steps)
     elif mode == "exact_string":
         is_equal = _compare_exact_string(declared_val, discovered_val, steps)
-    elif isinstance(mode, str) and mode.startswith("tolerance("):
-        tolerance = float(mode[len("tolerance(") : -1])
-        is_equal = _compare_tolerance(declared_val, discovered_val, tolerance, steps)
+    elif states_tolerance_mode(mode):
+        # A mode recognised by name may still state no usable parameter, if it
+        # reached here without passing the barricade. That is the unknown-mode
+        # case wearing a known name, so it gets the unknown-mode answer.
+        tolerance = tolerance_of(mode)
+        if tolerance is None:
+            steps.append(f"Unusable mode parameter: {mode}")
+            is_equal = False
+        else:
+            is_equal = _compare_tolerance(declared_val, discovered_val, tolerance, steps)
     else:
         steps.append(f"Unknown mode: {mode}")
         is_equal = False
@@ -916,7 +929,6 @@ def compare_timestamp(
 OBJECT_MODE_IGNORE = "ignore"
 OBJECT_VERSION_KEY = "version"
 OBJECT_IDENTITY_KEY = "id"
-RECURSE_PREFIX = "recurse("
 FULL_RECURSION = -1
 
 ROOT_PATH = "<root>"
@@ -1009,17 +1021,15 @@ def _object_comparison(
     if handler is not None:
         return handler(declared_val, discovered_val, steps)
 
-    if _is_recursion_mode(mode):
-        depth = int(mode[len(RECURSE_PREFIX) : -1])
+    # A mode recognised by name may still state no usable depth, if it reached
+    # here without passing the barricade. That is the unknown-mode case wearing
+    # a known name, so it falls through to the unknown-mode answer below.
+    depth = recursion_depth_of(mode) if states_recursion_mode(mode) else None
+    if depth is not None:
         return _compare_recursively(declared_val, discovered_val, depth, steps)
 
     steps.append(f"Unknown mode: {mode}")
     return (False, canonical(declared_val), canonical(discovered_val))
-
-
-def _is_recursion_mode(mode: Any) -> bool:
-    """True for the parameterized recurse(N) mode."""
-    return isinstance(mode, str) and mode.startswith(RECURSE_PREFIX)
 
 
 def _ignored_comparison(steps: list[str]) -> tuple[bool, str, str]:

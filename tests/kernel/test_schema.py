@@ -344,8 +344,13 @@ class TestFieldConfigValidation:
             )
 
     def test_numeric_tolerance_negative_value(self):
-        """FieldConfig rejects negative tolerance value."""
-        with pytest.raises(InvalidModeParameter, match="must be non-negative"):
+        """FieldConfig rejects negative tolerance value.
+
+        Matches the stated rule rather than a nested exception's wording: the
+        message used to end in the text of an inner ValueError, which was an
+        implementation detail of how the parameter was read.
+        """
+        with pytest.raises(InvalidModeParameter, match="non-negative"):
             FieldConfig(
                 field_name="cpu",
                 field_type="numeric",
@@ -364,8 +369,12 @@ class TestFieldConfigValidation:
             )
 
     def test_object_recurse_invalid_depth(self):
-        """FieldConfig rejects recurse with invalid depth."""
-        with pytest.raises(InvalidModeParameter, match="depth must be"):
+        """FieldConfig rejects recurse with invalid depth.
+
+        Matches the stated rule rather than a nested exception's wording, for
+        the reason given on the tolerance case above.
+        """
+        with pytest.raises(InvalidModeParameter, match=r"integer >= -1"):
             FieldConfig(
                 field_name="spec",
                 field_type="object",

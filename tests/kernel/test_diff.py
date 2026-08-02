@@ -1,4 +1,4 @@
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from datum.enums import DiscrepancyType
@@ -96,6 +96,21 @@ def test_rerun_on_same_input_is_identical():
     assert reconcile(result) == reconcile(result)
 
 
+# Generation speed is not a property of these strategies, so it must not be able
+# to fail them. Both draw at most six pairs from three names and a handful of
+# values -- a bounded, tiny input space with no interleaved computation -- yet
+# `HealthCheck.too_slow` measures wall clock, and a full-suite run alongside a
+# containerised Postgres stalls one draw in a few hundred. Observed once as a
+# 7.2-second draw among twelve that took 1-3ms (issue #38).
+#
+# Suppressed rather than made faster because there is nothing to make faster,
+# and a false red on a *determinism* test is expensive: the honest reading of
+# one is that the kernel is broken. `deadline` is deliberately left armed --
+# it measures the property's own execution, which is worth knowing about.
+GENERATION_SPEED_IS_NOT_THE_PROPERTY = settings(suppress_health_check=[HealthCheck.too_slow])
+
+
+@GENERATION_SPEED_IS_NOT_THE_PROPERTY
 @given(
     st.lists(st.tuples(st.sampled_from(["a", "b", "c"]), st.integers(0, 9)), max_size=6),
     st.lists(st.tuples(st.sampled_from(["a", "b", "c"]), st.integers(0, 9)), max_size=6),
@@ -139,6 +154,7 @@ def build_snapshot(name, attribute_pairs, provider_id=None):
     return ResourceSnapshot("Deployment", T, "default", name, provider_id, attributes)
 
 
+@GENERATION_SPEED_IS_NOT_THE_PROPERTY
 @given(
     st.lists(st.tuples(st.sampled_from(ATTRIBUTE_NAMES), ATTRIBUTE_VALUES), max_size=6),
     st.lists(st.tuples(st.sampled_from(ATTRIBUTE_NAMES), ATTRIBUTE_VALUES), max_size=6),

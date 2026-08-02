@@ -66,9 +66,11 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 
 ## WBS 1.5.2: Diff Engine Implementation Status
 
-**Overall Status:** Phases 2A–2F complete and **all merged to main**. Phases 2G–2J remain. `main` is CI-green.
+**Overall Status:** Phases 2A–2F complete and **all merged to main**. Phases 2G–2J remain. `main` is CI-green at `9746bfc`.
 
-**Merged to main:** 2A Schema Validation, 2B Numeric, 2C String, 2D List, 2E Timestamp (PRs #18–#25); 2F Object Comparison and the absent/null presence fix (PR #27); the CF-6 anchor write half (PR #28) and its test completion (PR #29).
+**Merged to main:** 2A Schema Validation, 2B Numeric, 2C String, 2D List, 2E Timestamp (PRs #18–#25); 2F Object Comparison and the absent/null presence fix (PR #27); the CF-6 anchor write half (PR #28) and its test completion (PR #29); reconciliation run exclusion (PR #32); the `version`/`identity` presence fix closing #34 and #35 (PR #37).
+
+**Never run two `pytest` invocations against the compose Postgres at once.** They share one test database and clobber each other — the result is 60–70 failures spread across unrelated files, which reads exactly like a code regression. It is not. Re-run alone before believing any large failure count.
 
 **Do not trust a phase's "tests passing" as "CI passing."** They are different claims, and this section once conflated them — `main` was red for three gates while the status section said otherwise. Before claiming CI-green, run all five locally. **The bare commands do not resolve on this machine; use `python -m`:**
 
@@ -105,7 +107,8 @@ The full suite needs Postgres (`docker-compose up -d`), and the compose Postgres
    - **The sharp edge.** This phase replaces `PlaneValue.__eq__` — which gets absence right — with the comparison functions, which had to be fixed to get it right. `tests/kernel/test_null_versus_absent.py` and `tests/kernel/test_comparison_presence.py` are the two that must both stay green through it; the first tests the rule through `diff.py`, the second through the comparison functions, and 2H is where the two paths meet.
 
 3. **Phase 2I: Adversarial Corpus Tests** (5 hours)
-   - **Settle issues #34 and #35 before writing the corpus.** Both concern how `version`/`identity` handle presence, and a 150-case corpus written over current behaviour will encode it as intended — a corpus is far harder to change than a function. #34 is a confirmed defect; #35 is a decision nobody has made.
+   - **#34 and #35 are settled and merged (PR #37); the corpus may now be written over current behaviour.** The rule it must encode: `version`/`identity` compare *statements* — absent, null, or valued — never rendered strings. Both-absent agrees; absent against null does not; `null` is not the string `"None"`. `DIFF_SEMANTICS.md` §"Opaque Comparison Detail" states it.
+   - **#39 is still open in that same layer** and the corpus should not fix its behaviour in place: a structured `version`/`id` value is stringified without `canonical()`, so key order changes the verdict. Decide #39 first, or leave structured values out of the corpus.
    - 150+ test cases from DIFF_SEMANTICS.md across all 5 types
    - 14 null/missing/empty cases across all types
    - Property-based tests for determinism using Hypothesis
@@ -117,49 +120,62 @@ The full suite needs Postgres (`docker-compose up -d`), and the compose Postgres
    - Documentation for configuring schema for new kinds
    - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, update `docs/DIFF_SEMANTICS.md`
 
-## Session handoff — 2026-07-31 (second session of the day; supersedes the first)
+## Session handoff — 2026-08-02 (supersedes 2026-07-31)
 
 Read this before picking anything up. It is the state a session ended in, not a plan. **Run `git fetch --all --prune && gh pr list && gh issue list` first and believe that over this section.**
 
-**Where the work is.** Everything from the previous handoff is merged. `main` is CI-green — verified, not inferred. One PR is open:
+### Where the work is
 
-- **PR #32** `fix/reconcile-run-exclusion` — CI green, closes #30 automatically. Kernel + boundary tier, authored by Claude Opus 5.
+`main` is at `9746bfc`, CI-green. **Two PRs are open, both awaiting the same thing: a non-authoring review and a merge.**
 
-  **Its non-authoring review has NOT happened. Do this before merging — it is the first task of the next session.** A reviewer was dispatched at the end of the previous session and the process exited before it reported, so no verdict exists anywhere: not in the PR, not in this file. Do not merge on the assumption it was reviewed. Re-dispatch it (mechanism at the end of this file) against `git diff main...fix/reconcile-run-exclusion`, and **post the verdict as a PR comment as soon as it lands** rather than holding it in the conversation — that is exactly how the first one was lost.
+| PR | Branch | Tier | State |
+|---|---|---|---|
+| **#40** | `fix/mode-parameter-degrades` | kernel + boundary | Closes #33. All five gates green locally (655 passed, 100% coverage). **A blind review was dispatched and had not reported when the session ended — no verdict exists anywhere. Re-dispatch it; do not merge on the assumption it happened.** |
+| **#41** | `fix/hypothesis-generation-healthcheck` | bulk (test-only) | Closes #38. Test-configuration only, touches no production module. Does not need the kernel review gate. |
 
-The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` mentioned in the previous handoff are both gone — the stash was verified to be superseded Phase 2D work containing the absence-collapsing defect, and dropped (recoverable at `0145390` until gc).
+Merge #41 freely once CI is green. **#40 is the one that needs care** — it changes a boundary that the kernel is written against.
 
-**What was done.** The CF-6 anchor write half (#28) — `_write_matches` wrote no anchor columns, so every match row anchored to `('', '', '')`, and a second pair in one run collided. That defect was hiding a second: a re-run wrote a fresh proposal over a standing confirmed decision. Test completion for it (#29). Non-authoring reviews of Phase 2F, the presence fix, and #28 — the merge gate the previous handoff listed first. Reconciliation run exclusion (#32).
+### What was done this session
 
-**What is next, in order.**
+- **#32 merged** (`6bd604e`), with its blind review posted to the PR 91 seconds before the merge landed. #30 auto-closed.
+- **#34 and #35 fixed and merged** (PR #37, `9746bfc`). `version`/`identity` now compare *statements* — absent, null, or valued — rather than rendered strings. Both-absent agrees; `null` is no longer equal to the string `"None"`. Blind review: approve-with-changes, all five findings applied.
+- **#31 closed as already-fixed.** It was filed on 07-31 against code that commit `611b516` had fixed on 07-29. See the trap below.
+- **#33 fixed** (PR #40) and **#38 diagnosed and fixed** (PR #41).
+- **Four issues filed:** #36, #38, #39, and the #33 work.
 
-1. **Get PR #32 reviewed, then land it.** The review has not happened — see above. This is the first task, not a formality: the change is kernel tier and touches the barricade two other modules are written against.
-2. **Settle #34 and #35** — both concern `version`/`identity` presence handling, and both must be answered before 2I.
-3. **Phase 2G**, then **2H**. 2H is still the sharp one; see its entry above.
+### What is next, in order
 
-**Open issues, all logged so none of this lives only in a chat transcript:**
+1. **Review and merge #40**, then merge #41. The review is the gate, not a formality.
+2. **Decide #39** — a structured `version`/`id` value is stringified without `canonical()`, so key order changes the verdict. The prior question is whether a structured value is legal at all: if not, this is a barricade gap in `FieldConfig`, not a comparison one. **Settle before 2I**, or leave structured values out of the corpus.
+3. **Decide #36** — `locked_run` does not guard against caller-side transaction nesting. Three options are in the issue and all are unattractive; a fourth worth evaluating is `pg_try_advisory_xact_lock`, which would make the ordering correct by construction rather than by assertion and would leave the ~30 affected tests alone. Untested — check `collector_lock`'s standalone use before swapping, since a transaction-scoped lock releases immediately outside a transaction.
+4. **Phase 2G**, then **2H**. 2H is still the sharp one; see its entry above.
+
+### Open issues
 
 | | |
 |---|---|
-| #31 | `intent/ingest.py` — the two remaining DESIGN §11 races. Scoped to the Git webhook, which §11 says makes them certain. Do not reach for the advisory lock there: those are check-then-insert writes, not runs. |
-| #33 | `recurse(N)` / `tolerance(N)` crash rather than degrade when a malformed parameter reaches them past the barricade. Two phases, one mistake. |
-| #34 | **Confirmed defect.** `version`/`identity` report `null` and the string `"None"` as equal, because the inner comparison stringifies. Before 2I. |
-| #35 | **Decision needed.** Both-sides-absent reporting a discrepancy is inconsistent with row 4 of the Null/Missing/Empty table. Before 2I. |
+| #36 | `locked_run` is safe against callee-side inversion, not caller-side nesting. Latent: `run_reconciliation` has no production caller yet. **The obvious one-line assertion breaks ~30 tests** — six test modules use plain `django_db`, which wraps each test in an atomic block. Needs a decision, not a patch. |
+| #39 | `version`/`identity` stringify a structured value without `canonical()`. Pre-existing, not introduced by #37. Before 2I. |
 
-**What would have bitten the next session, had nobody written it down.**
+### One piece of stale documentation, still uncorrected
 
-- **A gate that never executed reports nothing, not success.** Each gate hid the next this session: ruff and mypy hid a test failure, which hid a coverage gap. Run all five, in order, and read the exit code.
-- **`main` was red on CI for a full session while the status section claimed otherwise.** Verify; do not infer from a green `pytest`.
-- **A test whose docstring claims more than it demonstrates is this project's recurring failure mode.** Phases 2B–2E each passed their own tests while collapsing absence into null, because every phase tested both-absent and both-null and none tested one against the other. The same thing recurred in #28's migration test, which claimed to hold two `if`s apart while covering three of four combinations. Branch coverage does not catch this and cannot.
-- **Concurrency claims need reproducing, not reasoning.** The #32 race was reproduced with two threads before being fixed, and the reproduction is now a permanent regression test. A first draft of that design also asserted PostgreSQL exposes uncommitted reads under READ COMMITTED, which is false; it was caught in review. Verify database semantics against the database.
-- **`pytest` locally needs Postgres on port 5544**, and the tools need `python -m`. Both are in the gate block above.
-- **A review verdict that lives only in the conversation does not survive the session.** One review was dispatched and lost exactly that way when the process exited — the work was done and paid for, and none of it reached the PR. Post a subagent's verdict to the PR as a comment the moment it arrives, before summarising it in chat. The same applies to any finding worth acting on: this file and the issue tracker are the only two places that persist.
+**`docs/DESIGN.md:260-261`.** The §11 table still lists `ingest_revision` and `_project` as unfixed, with `IntegrityError` in the "Caller sees" column. They were fixed on 2026-07-29 by `611b516` — domain exception, SQLSTATE-class discrimination, non-race re-raise, twelve tests in `tests/test_intent_concurrency.py`. That stale table is what caused #31 to be filed against working code. **Correct it in the next PR that touches docs, or it will produce a third filing.**
+
+### What would have bitten the next session, had nobody written it down
+
+- **Two `pytest` runs against the compose Postgres at the same time produce 60–70 failures across unrelated files.** They share one test database. It looks precisely like a code regression and is not. Re-run alone before diagnosing anything.
+- **An issue can be filed against already-fixed code.** #31 was, because it was written from DESIGN §11's table rather than from the code. Verify an issue against the current tree before working it — that check took two minutes and saved a day.
+- **A bug report without its traceback is worth less than it looks.** #38 was filed carefully, with two candidate causes and a procedure to distinguish them. Both were wrong. The failure reproduced on the first loop-until-failure run and the actual cause — Hypothesis's `too_slow` health check during input generation — was not among the candidates. Reproduce before theorising; the original output had been filtered before it was saved, and that was the whole problem.
+- **A test whose docstring claims more than it demonstrates remains this project's recurring failure mode.** It recurred in PR #37 — in a test written by the session that had just read this warning. The fixture carried neither key, so it could not have failed under the bug its docstring claimed to exclude. **The check: name the bug the test excludes, then ask whether this fixture could give a different answer under that bug.** If not, the test proves nothing.
+- **Two encodings of one rule drift.** #33 was exactly that: the barricade checked a parameter's range and the kernel checked nothing, so the kernel crashed on inputs its own validator had already ruled out. It was hiding a second defect nobody had noticed — `mode[len(prefix):-1]` drops the final character whatever it is, so `tolerance(15` was *accepted* as a tolerance of 1.0 and compared silently with a parameter nobody wrote.
+- **A review verdict that lives only in the conversation does not survive the session.** Post a subagent's verdict to the PR the moment it arrives, before summarising it in chat. This has now cost one full review. `#40`'s is currently in exactly that position — dispatched, unreported.
+- **`pytest` locally needs Postgres on port 5544** and Docker Desktop running; the tools need `python -m`. Both are in the gate block above.
 
 ## Phase 4 Code Review (WBS 1.5.1–1.5.4)
 
 **IMPORTANT:** All Phase 4 code must be rechecked in the next session before proceeding to Phase 5. This includes:
 
-- **WBS 1.5.1** (Identity Matching with CF-6 fix): merged, including the write half (#28) and its run exclusion (#32, pending)
+- **WBS 1.5.1** (Identity Matching with CF-6 fix): merged, including the write half (#28) and its run exclusion (#32)
 - **WBS 1.5.2** (Diff Engine): Phases 2A–2F merged, 2G–2J pending
 - **WBS 1.5.3** (Precedence Policy): Spec document complete, implementation pending
 - **WBS 1.5.4** (Discrepancy Lifecycle): Spec document complete, implementation pending
@@ -170,8 +186,10 @@ The `backup/main-30af0a2-stale-claudemd` branch and the Phase 2C `stash@{0}` men
 - [x] Verify CI passes on main — green as of 2026-07-31, confirmed on the merge commit rather than inferred
 - [x] Run the full suite against Postgres, not just the kernel subset — 632 passing on port 5544
 - [x] Non-authoring review of Phase 2F and the presence fix, both kernel tier — done by Claude Sonnet, verdict *approve with changes*; the changes are issues #33, #34, #35
-- [ ] Non-authoring review of PR #32 — **not done.** Dispatched once; the process exited before it reported and no verdict survived. Re-run it.
-- [ ] Validate determinism properties hold for reconciliation
+- [x] Non-authoring review of PR #32 — done, verdict *approve with changes*, posted to the PR before the merge landed. The change it asked for is issue #36.
+- [x] Non-authoring review of PR #37 (`version`/`identity` presence) — done, verdict *approve with changes*, all five findings applied in `74061db`. One was a test of ours whose fixture could not have failed under the bug its docstring named.
+- [ ] **Non-authoring review of PR #40 — dispatched, never reported.** No verdict exists. Re-run it before merging; the change is kernel + boundary tier.
+- [x] Validate determinism properties hold for reconciliation — the Hypothesis determinism tests pass; the one failure seen was `HealthCheck.too_slow` during *input generation*, not a property failure (#38, PR #41).
 - [ ] Spot-check integration: schema loading → comparison → discrepancy creation
 - [ ] Review DIFF_SEMANTICS, PRECEDENCE_POLICY, DISCREPANCY_LIFECYCLE specs still align with implementation
 

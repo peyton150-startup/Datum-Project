@@ -7,7 +7,11 @@ no defaults are inferred.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
+
+# int for recurse(N), float for tolerance(N). Constrained rather than bounded so
+# the parser returns the parameter's own type, not a widened one.
+_Parameter = TypeVar("_Parameter", int, float)
 
 
 class SchemaError(Exception):
@@ -51,6 +55,84 @@ VALID_FIELD_TYPES = {"list", "numeric", "string", "timestamp", "object"}
 
 # Valid logging levels (3 tiers)
 VALID_LOGGING_LEVELS = {"debug", "discrepancy", "sampled_audit"}
+
+
+# --- Parameterised modes -----------------------------------------------------
+#
+# `tolerance(N)` and `recurse(N)` carry a parameter inside their name, so
+# something has to read it back out. Two things need to: this module, to reject
+# a bad one at the barricade, and `comparison`, to use a good one.
+#
+# They read it through the same function. A second reading would have to agree
+# with the first about what "valid" means, and the two would be free to drift --
+# which is exactly what happened before: the barricade checked the range and the
+# comparison functions did not check anything, so a parameter that got past
+# construction crashed on `float()` instead of degrading (issue #33).
+#
+# The functions return None rather than raising, because their two callers want
+# opposite things from a bad parameter: the validator turns None into
+# `InvalidModeParameter`, and the comparison functions turn it into a
+# discrepancy. Neither behaviour belongs in the parser.
+
+TOLERANCE_PREFIX = "tolerance("
+RECURSE_PREFIX = "recurse("
+MODE_PARAMETER_CLOSE = ")"
+
+MINIMUM_RECURSION_DEPTH = -1
+MINIMUM_TOLERANCE = 0.0
+
+
+def states_tolerance_mode(mode: Any) -> bool:
+    """True for the parameterized tolerance(N) numeric mode."""
+    return isinstance(mode, str) and mode.startswith(TOLERANCE_PREFIX)
+
+
+def states_recursion_mode(mode: Any) -> bool:
+    """True for the parameterized recurse(N) object mode."""
+    return isinstance(mode, str) and mode.startswith(RECURSE_PREFIX)
+
+
+def tolerance_of(mode: str) -> float | None:
+    """The tolerance in `tolerance(N)`, or None when the mode does not state one.
+
+    None covers every way the parameter can fail to be usable: an unclosed
+    mode, an empty parameter, one that is not a number, and a negative one. A
+    negative tolerance parses but cannot be satisfied by any pair of values, so
+    it is rejected here rather than silently reported as a discrepancy forever.
+    """
+    return _mode_parameter(mode, TOLERANCE_PREFIX, float, MINIMUM_TOLERANCE)
+
+
+def recursion_depth_of(mode: str) -> int | None:
+    """The depth in `recurse(N)`, or None when the mode does not state one.
+
+    `-1` means full recursion and is the smallest legal depth; anything below
+    it names no depth at all.
+    """
+    return _mode_parameter(mode, RECURSE_PREFIX, int, MINIMUM_RECURSION_DEPTH)
+
+
+def _mode_parameter(
+    mode: str,
+    prefix: str,
+    parse: Callable[[str], _Parameter],
+    minimum: _Parameter,
+) -> _Parameter | None:
+    """One parameterised mode's parameter, or None when it states none usable.
+
+    Closing parenthesis checked rather than assumed: `mode[len(prefix):-1]`
+    drops the last character whatever it is, so an unclosed `tolerance(5`
+    would otherwise be read as `tolerance(` plus a silently truncated `5`.
+    """
+    if not mode.endswith(MODE_PARAMETER_CLOSE):
+        return None
+    try:
+        parameter = parse(mode[len(prefix) : -len(MODE_PARAMETER_CLOSE)])
+    except ValueError:
+        return None
+    if parameter < minimum:
+        return None
+    return parameter
 
 
 @dataclass(frozen=True)
@@ -128,8 +210,7 @@ class FieldConfig:
     def _validate_numeric_config(self, mode: str) -> None:
         """Validate numeric-type comparison config."""
         valid_modes = {"exact_value", "exact_string"}
-        # tolerance(N) is a parameterized mode
-        is_tolerance = isinstance(mode, str) and mode.startswith("tolerance(")
+        is_tolerance = states_tolerance_mode(mode)
 
         if mode not in valid_modes and not is_tolerance:
             raise InvalidComparisonMode(
@@ -137,19 +218,11 @@ class FieldConfig:
                 f"Valid modes: exact_value, exact_string, tolerance(N)"
             )
 
-        # If tolerance mode, validate the parameter
-        if is_tolerance:
-            try:
-                # Extract N from "tolerance(N)"
-                tolerance_str = mode[len("tolerance(") : -1]
-                tolerance_val = float(tolerance_str)
-                if tolerance_val < 0:
-                    raise ValueError("tolerance must be non-negative")
-            except (ValueError, IndexError) as e:
-                raise InvalidModeParameter(
-                    f"Field {self.field_name}: invalid tolerance mode {mode!r}. "
-                    f"Expected 'tolerance(N)' where N is a non-negative number. Error: {e}"
-                ) from e
+        if is_tolerance and tolerance_of(mode) is None:
+            raise InvalidModeParameter(
+                f"Field {self.field_name}: invalid tolerance mode {mode!r}. "
+                f"Expected 'tolerance(N)' where N is a non-negative number."
+            )
 
     def _validate_string_config(self, mode: str) -> None:
         """Validate string-type comparison config."""
@@ -188,8 +261,7 @@ class FieldConfig:
     def _validate_object_config(self, mode: str) -> None:
         """Validate object-type comparison config."""
         valid_simple_modes = {"opaque", "version", "identity", "ignore"}
-        # recurse(N) is a parameterized mode
-        is_recurse = isinstance(mode, str) and mode.startswith("recurse(")
+        is_recurse = states_recursion_mode(mode)
 
         if mode not in valid_simple_modes and not is_recurse:
             raise InvalidComparisonMode(
@@ -197,19 +269,11 @@ class FieldConfig:
                 f"Valid modes: opaque, version, identity, ignore, recurse(N)"
             )
 
-        # If recurse mode, validate the parameter
-        if is_recurse:
-            try:
-                # Extract N from "recurse(N)"
-                depth_str = mode[len("recurse(") : -1]
-                depth_val = int(depth_str)
-                if depth_val < -1:
-                    raise ValueError("depth must be >= -1")
-            except (ValueError, IndexError) as e:
-                raise InvalidModeParameter(
-                    f"Field {self.field_name}: invalid recurse mode {mode!r}. "
-                    f"Expected 'recurse(N)' where N is an integer >= -1. Error: {e}"
-                ) from e
+        if is_recurse and recursion_depth_of(mode) is None:
+            raise InvalidModeParameter(
+                f"Field {self.field_name}: invalid recurse mode {mode!r}. "
+                f"Expected 'recurse(N)' where N is an integer >= -1."
+            )
 
 
 class ComparisonSchema:

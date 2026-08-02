@@ -16,6 +16,8 @@ the worst direction for a kernel to fail in. Reaching them means writing past
 the constructor, which is what these tests do deliberately.
 """
 
+import pytest
+
 from datum.reconcile.comparison import (
     compare_list,
     compare_numeric,
@@ -24,7 +26,7 @@ from datum.reconcile.comparison import (
     compare_timestamp,
 )
 from datum.reconcile.domain import PlaneValue
-from datum.reconcile.schema import VALID_FIELD_TYPES, FieldConfig
+from datum.reconcile.schema import VALID_FIELD_TYPES, FieldConfig, InvalidModeParameter
 
 
 def past_validation(config: FieldConfig, mode: str) -> FieldConfig:
@@ -193,6 +195,117 @@ class TestAnUnknownModeIsNeverAMatch:
         is_equal, log = compare_object(PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), config)
         assert is_equal is False
         assert any("Unknown mode: sortof" in step for step in log.steps)
+
+
+class TestAModeParameterThatStatesNothingUsableIsNeverAMatch:
+    """A recognised mode carrying an unusable parameter degrades, not crashes.
+
+    The sibling of the unknown-mode class above, and the case it did not cover:
+    there the *name* was unrecognised, here the name is recognised and the
+    parameter is not. Both are "the configured comparison cannot run", and both
+    must answer the same way.
+
+    Asserted with identical values on both sides, so nothing but the parameter
+    handling can produce the answer -- a fallback that defaulted to equality
+    would pass a naive test using differing values. Before this, each of these
+    raised ValueError out of the kernel (issue #33).
+    """
+
+    def numeric(self, mode: str) -> FieldConfig:
+        return past_validation(
+            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
+        )
+
+    def object_(self, mode: str) -> FieldConfig:
+        return past_validation(FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy"), mode)
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "tolerance(x)",  # not a number
+            "tolerance()",  # no parameter at all
+            "tolerance(5",  # unclosed
+            "tolerance(-1)",  # parses, but no pair of values can satisfy it
+        ],
+    )
+    def test_numeric_tolerance(self, mode):
+        is_equal, log = compare_numeric(PlaneValue.of(3), PlaneValue.of(3), self.numeric(mode))
+        assert is_equal is False
+        assert any(f"Unusable mode parameter: {mode}" in step for step in log.steps)
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "recurse(x)",  # not a number
+            "recurse()",  # no parameter at all
+            "recurse(2",  # unclosed
+            "recurse(-2)",  # below full recursion, which is the floor
+            "recurse(1.5)",  # a depth has to be whole
+        ],
+    )
+    def test_object_recurse(self, mode):
+        is_equal, log = compare_object(
+            PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), self.object_(mode)
+        )
+        assert is_equal is False
+        assert any(f"Unknown mode: {mode}" in step for step in log.steps)
+
+    def test_a_valid_parameter_still_runs_its_comparison(self):
+        """The guard must reject only what it was written to reject.
+
+        Placed here rather than with the ordinary mode tests because a guard
+        that degraded everything would leave every test in this class passing.
+        """
+        equal_within, _ = compare_numeric(
+            PlaneValue.of(10), PlaneValue.of(11), self.numeric("tolerance(2)")
+        )
+        equal_outside, _ = compare_numeric(
+            PlaneValue.of(10), PlaneValue.of(20), self.numeric("tolerance(2)")
+        )
+        assert equal_within is True
+        assert equal_outside is False
+
+        # recurse(0) is opaque; the objects differ below the surface.
+        drilled, _ = compare_object(
+            PlaneValue.of({"a": {"b": 1}}),
+            PlaneValue.of({"a": {"b": 2}}),
+            self.object_("recurse(-1)"),
+        )
+        assert drilled is False
+
+
+class TestAnUnclosedModeIsNotSilentlyTruncated:
+    """The parameter is read between the parentheses, not by dropping one char.
+
+    `mode[len(prefix):-1]` drops the final character whatever it is, so an
+    unclosed `tolerance(15` yielded `"15"[:-1]` -- a *valid* tolerance of 1.0.
+    The barricade accepted it and the comparison ran with a parameter nobody
+    wrote. That is worse than the crash issue #33 is named for, because it is
+    silent, and it is why the closing parenthesis is checked rather than
+    assumed.
+    """
+
+    def test_the_barricade_rejects_an_unclosed_tolerance(self):
+        with pytest.raises(InvalidModeParameter):
+            FieldConfig("n", "numeric", {"mode": "tolerance(15"}, "discrepancy")
+
+    def test_the_barricade_rejects_an_unclosed_recurse(self):
+        with pytest.raises(InvalidModeParameter):
+            FieldConfig("o", "object", {"mode": "recurse(15"}, "discrepancy")
+
+    def test_an_unclosed_tolerance_does_not_compare_as_one_point_zero(self):
+        """10 against 11 is inside a tolerance of 1.0 and outside of nothing."""
+        config = past_validation(
+            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), "tolerance(15"
+        )
+        is_equal, _ = compare_numeric(PlaneValue.of(10), PlaneValue.of(11), config)
+        assert is_equal is False
+
+    def test_the_whole_parameter_is_read_when_the_mode_is_closed(self):
+        """The mirror: `tolerance(15)` really does mean 15, not 1."""
+        config = FieldConfig("n", "numeric", {"mode": "tolerance(15)"}, "discrepancy")
+        is_equal, _ = compare_numeric(PlaneValue.of(10), PlaneValue.of(20), config)
+        assert is_equal is True
 
 
 class TestEveryValidFieldTypeHasAValidator:

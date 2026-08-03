@@ -1124,9 +1124,14 @@ def _compare_by_key(
     declared_extracted = _rendered_key(declared_statement)
     discovered_extracted = _rendered_key(discovered_statement)
 
+    # The kind is named alongside the rendering, because two statements of
+    # different kinds can render alike -- a structured value and a string
+    # spelling its canonical form both read as `{"a": 1}`. The decision already
+    # accounts for the difference; without this the log shows two identical
+    # values beside `Result: False` and cannot explain itself.
     steps.append(f"Comparing on key {key!r}")
-    steps.append(f"Declared {key}: {declared_extracted}")
-    steps.append(f"Discovered {key}: {discovered_extracted}")
+    steps.append(f"Declared {key}: {declared_extracted} ({declared_statement.kind})")
+    steps.append(f"Discovered {key}: {discovered_extracted} ({discovered_statement.kind})")
 
     # Statements are compared, never the rendered strings. The markers below are
     # for the audit log, so an object whose value happens to equal one of them

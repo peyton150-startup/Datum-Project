@@ -329,6 +329,45 @@ class TestObjectIdentity:
         assert compare_values(declared, discovered, "identity") is True
         assert compare_values(declared, discovered, "version") is False
 
+    def test_a_structured_id_never_agrees_with_a_string_spelling_it(self):
+        """The `version` case above, through the mode that shares its helper.
+
+        `_key_statement` serves both keyed modes, so the fix reaches `identity`
+        without anything here saying so -- and a regression would reach it the
+        same silent way. `test_the_version_key_is_not_consulted` makes exactly
+        this argument for exactly this reason; the collision case is the half
+        that was missing.
+
+        Branch coverage does not cover this gap: the shared code is exercised
+        through `version`, so the gate reads 100% whether or not `identity` is
+        tested at all.
+
+        The fixture discriminates: both sides render to `{"a": 1}`, so an
+        implementation deciding on the rendering alone returns True.
+        """
+        assert compare_values({"id": {"a": 1}}, {"id": '{"a": 1}'}, "identity") is False
+        assert compare_values({"id": ["a", "b"]}, {"id": '["a", "b"]'}, "identity") is False
+
+    def test_the_audit_log_says_which_kind_each_side_stated(self):
+        """A discrepancy the log cannot explain is a log that failed its job.
+
+        Two statements of different kinds can render alike, so the log would
+        otherwise show two identical values beside `Result: False`. The same
+        standard the absent-versus-null test above holds the log to.
+        """
+        _, log = compare_object(
+            PlaneValue.of({"id": {"a": 1}}),
+            PlaneValue.of({"id": '{"a": 1}'}),
+            config("identity"),
+        )
+
+        assert log.result is False
+        assert (
+            log.declared_transformed == log.discovered_transformed
+        ), "the premise of this test: the two sides render alike"
+        assert any("structured" in step for step in log.steps)
+        assert any("scalar" in step for step in log.steps)
+
     def test_key_order_inside_a_structured_id_does_not_matter(self):
         """Issue #39 again, for the other keyed mode.
 

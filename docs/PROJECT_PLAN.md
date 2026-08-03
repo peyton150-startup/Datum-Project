@@ -798,3 +798,51 @@ A second finding, smaller and sharper: the 0-versus-`False` conflation that moti
 ## Next
 
 1.5.1, identity matching, in the normal order — §12 is marked Decided and already carries the strategy table, confidence, error bias, and a corpus with expected outcomes. **CF-6 is that package's first item**, because a confirmed match that does not survive a run makes strategy 1 unimplementable.
+
+---
+
+# WBS 1.5.2 remaining phases (2G–2J)
+
+Moved here from CLAUDE.md on 2026-08-03. It is a plan, and plans belong in the plan; CLAUDE.md now carries only rules. **Which PRs are open and what is merged is not recorded here — ask git and `gh`.**
+
+Phases 2A–2F are merged. What follows is what is left, in order.
+
+## Phase 2G: logging infrastructure
+
+Three logging levels: `debug` (all), `discrepancy` (mismatches only), `sampled_audit` (every Nth). `AuditLogEntry` is already defined in `datum/reconcile/comparison.py`; this adds `_write_audit_log()` and the logging config.
+
+Two traps already known:
+
+- **`AuditLogEntry._kind_name` is always `"unknown"` today.** Nothing sets it — it is inert scaffolding waiting for 2H, read at six sites as `field_config.comparison.get("_kind_name", "unknown")`. Do not assume audit entries carry a kind name, and note that the repeated magic-string lookup is a named constant waiting to happen.
+- **`AuditLogEntry.declared_raw` is `None` for both absent and null**, with presence carried only by the transformed field. If 2G persists audit entries, that pair needs presence flags the way `Discrepancy` already has them.
+
+## Phase 2H: integration and refactoring
+
+- `_field_discrepancies()` in `datum/reconcile/diff.py` uses the `compare_field()` dispatcher
+- `reconcile()` accepts a `schema_map` parameter
+- `_load_comparison_schemas()` added to `datum/reconcile/service.py`
+- `run_reconciliation()` passes the schema through
+- `MissingFieldConfig` handled gracefully: log the error, treat as a discrepancy
+
+**This is the sharp one.** It replaces `PlaneValue.__eq__` — which gets absence right natively — with the comparison functions, which had to be *fixed* to get it right. Phases 2B–2E had collapsed absence into null by reading their planes with `resolve(on_absent=lambda: None, ...)`; that was latent only because `diff.py` still used `PlaneValue.__eq__`, and 2H is exactly where a latent defect of that shape becomes real.
+
+`tests/kernel/test_null_versus_absent.py` and `tests/kernel/test_comparison_presence.py` must both stay green through it. The first tests the rule through `diff.py`, the second through the comparison functions, and 2H is where the two paths meet.
+
+## Phase 2I: adversarial corpus
+
+- 150+ cases from `DIFF_SEMANTICS.md` across all five types
+- 14 null/missing/empty cases across all types
+- Property-based determinism tests using Hypothesis
+- Files: `tests/kernel/test_diff_comparison.py`, `tests/kernel/test_diff_determinism.py`
+
+The rules the corpus must encode are now settled: `version`/`identity` compare *statements* — absent, null, or valued — never rendered strings. Both-absent agrees; absent against null does not; `null` is not the string `"None"`. A structured value is compared by canonical form, so key order never changes a verdict, while element order in a list still does. `DIFF_SEMANTICS.md` §"Opaque Comparison Detail" states all of it.
+
+## Phase 2J: schema seeders and documentation
+
+- Migration seeding default `Kind.attribute_schema` for existing kinds (Deployment, ComputeInstance)
+- Documentation for configuring schema for a new kind
+- Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, `docs/DIFF_SEMANTICS.md`
+
+## One dependency finding worth keeping
+
+**`python-dateutil` was an undeclared dependency.** Phase 2E imports it directly; it resolved only as a transitive dependency of `kubernetes`. Now declared.

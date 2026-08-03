@@ -66,11 +66,18 @@ def canonical(value: object) -> str:
 #   `Infinity`, which are not valid JSON, and Postgres rejects them. A float is
 #   JSON-native right up until it is not, and the failure arrives from the driver
 #   rather than the encoder.
-# - **A non-string mapping key is refused.** `json.dumps` coerces silently:
-#   `{1: "a"}` stores and reads back as `{"1": "a"}`, and `{True: "a"}` as
-#   `{"true": "a"}`. Two structurally different objects become one value with no
-#   error anywhere -- the case a guard written from a traceback would miss,
-#   because there is no traceback.
+# - **A mapping key of the wrong type is refused.** `json.dumps` coerces
+#   silently: `{1: "a"}` stores and reads back as `{"1": "a"}`, and
+#   `{True: "a"}` as `{"true": "a"}`. Two structurally different objects become
+#   one value with no error anywhere -- the case a guard written from a
+#   traceback would miss, because there is no traceback.
+#
+#   **A key's *contents* are not checked, only its type.** A NUL or an unpaired
+#   surrogate inside a key passes here and is refused by Postgres instead, so
+#   the operator gets the driver's text rather than a path. Stated rather than
+#   implied, because the sentence above reads as covering keys generally and
+#   does not: issue #56 closes it. Contained, not dangerous -- nothing wrong is
+#   stored, and `_stored` counts the rejection like any other.
 #
 # And one type is judged by its contents rather than by what it is: see
 # `_unstorable_text`.

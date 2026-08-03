@@ -11,7 +11,7 @@ import json
 from unittest import mock
 
 import pytest
-from django.db import DataError
+from django.db import DataError, InterfaceError
 
 from datum.discovery.collector import _refuse_unstorable_attributes, run_collector
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
@@ -19,7 +19,7 @@ from datum.discovery.kubernetes import ENVELOPE_KEY, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.discovery.recorded import RecordedSource
 from datum.enums import CollectorRunStatus
-from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import ResourceSnapshot, _inspected
 from datum.reconcile.domain import unstorable_attribute as _unstorable_attribute
 
 TENANT = "00000000-0000-0000-0000-000000000001"
@@ -461,7 +461,7 @@ def test_the_rejection_names_the_collector_the_resource_and_the_path():
                 scope="prod",
                 name="api",
                 provider_id="uid-api",
-                attributes={"spec": {"ports": [{"seen": datetime.date(2026, 8, 3)}]}},
+                attributes={"spec": {"ports": [{"seen": "a" + chr(0) + "b"}]}},
             )
 
     with pytest.raises(MalformedProviderData) as caught:
@@ -471,7 +471,7 @@ def test_the_rejection_names_the_collector_the_resource_and_the_path():
     assert "kubernetes" in message
     assert "Deployment/prod/api" in message
     assert "spec.ports[0].seen" in message
-    assert "date" in message
+    assert "NUL" in message
 
 
 def test_a_write_the_database_refuses_is_counted_not_raised():
@@ -527,7 +527,7 @@ def test_a_write_the_database_refuses_is_counted_not_raised():
 
 def test_among_equally_shallow_problems_the_first_written_is_named():
     """A LIFO stack named the last-inserted attribute while claiming the first."""
-    problem = _unstorable_attribute({"aaa_first": b"bytes", "zzz_last": {1: "x"}})
+    problem = _unstorable_attribute({"aaa_first": "x" + chr(0), "zzz_last": {1: "x"}})
 
     assert problem is not None
     assert "aaa_first" in problem
@@ -546,31 +546,169 @@ def test_a_shallower_problem_outranks_an_earlier_deeper_one():
     Asserted rather than corrected because shallowest-first is the better
     behaviour to report: it names the attribute an operator can see.
     """
-    problem = _unstorable_attribute({"a": {"nested": b"bytes"}, "b": b"bytes-2"})
+    problem = _unstorable_attribute({"a": {"nested": "x" + chr(0)}, "b": "y" + chr(0)})
 
     assert problem is not None
-    assert problem.startswith("b is bytes")
+    assert problem.startswith("b contains a NUL")
 
 
-def test_a_deeply_nested_payload_does_not_exhaust_the_stack():
-    """The barricade must not become the crash it exists to prevent.
+@pytest.mark.parametrize(
+    ("label", "attributes"),
+    [
+        ("5000 levels deep", None),  # built below; json.dumps recurses
+        ("an integer of 5001 digits", {"n": 10**5000}),
+        ("a self-referential mapping", None),  # built below
+    ],
+)
+def test_a_payload_the_encoder_refuses_is_rejected_before_the_write(label, attributes):
+    """Three the type walk passed and `json.dumps` does not.
 
-    A recursive walk raises `RecursionError` past ~1000 levels, which would be
-    the same defect wearing a new hat: a boundary condition escaping as a raw
-    Python exception. 5000 is comfortably past the default recursion limit, so
-    this fails loudly if the walk is ever rewritten recursively.
+    All three escaped every guard: the walk described what JSON accepts rather
+    than asking it, and psycopg serializes the JSONB parameter **client-side**,
+    so `RecursionError` and `ValueError` were raised before any SQL was sent and
+    were not `django.db.Error` either. They left the run at its provisional
+    FAILED and took every later record with them.
+
+    The deep case is the sharp one: an earlier test asserted 5000 levels was
+    safe, and it was -- of the walk, which was made iterative for exactly that
+    reason. That made the walk the one component in the chain that survived
+    input the next component could not.
+    """
+    if attributes is None and label.startswith("5000"):
+        deep: object = "leaf"
+        for _ in range(5000):
+            deep = {"k": [deep]}
+        attributes = {"nest": deep}
+    elif attributes is None:
+        cyclic: dict = {}
+        cyclic["self"] = cyclic
+        attributes = {"loop": cyclic}
+
+    run = emitting(attributes)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (1, 0, 1)
+    assert run.status == CollectorRunStatus.PARTIAL
+    assert run.finished_at is not None
+    assert names_written() == set()
+
+
+def test_an_encoder_refusal_does_not_take_the_rest_of_the_batch():
+    """The consequence, which is the part that mattered.
+
+    Counting the bad record is not the point; the records after it are. Before
+    this, the exception propagated out of `run_collector` and everything later
+    in iteration order was never read, counted, or stored.
     """
     deep: object = "leaf"
     for _ in range(5000):
         deep = {"k": [deep]}
 
-    assert _unstorable_attribute({"nest": deep}) is None
+    class Batch:
+        name = "kubernetes"
+        kind = "Deployment"
 
-    bad: object = datetime.date(2026, 8, 3)
+        def fetch(self):
+            return ["before", "poison", "after"]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record,
+                provider_id=f"uid-{record}",
+                attributes={"nest": deep} if record == "poison" else {"replicas": 1},
+            )
+
+    run = run_collector(Batch(), TENANT)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+    assert names_written() == {"before", "after"}
+
+
+def test_a_connection_level_failure_is_also_survived():
+    """`InterfaceError` is a sibling of `DatabaseError`, not a child.
+
+    The catch was narrowed twice on reasoning about which failures were worth
+    surviving, and was wrong both times in a direction nobody predicted. This
+    pins the sibling case the narrower guess missed, so a future narrowing
+    fails here rather than in production.
+    """
+    from datum.discovery import collector as collector_module
+
+    real_upsert = collector_module._upsert
+
+    def failing(tenant_id, kind, snapshot, run):
+        if snapshot.name == "poison":
+            raise InterfaceError("simulated: the connection is gone")
+        return real_upsert(tenant_id, kind, snapshot, run)
+
+    class Batch:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return ["before", "poison", "after"]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record,
+                provider_id=f"uid-{record}",
+                attributes={"replicas": 1},
+            )
+
+    with mock.patch.object(collector_module, "_upsert", failing):
+        run = run_collector(Batch(), TENANT)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+    assert names_written() == {"before", "after"}
+
+
+def test_the_walks_own_unknown_type_branch_still_answers():
+    """A defensive branch the encoder trial now makes unreachable in normal use.
+
+    `_inspected` ends in a case for a type it does not recognise. Nothing can
+    reach it through `unstorable_attribute` any more, because `json.dumps` is
+    asked first and refuses every non-JSON type before the walk starts. Asserted
+    directly, the way this repository already reaches the comparison functions
+    defensive mode branches: the failure it guards against is a value silently
+    walking past a boundary, which is the worst direction for this code to fail
+    in, and an untested branch is a branch nobody has checked answers at all.
+    """
+    problem, children = _inspected("created", datetime.date(2026, 8, 3))
+
+    assert problem is not None
+    assert "created" in problem
+    assert "date" in problem
+    assert children == []
+
+
+def test_a_deep_payload_is_refused_rather_than_walked_forever_or_crashed():
+    """This test used to assert the opposite, and that was the defect.
+
+    It asserted 5000 levels returned None -- true of the walk, which is
+    iterative, and false of `json.dumps`, which recurses. So the walk was the
+    one component in the chain that survived input the next component could not,
+    and the test certified exactly that gap as safe.
+
+    The iterative walk is still right and still here: what changed is that the
+    encoder is asked first, so a structure it cannot serialize is refused before
+    the walk ever sees it. Asserted at both 5000 (past the recursion limit) and
+    50 (comfortably under it) so the guard cannot become "refuse anything
+    nested".
+    """
+    deep: object = "leaf"
     for _ in range(5000):
-        bad = {"k": [bad]}
+        deep = {"k": [deep]}
+    assert "encoder refused" in (_unstorable_attribute({"nest": deep}) or "")
 
-    assert "date" in (_unstorable_attribute({"nest": bad}) or "")
+    shallow: object = "leaf"
+    for _ in range(50):
+        shallow = {"k": [shallow]}
+    assert _unstorable_attribute({"nest": shallow}) is None
 
 
 # ---------------------------------------------------------------------------

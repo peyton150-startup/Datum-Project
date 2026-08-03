@@ -104,10 +104,17 @@ def unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
     The attribute names are checked for the same reason nested mapping keys are.
     `ResourceSnapshot.attributes` is annotated `Mapping[str, object]`, which is a
     promise the type checker cannot keep about a dict built at runtime.
+
+    **The encoder is asked before the walk runs, and that ordering is the whole
+    design.** See `_unencodable`.
     """
     stray = _first_non_string_key(attributes)
     if stray is not _NO_KEY:
         return f"the attribute name {stray!r} is {type(stray).__name__} rather than a string"
+
+    unencodable = _unencodable(attributes)
+    if unencodable is not None:
+        return unencodable
 
     pending: deque[tuple[str, object]] = deque(attributes.items())
     while pending:
@@ -116,6 +123,46 @@ def unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
         if problem is not None:
             return problem
         pending.extend(children)
+    return None
+
+
+def _unencodable(attributes: Mapping[str, object]) -> str | None:
+    """What the JSON encoder itself refuses. Asked, not modelled.
+
+    The walk below started life as a description of what `json.dumps` accepts,
+    and a description is a second encoding of a rule the encoder already owns.
+    It drifted immediately, in three ways that only appeared under review:
+
+    - **Depth.** `json.dumps` recurses, so a structure past the recursion limit
+      raises `RecursionError` while the iterative walk said nothing. The walk was
+      made iterative precisely so a deep payload could not crash it, and that
+      turned it into the one component in the chain that survived input the next
+      component could not.
+    - **Cycles.** `json.dumps` detects them and raises cleanly. The walk looped
+      forever, holding the collector's advisory lock -- a hang traded for a
+      crash, which is the worse of the two.
+    - **Magnitude.** `10**5000` is an `int` and passes any type check, then
+      raises `ValueError` on the 4300-digit conversion limit.
+
+    None of those three are `django.db.Error`, and psycopg serializes the JSONB
+    parameter **client-side, before any SQL is sent**, so none of them were
+    caught by the write's own guard either. They escaped the collector loop and
+    took every later record in the batch with them.
+
+    So this runs first and the walk runs second, on a structure the encoder has
+    already proved finite, acyclic, and serializable. The walk's job is now
+    exactly the documented gap between "JSON accepts it" and "Postgres accepts
+    it": NULs, unpaired surrogates, non-finite floats, and mapping keys JSON
+    would silently coerce.
+
+    The cost, stated rather than hidden: for a value of a type JSON cannot
+    represent at all, the message names the type but not the path, because the
+    encoder does not report one. A path is not worth a hang.
+    """
+    try:
+        canonical(attributes)
+    except (TypeError, ValueError, RecursionError) as exc:
+        return f"the JSON encoder refused it: {exc}"
     return None
 
 

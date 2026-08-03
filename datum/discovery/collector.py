@@ -23,7 +23,6 @@ import logging
 from collections.abc import Sequence
 from typing import Protocol
 
-from django.db import Error as DatabaseLayerError
 from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
@@ -308,13 +307,24 @@ def _stored(
     barricade's completeness stops being load-bearing, which matters because no
     type table can be proven to anticipate everything Postgres declines.
 
-    Catches `django.db.Error`, not `DatabaseError`. Those are siblings rather
-    than parent and child -- `InterfaceError` is an `Error` and is *not* a
-    `DatabaseError` -- so catching the narrower one left a connection-level
-    failure escaping the very loop this exists to protect. `Error` is the one
-    name that covers both, which is the point: this catches whatever the
-    database layer raises, and the moment it needs a list of specific types it
-    has started encoding the type rule a second time.
+    Catches `Exception`, and the two narrower guesses that came before it are
+    why. First `DatabaseError`, which missed `InterfaceError` -- a sibling under
+    `Error`, not a child. Then `django.db.Error`, which missed more: **psycopg
+    serializes the JSONB parameter client-side, before any SQL is sent**, so a
+    payload too deep or an integer too large raises `RecursionError` or
+    `ValueError` out of `json.dumps` and never reaches the database layer at
+    all. Both escaped and took every later record in the batch with them.
+
+    Each narrowing was an attempt to name the failures worth surviving, and each
+    was wrong in a direction nobody predicted. This is the robustness zone:
+    DESIGN section 11 ranks robustness first here and explicitly sacrifices
+    strict correctness, and the rule it states is that one record must never end
+    a read. A record that cannot be written **for any reason** is a counted
+    rejection. `BaseException` still propagates, so a `KeyboardInterrupt` mid-run
+    leaves the run FAILED as it must.
+
+    Nothing is silent: `logger.exception` carries the traceback, so a genuine
+    bug here surfaces as a logged stack rather than as a lost record.
 
     `atomic` per record so a refused write rolls back only itself and leaves the
     connection usable for the rest of the batch.
@@ -322,7 +332,7 @@ def _stored(
     try:
         with transaction.atomic():
             _upsert(tenant_id, kind, snapshot, run)
-    except DatabaseLayerError:
+    except Exception:
         logger.exception(
             "collector %s produced a record the database refused; "
             "tenant %s, kind %s, scope %s, name %s",

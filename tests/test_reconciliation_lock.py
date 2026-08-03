@@ -187,44 +187,116 @@ def test_the_lock_is_free_after_a_run_raises(second_connection):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_the_lock_is_still_held_when_the_transaction_commits():
-    """The test this file exists for.
+def test_the_lock_lasts_exactly_as_long_as_the_transaction(second_connection):
+    """The test this file exists for, restated for a transaction-scoped lock.
 
-    Every other test here passes against the broken ordering, because a lock
-    nested *inside* the transaction is still held for the whole body. What
-    distinguishes the two is the moment of commit:
+    The lock and the commit must be inseparable. Two ways to get that wrong,
+    and this pins both ends:
 
-        correct:  acquire -> BEGIN -> work -> COMMIT -> release
-        broken:   BEGIN -> acquire -> work -> release -> COMMIT
+        too short:  BEGIN -> acquire -> work -> release -> COMMIT
+        too long:   acquire -> BEGIN -> work -> COMMIT -> ... -> release
 
-    In the broken form the lock is gone before the commit lands, so a second
-    worker can acquire it and compute from the previously committed state while
-    the first transaction is still open. No dirty read is involved -- the second
-    run simply works from a snapshot the first is about to invalidate.
+    Too short leaves a window in which the run's writes are uncommitted and the
+    lock is free, so a second worker computes from the state this run is about
+    to invalidate. Too long is what a *session*-scoped lock gives -- harmless
+    here, but it is the shape whose release has to be placed by hand, and
+    placing it by hand is what #36 showed can be got wrong from the caller's
+    side.
 
-    `on_commit` fires after the commit and before `locked_run` releases, so it
-    observes exactly the window that tells the two apart.
+    The first assertion excludes "too short": the probe runs inside
+    `_reconcile_once`, after every write and before the commit, on a second
+    connection, so a lock released early is a lock this probe is granted.
+
+    The second excludes "too long", and is the assertion that inverted when the
+    lock became transaction-scoped. `on_commit` fires immediately after the
+    commit; a session-scoped lock is still held there (count 1) because only an
+    explicit unlock can release it, while a transaction-scoped lock is already
+    gone with the transaction that carried it (count 0). Reverting `locked_run`
+    to compose `run_lock` turns this back to 1.
     """
     _seed()
-    observed: dict[str, int] = {}
+    observed: dict[str, object] = {}
     original = service._reconcile_once
 
-    def record_lock_state_at_commit(tenant_id: str) -> None:
+    def probe_before_the_commit(tenant_id: str) -> None:
         original(tenant_id)
+        observed["granted_mid_run"] = second_connection(run_lock, TENANT, RECONCILE_OPERATION)
         transaction.on_commit(
-            lambda: observed.__setitem__("locks", _advisory_locks_on_this_session())
+            lambda: observed.__setitem__("held_after_commit", _advisory_locks_on_this_session())
         )
 
-    service._reconcile_once = record_lock_state_at_commit
+    service._reconcile_once = probe_before_the_commit
     try:
         assert run_reconciliation(TENANT) is True
     finally:
         service._reconcile_once = original
 
-    assert observed["locks"] == 1, (
-        "the advisory lock was already released when the transaction committed, "
-        "which means it is nested inside the transaction instead of around it"
+    assert observed["granted_mid_run"] is False, (
+        "a second session was granted the lock while this run's writes were "
+        "still uncommitted -- the lock is being released before its commit"
     )
+    assert observed["held_after_commit"] == 0, (
+        "the lock outlived the transaction that took it, which means it is "
+        "session-scoped and its release is placed by hand again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lifetime under a caller's transaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_callers_transaction_does_not_free_the_lock_early(second_connection):
+    """The lock outlives the commit that publishes the run, whoever owns it.
+
+    `locked_run` composes the lock and the transaction in the right order, so a
+    *callee* cannot invert them. A **caller** that opens its own transaction
+    around `run_reconciliation` inverts them from the other side: Django turns
+    the inner `atomic()` into a savepoint, so `locked_run` exits by releasing a
+    savepoint rather than committing, and a session-scoped unlock then takes
+    effect immediately -- while the real commit is still pending.
+
+        what the caller writes:  BEGIN -> [ acquire -> work -> release ] -> COMMIT
+
+    The bug this excludes: the lock is free during the window between
+    `run_reconciliation` returning and the caller's COMMIT. A second worker
+    entering that window reads the estate without this run's uncommitted
+    writes, computes the same pairings, and collides on
+    `uq_active_match_per_declared` -- the race `test_two_concurrent_runs_no_longer_collide`
+    closes, arriving by a path that test cannot reach.
+
+    The fixture discriminates because the probe happens *inside* the caller's
+    atomic block, before any commit. Under the bug the second connection is
+    granted the lock there; under a correct implementation it is refused until
+    the outer transaction ends.
+    """
+    _seed()
+    observed: dict[str, bool] = {}
+
+    with transaction.atomic():
+        assert run_reconciliation(TENANT) is True
+        observed["granted_before_commit"] = second_connection(run_lock, TENANT, RECONCILE_OPERATION)
+
+    assert observed["granted_before_commit"] is False, (
+        "the lock was free while the caller's transaction was still open, so "
+        "the run's writes were unpublished and unprotected at the same time"
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_callers_transaction_frees_the_lock_once_it_commits(second_connection):
+    """The other side of the test above, so holding forever also fails.
+
+    A lock that is never released would satisfy the previous assertion and
+    wedge the tenant. This one fails in that case.
+    """
+    _seed()
+
+    with transaction.atomic():
+        assert run_reconciliation(TENANT) is True
+
+    assert second_connection(run_lock, TENANT, RECONCILE_OPERATION) is True
 
 
 # ---------------------------------------------------------------------------

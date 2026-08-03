@@ -1146,7 +1146,31 @@ def _key_statement(value: dict[str, Any], key: str) -> str:
         return STATEMENT_ABSENT
     if value[key] is None:
         return STATEMENT_NULL
-    return f"{STATEMENT_VALUE_PREFIX}{value[key]}"
+    return f"{STATEMENT_VALUE_PREFIX}{_stated_key_rendering(value[key])}"
+
+
+def _stated_key_rendering(stated: Any) -> str:
+    """The string a stated key value is compared as.
+
+    `str()` for a scalar, because that is what makes `1` and `"1"` the same
+    version -- the configured semantics of these two modes.
+
+    `canonical()` for a structured value, because `str()` on a dict spells it
+    in insertion order, and two structurally identical values inserted in
+    different orders would then be reported as a discrepancy (#39). That would
+    contradict the invariant `compare_object` states about itself, and which
+    every other object mode keeps: key order never changes a result, at any
+    depth, in any mode. `opaque` hashes through `canonical()` and the
+    `recurse(N)` modes sort at every level; these two were the exception.
+
+    A structured value here is out of spec rather than expected -- the spec
+    says a version *field* compared *as strings* -- but out of spec is not the
+    same as unreachable, and an order-dependent verdict is the worst of the
+    available answers to give about one.
+    """
+    if isinstance(stated, dict | list):
+        return canonical(stated)
+    return str(stated)
 
 
 def _rendered_key(statement: str) -> str:

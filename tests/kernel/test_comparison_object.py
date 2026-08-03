@@ -180,6 +180,71 @@ class TestObjectVersion:
         assert compare_values({"version": "absent"}, {}, "version") is False
         assert compare_values({"version": "null"}, {"version": None}, "version") is False
 
+    def test_key_order_inside_a_structured_version_does_not_matter(self):
+        """Issue #39, and claim 1 of this module applied one level further in.
+
+        The bug: a stated value was rendered with `str()`, which spells a dict
+        in insertion order. Two structurally identical versions built in
+        different orders rendered differently and were reported as a
+        discrepancy -- while `opaque` and every `recurse(N)` mode agreed about
+        the same pair, because those go through `canonical()`.
+
+        The fixture discriminates: `str()` gives "{'a': 1, 'b': 2}" on the left
+        and "{'b': 2, 'a': 1}" on the right, so under the bug this is False.
+        """
+        assert (
+            compare_values({"version": {"a": 1, "b": 2}}, {"version": {"b": 2, "a": 1}}, "version")
+            is True
+        )
+
+    def test_key_order_does_not_matter_at_depth_inside_a_version(self):
+        """The same claim below the first level, where a shallow fix stops.
+
+        Sorting only the top level would pass the test above and fail this one.
+        """
+        assert (
+            compare_values(
+                {"version": {"outer": {"a": 1, "b": 2}}},
+                {"version": {"outer": {"b": 2, "a": 1}}},
+                "version",
+            )
+            is True
+        )
+
+    def test_a_structured_version_that_differs_is_still_a_discrepancy(self):
+        """The nearby case the fix must not swallow.
+
+        This one *passes* under the bug -- two different dicts render to two
+        different strings either way -- so it demonstrates nothing about #39
+        and is not evidence the fix works. It is here to fail against the
+        over-broad fix: one that made structured versions compare equal by
+        ignoring their contents rather than by ordering their keys.
+        """
+        assert compare_values({"version": {"a": 1}}, {"version": {"a": 2}}, "version") is False
+        assert compare_values({"version": {"a": 1}}, {"version": {"b": 1}}, "version") is False
+
+    def test_element_order_in_a_list_valued_version_still_matters(self):
+        """Key order is not element order, and the fix must not confuse them.
+
+        `canonical()` sorts keys at every level and leaves sequences alone. An
+        implementation that reached for a blanket sort to fix #39 would report
+        these two as the same version.
+        """
+        assert compare_values({"version": [1, 2]}, {"version": [2, 1]}, "version") is False
+
+    def test_key_order_inside_a_list_valued_version_does_not_matter(self):
+        """The other half of the pair above: objects *inside* a list.
+
+        #39 names this case explicitly. Element order is preserved, key order
+        within each element is not significant.
+        """
+        assert (
+            compare_values(
+                {"version": [{"a": 1, "b": 2}]}, {"version": [{"b": 2, "a": 1}]}, "version"
+            )
+            is True
+        )
+
 
 class TestObjectIdentity:
     """identity: compare the `id` key only, ignoring everything else."""
@@ -238,6 +303,18 @@ class TestObjectIdentity:
         discovered = {"id": "same", "version": "v2"}
         assert compare_values(declared, discovered, "identity") is True
         assert compare_values(declared, discovered, "version") is False
+
+    def test_key_order_inside_a_structured_id_does_not_matter(self):
+        """Issue #39 again, for the other keyed mode.
+
+        Both modes share `_key_statement`, so a fix applied to one reaches the
+        other -- which is worth a test precisely because it means a *regression*
+        in one would reach the other too, and nothing else here would say so.
+        """
+        assert (
+            compare_values({"id": {"a": 1, "b": 2}}, {"id": {"b": 2, "a": 1}}, "identity") is True
+        )
+        assert compare_values({"id": {"a": 1}}, {"id": {"a": 2}}, "identity") is False
 
 
 class TestObjectIgnore:

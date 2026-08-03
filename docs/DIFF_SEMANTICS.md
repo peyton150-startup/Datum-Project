@@ -437,6 +437,14 @@ not the string `"None"`, and a value that happens to spell a marker — `<missin
 `<null>` — is still a value. A rendering may only ever reach the audit log, never
 a comparison (issues #34, #35).
 
+A stated value is compared **as a string**, which is what makes `1` and `"1"` the
+same version. A *structured* value — an object or a list — is out of spec here,
+because these modes compare a version or id field rather than a document. It is
+reachable all the same, so it is rendered through `canonical()` rather than
+`str()`: key order never changes a result, at any depth, in any mode, and the two
+keyed modes were the last exception to that rule (issue #39). Element order
+within a list is preserved, because element order is not key order.
+
 ### Test Cases (Adversarial Corpus)
 
 - `{"a": 1, "b": 2}` vs `{"b": 2, "a": 1}` with `opaque` → **no discrepancy** (same structure)
@@ -445,6 +453,8 @@ a comparison (issues #34, #35).
 - `{"user": {"name": "alice"}}` vs `{"user": {"name": "alice"}}` with `recurse(0)` → **no discrepancy**
 - `{"version": "v1"}` vs `{"version": "v1"}` with `version` → **no discrepancy**
 - `{"version": "v1"}` vs `{"version": "v2"}` with `version` → **discrepancy**
+- `{"version": {"a": 1, "b": 2}}` vs `{"version": {"b": 2, "a": 1}}` with `version` → **no discrepancy** (key order, issue #39)
+- `{"version": [1, 2]}` vs `{"version": [2, 1]}` with `version` → **discrepancy** (element order is not key order)
 - `{"id": "123"}` vs `{"id": "123", "timestamp": "2026-07-30"}` with `identity` → **no discrepancy** (ID matches)
 - `{"internal": "state"}` vs `{"internal": "DIFFERENT"}` with `ignore` → **no discrepancy** (always ignored)
 

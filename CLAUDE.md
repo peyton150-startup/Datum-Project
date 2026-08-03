@@ -60,7 +60,13 @@ Kernel-tier and boundary-tier code needs a reviewer that is **a different model 
 
 Dispatch a subagent pinned to another model with a **blind** prompt: give it the diff, this file, and the DESIGN review checklist, and withhold the author's reasoning entirely — including the PR description, the commit messages, and the issue being fixed. A prompt that explains the fix leads the witness. Ask it to try to break the code rather than to confirm it works; "CI is green" is not evidence of correctness, because whether the right tests exist is part of what is under review.
 
-**Post the verdict to the PR the moment it arrives, before summarising it in chat.** A review that lives only in the conversation does not survive the session. This has now cost two: one dispatched and never reported, and one merged with zero reviews on kernel + boundary code while a handoff note said the review was still pending.
+**Post the verdict to the PR the moment it arrives, before summarising it in chat.** A review that lives only in the conversation does not survive the session.
+
+**Do not merge before the verdict is posted, and say plainly when a PR is still waiting on one.** The gate is the verdict arriving, not the review having been dispatched. On 2026-08-03 three PRs were merged while their reviews were still running, and one of them put a kernel defect on `main`: a structured value and a string that spelled it began comparing equal, which the review had already caught and reported about ten minutes later. Every one of those merges looked safe — CI was green on all three, and green CI is what the review exists to distrust.
+
+Reviews here have taken five to thirteen minutes. If that wait is not affordable, merge and say so explicitly, then treat the verdict as a defect report against `main` rather than as advice — but the cheap version is to wait.
+
+**A fix written in response to a review is new code and needs its own review.** The reviewer never saw it. This is where the loop actually terminates: a fix that only tightens comments or adds a test can be merged on the strength of the original verdict, but one that changes how a result is decided starts over.
 
 **Treat findings as claims to verify, not conclusions.** Blind reviews here have found real defects — a confirmed equality defect, an unguarded parse, a design table that was right for the wrong reason — and have also produced confidently wrong claims about PostgreSQL isolation, and have under-rated a real one (`tolerance(inf)` was reported as harmless degradation when it silently suppresses every discrepancy on the field). Check each finding yourself before acting on it.
 

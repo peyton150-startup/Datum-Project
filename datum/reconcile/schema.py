@@ -5,6 +5,7 @@ to comparison functions. Each field must have an explicit comparison config;
 no defaults are inferred.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -78,7 +79,14 @@ TOLERANCE_PREFIX = "tolerance("
 RECURSE_PREFIX = "recurse("
 MODE_PARAMETER_CLOSE = ")"
 
-MINIMUM_RECURSION_DEPTH = -1
+# The sentinel depth meaning "drill without limit", and the floor of the legal
+# range, which is the same number seen from the other side: asking for less than
+# "all of it" names no depth at all. Written as an equation rather than as two
+# `-1` literals, because two names for one number are free to drift apart and
+# the mode's meaning depends on their staying equal.
+FULL_RECURSION = -1
+MINIMUM_RECURSION_DEPTH = FULL_RECURSION
+
 MINIMUM_TOLERANCE = 0.0
 
 
@@ -96,9 +104,10 @@ def tolerance_of(mode: str) -> float | None:
     """The tolerance in `tolerance(N)`, or None when the mode does not state one.
 
     None covers every way the parameter can fail to be usable: an unclosed
-    mode, an empty parameter, one that is not a number, and a negative one. A
-    negative tolerance parses but cannot be satisfied by any pair of values, so
-    it is rejected here rather than silently reported as a discrepancy forever.
+    mode, an empty parameter, one that is not a number, a non-finite one, and a
+    negative one. A negative tolerance parses but cannot be satisfied by any
+    pair of values, so it is rejected here rather than silently reported as a
+    discrepancy forever.
     """
     return _mode_parameter(mode, TOLERANCE_PREFIX, float, MINIMUM_TOLERANCE)
 
@@ -123,12 +132,27 @@ def _mode_parameter(
     Closing parenthesis checked rather than assumed: `mode[len(prefix):-1]`
     drops the last character whatever it is, so an unclosed `tolerance(5`
     would otherwise be read as `tolerance(` plus a silently truncated `5`.
+
+    Finiteness checked before the range, because a range check cannot see a
+    NaN: it compares false against everything, so `nan < minimum` is False and
+    NaN passes a guard written to catch it. Infinity passes for the ordinary
+    reason that it really is larger. Both are rejected here, and `inf` is the
+    one that has to be -- `abs(d - c) <= inf` holds for every pair of values,
+    so `tolerance(inf)` silently reports agreement on a field nothing ever
+    compared, which is `ignore` under a name that does not say so.
+
+    `recurse(N)` parses with `int()`, which rejects "nan" and "inf" already, so
+    the check is redundant on that path today. It lives here rather than on the
+    tolerance path anyway: this is the barricade, and a guarantee the barricade
+    makes is worth more than one `int()` happens to provide.
     """
     if not mode.endswith(MODE_PARAMETER_CLOSE):
         return None
     try:
         parameter = parse(mode[len(prefix) : -len(MODE_PARAMETER_CLOSE)])
     except ValueError:
+        return None
+    if not math.isfinite(parameter):
         return None
     if parameter < minimum:
         return None
@@ -221,7 +245,7 @@ class FieldConfig:
         if is_tolerance and tolerance_of(mode) is None:
             raise InvalidModeParameter(
                 f"Field {self.field_name}: invalid tolerance mode {mode!r}. "
-                f"Expected 'tolerance(N)' where N is a non-negative number."
+                f"Expected 'tolerance(N)' where N is a finite, non-negative number."
             )
 
     def _validate_string_config(self, mode: str) -> None:

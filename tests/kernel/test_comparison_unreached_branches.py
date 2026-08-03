@@ -248,7 +248,7 @@ class TestAModeParameterThatStatesNothingUsableIsNeverAMatch:
             PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), self.object_(mode)
         )
         assert is_equal is False
-        assert any(f"Unknown mode: {mode}" in step for step in log.steps)
+        assert any(f"Unusable mode parameter: {mode}" in step for step in log.steps)
 
     def test_a_valid_parameter_still_runs_its_comparison(self):
         """The guard must reject only what it was written to reject.
@@ -272,6 +272,80 @@ class TestAModeParameterThatStatesNothingUsableIsNeverAMatch:
             self.object_("recurse(-1)"),
         )
         assert drilled is False
+
+    @pytest.mark.parametrize("mode", ["tolerance(inf)", "tolerance(nan)"])
+    def test_a_non_finite_tolerance_degrades_rather_than_matching(self, mode):
+        """The half of issue #44 that is a wrong result rather than a nuisance.
+
+        `tolerance(inf)` is the case: `abs(d - c) <= inf` is True for every pair
+        of values, so before the fix this returned a *match* between two numbers
+        three orders of magnitude apart, and every discrepancy on the field was
+        suppressed with nothing in the audit log to distinguish it from a field
+        that genuinely agreed.
+
+        Values chosen far apart on purpose. Equal values would pass under the
+        defect, since the answer would be True for the wrong reason.
+        """
+        is_equal, log = compare_numeric(PlaneValue.of(1), PlaneValue.of(1000), self.numeric(mode))
+        assert is_equal is False
+        assert any(f"Unusable mode parameter: {mode}" in step for step in log.steps)
+
+
+def degrade_label(steps: list[str], mode: str) -> str:
+    """The audit label one degrade path used, with the mode name stripped off."""
+    written = [step for step in steps if step.endswith(f": {mode}")]
+    assert len(written) == 1, f"expected exactly one degrade step for {mode}, got {steps}"
+    return written[0].removesuffix(f": {mode}")
+
+
+class TestBothDegradePathsReportOneConditionOneWay:
+    """The numeric and object paths must not spell the same condition differently.
+
+    They did. A malformed `recurse(...)` reported "Unknown mode", the same text
+    an unrecognised mode name uses, while a malformed `tolerance(...)` reported
+    "Unusable mode parameter". No verdict was wrong -- both degrade to False --
+    but the audit log is what an operator greps to find misconfigured fields,
+    and a search for either text silently missed every instance of the other.
+
+    The second test is why this class is not satisfied by making both paths say
+    "Unknown mode": that would be one encoding of one rule and would also erase
+    a distinction worth keeping. Parity alone does not pin the fix; parity plus
+    the distinction does.
+    """
+
+    def numeric(self, mode: str) -> FieldConfig:
+        return past_validation(
+            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
+        )
+
+    def object_(self, mode: str) -> FieldConfig:
+        return past_validation(FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy"), mode)
+
+    def test_a_recognised_name_with_an_unusable_parameter_reads_alike(self):
+        _, numeric_log = compare_numeric(
+            PlaneValue.of(3), PlaneValue.of(3), self.numeric("tolerance(x)")
+        )
+        _, object_log = compare_object(
+            PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), self.object_("recurse(x)")
+        )
+        assert degrade_label(numeric_log.steps, "tolerance(x)") == degrade_label(
+            object_log.steps, "recurse(x)"
+        )
+
+    def test_an_unrecognised_name_reads_alike_and_differently(self):
+        _, numeric_log = compare_numeric(
+            PlaneValue.of(3), PlaneValue.of(3), self.numeric("roughly")
+        )
+        _, object_log = compare_object(
+            PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), self.object_("sortof")
+        )
+        unknown_name = degrade_label(numeric_log.steps, "roughly")
+        assert unknown_name == degrade_label(object_log.steps, "sortof")
+
+        _, unusable_log = compare_numeric(
+            PlaneValue.of(3), PlaneValue.of(3), self.numeric("tolerance(x)")
+        )
+        assert unknown_name != degrade_label(unusable_log.steps, "tolerance(x)")
 
 
 class TestAnUnclosedModeIsNotSilentlyTruncated:

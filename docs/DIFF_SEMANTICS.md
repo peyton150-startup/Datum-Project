@@ -164,7 +164,7 @@ Each field in `attribute_schema` has two concerns:
 
 - **`exact_value`** — Values must match numerically: `3` == `3.0` (both are 3 in numeric terms), but `3` ≠ `3.1`
 - **`exact_string`** — String representations must match exactly: `3` ≠ `3.0` (different formats), `"3.00"` ≠ `"3"`
-- **`tolerance(N)`** — Within tolerance: `abs(a - b) <= N` → no discrepancy, where N is the threshold
+- **`tolerance(N)`** — Within tolerance: `abs(a - b) <= N` → no discrepancy, where N is the threshold. **N must be finite and non-negative**, and the barricade refuses anything else. A negative N can be satisfied by no pair of values, so the field would report a discrepancy forever; `inf` is satisfied by *every* pair, so the field would silently agree forever without ever being compared — which is what `ignore` is for, under a name that says so. `nan` fails the first way, since it compares false against everything.
 
 ### Implementation
 

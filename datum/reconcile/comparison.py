@@ -18,12 +18,38 @@ from typing import Any, NamedTuple
 
 from datum.reconcile.domain import PlaneValue, canonical
 from datum.reconcile.schema import (
+    FULL_RECURSION,
     FieldConfig,
     recursion_depth_of,
     states_recursion_mode,
     states_tolerance_mode,
     tolerance_of,
 )
+
+# --- Degraded comparisons ----------------------------------------------------
+#
+# A configured comparison that cannot run reports one of two things, and every
+# comparison function reports them through these two routines rather than
+# formatting the text itself. The audit log is what an operator greps to find
+# misconfigured fields, so a path that spells the same condition differently
+# hides itself from the search that was looking for it -- which is what
+# happened: the numeric path said "Unusable mode parameter" while the object
+# path said "Unknown mode" for the same class of malformed mode, and an
+# operator grepping for one silently missed every instance of the other.
+#
+# The distinction between them is worth keeping. "The name is not one I know"
+# sends a reader to the mode table; "the name is one I know and its parameter
+# is not usable" sends them to the parameter. Kept in two places, it drifts.
+
+
+def _unknown_mode_step(mode: Any) -> str:
+    """Audit text for a mode whose name this field type does not recognise."""
+    return f"Unknown mode: {mode}"
+
+
+def _unusable_parameter_step(mode: Any) -> str:
+    """Audit text for a recognised mode name whose parameter states nothing usable."""
+    return f"Unusable mode parameter: {mode}"
 
 
 @dataclass(frozen=True)
@@ -219,15 +245,15 @@ def compare_numeric(
     elif states_tolerance_mode(mode):
         # A mode recognised by name may still state no usable parameter, if it
         # reached here without passing the barricade. That is the unknown-mode
-        # case wearing a known name, so it gets the unknown-mode answer.
+        # case wearing a known name: same verdict, different audit text.
         tolerance = tolerance_of(mode)
         if tolerance is None:
-            steps.append(f"Unusable mode parameter: {mode}")
+            steps.append(_unusable_parameter_step(mode))
             is_equal = False
         else:
             is_equal = _compare_tolerance(declared_val, discovered_val, tolerance, steps)
     else:
-        steps.append(f"Unknown mode: {mode}")
+        steps.append(_unknown_mode_step(mode))
         is_equal = False
 
     return (
@@ -416,7 +442,7 @@ def compare_string(
             declared_str, declared_transformed, discovered_str, discovered_transformed, steps
         )
     else:
-        steps.append(f"Unknown mode: {mode}")
+        steps.append(_unknown_mode_step(mode))
         is_equal = False
         declared_transformed = declared_str
         discovered_transformed = discovered_str
@@ -643,7 +669,7 @@ def compare_list(
         is_equal = _compare_set(declared_val, discovered_val, declared_set, discovered_set, steps)
     else:
         is_equal = False
-        steps.append(f"Unknown mode: {mode}")
+        steps.append(_unknown_mode_step(mode))
 
     return (
         is_equal,
@@ -901,7 +927,7 @@ def compare_timestamp(
         steps.append(f"Discovered UTC: {transformed_discovered}")
         steps.append(f"Result: {is_equal}")
     else:
-        steps.append(f"Unknown mode: {mode}")
+        steps.append(_unknown_mode_step(mode))
         is_equal = False
         transformed_declared = str(declared_val)
         transformed_discovered = str(discovered_val)
@@ -932,7 +958,6 @@ def compare_timestamp(
 OBJECT_MODE_IGNORE = "ignore"
 OBJECT_VERSION_KEY = "version"
 OBJECT_IDENTITY_KEY = "id"
-FULL_RECURSION = -1
 
 ROOT_PATH = "<root>"
 IGNORED_MARKER = "<ignored>"
@@ -1024,14 +1049,18 @@ def _object_comparison(
     if handler is not None:
         return handler(declared_val, discovered_val, steps)
 
-    # A mode recognised by name may still state no usable depth, if it reached
-    # here without passing the barricade. That is the unknown-mode case wearing
-    # a known name, so it falls through to the unknown-mode answer below.
-    depth = recursion_depth_of(mode) if states_recursion_mode(mode) else None
-    if depth is not None:
-        return _compare_recursively(declared_val, discovered_val, depth, steps)
+    if states_recursion_mode(mode):
+        # A mode recognised by name may still state no usable depth, if it
+        # reached here without passing the barricade. Same verdict as an
+        # unrecognised name, and deliberately not the same audit text: the
+        # reader is sent to the parameter rather than to the mode table.
+        depth = recursion_depth_of(mode)
+        if depth is not None:
+            return _compare_recursively(declared_val, discovered_val, depth, steps)
+        steps.append(_unusable_parameter_step(mode))
+    else:
+        steps.append(_unknown_mode_step(mode))
 
-    steps.append(f"Unknown mode: {mode}")
     return (False, canonical(declared_val), canonical(discovered_val))
 
 

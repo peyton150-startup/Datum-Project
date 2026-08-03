@@ -591,3 +591,80 @@ class TestComparisonSchemaValidation:
         }
         with pytest.raises(InvalidComparisonMode):
             ComparisonSchema("Deployment", raw_schema)
+
+
+class TestAToleranceIsAFiniteNumber:
+    """`tolerance(inf)` and `tolerance(nan)` are rejected at the barricade.
+
+    Both parse as floats and both passed the `< MINIMUM_TOLERANCE` guard, for
+    two different reasons: NaN compares false against everything, so `nan < 0.0`
+    is False, and infinity really is larger. The guard was written to catch
+    unusable tolerances and could not see either one.
+
+    `inf` is the one that mattered. `abs(d - c) <= inf` holds for every pair of
+    values, so the field always matched and every real discrepancy on it was
+    suppressed with nothing in the audit log to say so -- a wrong result, not a
+    degradation. `nan` fails the other way, never matching, which at least
+    announces itself.
+    """
+
+    def config(self, mode: str) -> FieldConfig:
+        return FieldConfig("replicas", "numeric", {"mode": mode}, "discrepancy")
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "tolerance(inf)",
+            "tolerance(Infinity)",  # float() takes this spelling too
+            "tolerance(-inf)",  # was already rejected, by the range check
+            "tolerance(nan)",
+            "tolerance(NaN)",
+        ],
+    )
+    def test_a_non_finite_tolerance_is_refused(self, mode):
+        with pytest.raises(InvalidModeParameter):
+            self.config(mode)
+
+    @pytest.mark.parametrize("mode", ["tolerance(0)", "tolerance(0.5)", "tolerance(1e308)"])
+    def test_an_ordinary_tolerance_is_still_accepted(self, mode):
+        """The guard must reject only what it was written to reject.
+
+        `1e308` is finite and enormous, which is the nearest legal neighbour of
+        the value being excluded: a guard that rejected "very large" rather than
+        "not finite" would fail here.
+        """
+        assert self.config(mode).comparison["mode"] == mode
+
+    @pytest.mark.parametrize("mode", ["recurse(inf)", "recurse(nan)"])
+    def test_a_non_finite_depth_is_refused(self, mode):
+        """Guard, not demonstration: `int()` rejects both spellings on its own.
+
+        Says so rather than borrowing credit from the tolerance fix. There is
+        no non-finite Python int for a check to catch here; these are refused
+        because the two words do not parse as integers.
+        """
+        with pytest.raises(InvalidModeParameter):
+            FieldConfig("spec", "object", {"mode": mode}, "discrepancy")
+
+    @pytest.mark.parametrize("digits", [308, 309, 310, 400])
+    def test_an_enormous_depth_is_absurd_rather_than_fatal(self, digits):
+        """The boundary a shared finiteness check moved, on the wrong parameter.
+
+        `math.isfinite` converts to a C double before answering, so on a Python
+        int past roughly 1.8e308 it raises `OverflowError` instead of returning
+        False. Checking finiteness in the parser shared by both parameters
+        therefore crashed the barricade at 309 digits while 308 returned
+        normally -- an uncaught `OverflowError` out of `FieldConfig`, where the
+        contract is `InvalidModeParameter` or nothing.
+
+        A depth no data can nest to is equivalent to full recursion and has
+        always been accepted. Refusing non-finite *tolerances* must not change
+        that, which is why the check lives in `_finite_float` and not in
+        `_mode_parameter`. 308 is the last value that passed under the defect
+        and 309 the first that crashed; both are asserted so the test fails on
+        either side of the boundary moving again.
+        """
+        mode = "recurse(" + "9" * digits + ")"
+        assert (
+            FieldConfig("spec", "object", {"mode": mode}, "discrepancy").comparison["mode"] == mode
+        )

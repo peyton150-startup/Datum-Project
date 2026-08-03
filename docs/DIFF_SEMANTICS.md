@@ -437,13 +437,27 @@ not the string `"None"`, and a value that happens to spell a marker — `<missin
 `<null>` — is still a value. A rendering may only ever reach the audit log, never
 a comparison (issues #34, #35).
 
-A stated value is compared **as a string**, which is what makes `1` and `"1"` the
-same version. A *structured* value — an object or a list — is out of spec here,
-because these modes compare a version or id field rather than a document. It is
-reachable all the same, so it is rendered through `canonical()` rather than
-`str()`: key order never changes a result, at any depth, in any mode, and the two
-keyed modes were the last exception to that rule (issue #39). Element order
-within a list is preserved, because element order is not key order.
+A stated value is of one of two **kinds**, and the two never agree with each other
+whatever they spell:
+
+- A **scalar** is compared as a string, which is what makes `1` and `"1"` the same
+  version. Cross-type comparison is deliberate here.
+- A **structured** value — an object or a list — is compared by its canonical
+  form, so key order never changes a result, at any depth, in any mode. The two
+  keyed modes were the last exception to that rule (issue #39). Element order
+  within a list is still significant, because element order is not key order.
+
+**A structured value never equals a scalar, including a string that spells its
+canonical form.** `canonical()` emits JSON, so `{"a": 1}` and the string
+`'{"a": 1}'` render alike; they are still a discrepancy, because the kind is part
+of the statement rather than part of the rendering. Deciding on the rendering
+alone would have let an ordinary provider string agree with an unrelated object,
+silently, with an audit log showing both sides identical.
+
+A structured value here is out of spec rather than expected — these modes compare
+a version or id *field*, not a document — but out of spec is not unreachable, and
+both an order-dependent verdict and a silent agreement with an unrelated string
+are worse answers than a discrepancy.
 
 ### Test Cases (Adversarial Corpus)
 
@@ -455,6 +469,7 @@ within a list is preserved, because element order is not key order.
 - `{"version": "v1"}` vs `{"version": "v2"}` with `version` → **discrepancy**
 - `{"version": {"a": 1, "b": 2}}` vs `{"version": {"b": 2, "a": 1}}` with `version` → **no discrepancy** (key order, issue #39)
 - `{"version": [1, 2]}` vs `{"version": [2, 1]}` with `version` → **discrepancy** (element order is not key order)
+- `{"version": {"a": 1}}` vs `{"version": "{\"a\": 1}"}` with `version` → **discrepancy** (a structure is not the string that spells it)
 - `{"id": "123"}` vs `{"id": "123", "timestamp": "2026-07-30"}` with `identity` → **no discrepancy** (ID matches)
 - `{"internal": "state"}` vs `{"internal": "DIFFERENT"}` with `ignore` → **no discrepancy** (always ignored)
 

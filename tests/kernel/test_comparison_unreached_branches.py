@@ -273,6 +273,22 @@ class TestAModeParameterThatStatesNothingUsableIsNeverAMatch:
         )
         assert drilled is False
 
+    @pytest.mark.parametrize("digits", [308, 309, 310])
+    def test_an_enormous_depth_degrades_or_drills_but_never_raises(self, digits):
+        """The interior half of the same boundary, past the barricade.
+
+        `_object_comparison` calls `recursion_depth_of` too, so a finiteness
+        check in the shared parser crashed the comparator with an uncaught
+        `OverflowError` as well as the validator. The kernel's contract for an
+        unusable parameter is a discrepancy, never an exception -- reaching it
+        by any route must not be the exception.
+        """
+        mode = "recurse(" + "9" * digits + ")"
+        is_equal, _ = compare_object(
+            PlaneValue.of({"a": {"b": 1}}), PlaneValue.of({"a": {"b": 2}}), self.object_(mode)
+        )
+        assert is_equal is False
+
     @pytest.mark.parametrize("mode", ["tolerance(inf)", "tolerance(nan)"])
     def test_a_non_finite_tolerance_degrades_rather_than_matching(self, mode):
         """The half of issue #44 that is a wrong result rather than a nuisance.

@@ -109,7 +109,37 @@ def tolerance_of(mode: str) -> float | None:
     pair of values, so it is rejected here rather than silently reported as a
     discrepancy forever.
     """
-    return _mode_parameter(mode, TOLERANCE_PREFIX, float, MINIMUM_TOLERANCE)
+    return _mode_parameter(mode, TOLERANCE_PREFIX, _finite_float, MINIMUM_TOLERANCE)
+
+
+def _finite_float(text: str) -> float:
+    """`float()`, refusing the two non-finite literals it otherwise accepts.
+
+    `float("inf")` and `float("nan")` both succeed, and both then defeat the
+    range check for different reasons: infinity really is larger than the
+    minimum, and NaN compares false against everything, so `nan < minimum` is
+    False. Raising here rather than testing the parsed value afterwards keeps
+    one question in one place -- "is this text a tolerance I can use" -- and
+    `_mode_parameter` already turns a `ValueError` from the parse into "states
+    no usable parameter".
+
+    `inf` is the one that has to be refused. `abs(d - c) <= inf` holds for every
+    pair of values, so `tolerance(inf)` silently reports agreement on a field
+    nothing ever compared, which is `ignore` under a name that does not say so.
+
+    Deliberately not shared with `recurse(N)`, which parses with `int()`. Every
+    Python int is finite, so there is nothing there to refuse -- and
+    `math.isfinite` is not even total over them, because it converts to a C
+    double first and raises `OverflowError` on an int too large to fit. A
+    universal finiteness check in the shared parser therefore crashed the
+    barricade on `recurse(N)` at 309 digits where 308 returned normally: a
+    parameter that parses and then raises instead of degrading, which is the
+    issue #33 class reintroduced one path over.
+    """
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text!r} is not a finite number")
+    return value
 
 
 def recursion_depth_of(mode: str) -> int | None:
@@ -133,26 +163,16 @@ def _mode_parameter(
     drops the last character whatever it is, so an unclosed `tolerance(5`
     would otherwise be read as `tolerance(` plus a silently truncated `5`.
 
-    Finiteness checked before the range, because a range check cannot see a
-    NaN: it compares false against everything, so `nan < minimum` is False and
-    NaN passes a guard written to catch it. Infinity passes for the ordinary
-    reason that it really is larger. Both are rejected here, and `inf` is the
-    one that has to be -- `abs(d - c) <= inf` holds for every pair of values,
-    so `tolerance(inf)` silently reports agreement on a field nothing ever
-    compared, which is `ignore` under a name that does not say so.
-
-    `recurse(N)` parses with `int()`, which rejects "nan" and "inf" already, so
-    the check is redundant on that path today. It lives here rather than on the
-    tolerance path anyway: this is the barricade, and a guarantee the barricade
-    makes is worth more than one `int()` happens to provide.
+    What counts as unusable beyond the range check is the *parse function's*
+    business, not this one's, and `_finite_float` says why: the two parameters
+    have different notions of a usable value, and a single predicate that suits
+    one of them is wrong for the other rather than shared between them.
     """
     if not mode.endswith(MODE_PARAMETER_CLOSE):
         return None
     try:
         parameter = parse(mode[len(prefix) : -len(MODE_PARAMETER_CLOSE)])
     except ValueError:
-        return None
-    if not math.isfinite(parameter):
         return None
     if parameter < minimum:
         return None

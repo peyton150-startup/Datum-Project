@@ -637,11 +637,34 @@ class TestAToleranceIsAFiniteNumber:
 
     @pytest.mark.parametrize("mode", ["recurse(inf)", "recurse(nan)"])
     def test_a_non_finite_depth_is_refused(self, mode):
-        """Guard, not demonstration: `int()` already rejects both spellings.
+        """Guard, not demonstration: `int()` rejects both spellings on its own.
 
-        Asserted because the finiteness check now lives in the shared parser
-        rather than on the tolerance path, so this pins the behaviour the two
-        parameters have in common instead of leaving it to `int()`.
+        Says so rather than borrowing credit from the tolerance fix. There is
+        no non-finite Python int for a check to catch here; these are refused
+        because the two words do not parse as integers.
         """
         with pytest.raises(InvalidModeParameter):
             FieldConfig("spec", "object", {"mode": mode}, "discrepancy")
+
+    @pytest.mark.parametrize("digits", [308, 309, 310, 400])
+    def test_an_enormous_depth_is_absurd_rather_than_fatal(self, digits):
+        """The boundary a shared finiteness check moved, on the wrong parameter.
+
+        `math.isfinite` converts to a C double before answering, so on a Python
+        int past roughly 1.8e308 it raises `OverflowError` instead of returning
+        False. Checking finiteness in the parser shared by both parameters
+        therefore crashed the barricade at 309 digits while 308 returned
+        normally -- an uncaught `OverflowError` out of `FieldConfig`, where the
+        contract is `InvalidModeParameter` or nothing.
+
+        A depth no data can nest to is equivalent to full recursion and has
+        always been accepted. Refusing non-finite *tolerances* must not change
+        that, which is why the check lives in `_finite_float` and not in
+        `_mode_parameter`. 308 is the last value that passed under the defect
+        and 309 the first that crashed; both are asserted so the test fails on
+        either side of the boundary moving again.
+        """
+        mode = "recurse(" + "9" * digits + ")"
+        assert (
+            FieldConfig("spec", "object", {"mode": mode}, "discrepancy").comparison["mode"] == mode
+        )

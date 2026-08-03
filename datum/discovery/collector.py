@@ -20,7 +20,8 @@ bad record from ending a read.
 """
 
 import logging
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from django.db.models import F
@@ -220,7 +221,9 @@ def _start(collector: Collector, tenant_id: str) -> CollectorRun:
 def _normalized(collector: Collector, record: object, tenant_id: str) -> ResourceSnapshot | None:
     """One record's worth of the barricade. None means rejected, never raised."""
     try:
-        return collector.normalize(record, tenant_id)
+        snapshot = collector.normalize(record, tenant_id)
+        _refuse_unstorable_attributes(collector, snapshot)
+        return snapshot
     except MalformedProviderData:
         # Swallowed deliberately: this is the robustness rule, not an oversight.
         # The rejection is counted by the caller and logged here with the
@@ -230,6 +233,109 @@ def _normalized(collector: Collector, record: object, tenant_id: str) -> Resourc
             "collector %s rejected a record for tenant %s", collector.name, tenant_id, exc_info=True
         )
         return None
+
+
+# --- The attribute-type barricade (issue #47) --------------------------------
+#
+# Every attribute value reaching kernel comparison is JSON-native, recursively:
+# leaves are `str`, `int`, `float`, `bool`, or `None`, and containers are `list`
+# or `dict` with string keys whose contents satisfy the same rule.
+#
+# The kernel depends on this and nothing stated it. `canonical()` is defined over
+# it, and so are `PlaneValue` equality and hashing, the `opaque` structure hash,
+# the `recurse(N)` modes, and the keyed `version`/`identity` comparisons.
+#
+# It held only because storage refused the rest, which is a boundary condition
+# surfacing as a lower layer's exception -- the class DESIGN section 11 names and
+# CF-2 was. Measured against the compose Postgres, a normalizer emitting a
+# `datetime` (the Kubernetes client returns those for timestamps) produced a raw
+# `TypeError` out of a JSON encoder, and one emitting `float("nan")` produced a
+# `DataError` out of the driver, both across a module boundary and neither
+# naming the collector, the resource, or the field.
+#
+# Enforced here rather than asked of each adapter, for the reason the fetch and
+# normalize split exists: CF-1 was fixed by making the mistake unavailable, and
+# the second collector inherited that fix without knowing the rule existed. An
+# adapter cannot forget a check it never had to write.
+#
+# Two rules here are not what "JSON-native" suggests, and both were measured
+# rather than reasoned:
+#
+# - **A non-finite float is refused.** `json.dumps` emits bare `NaN` and
+#   `Infinity`, which are not valid JSON, and Postgres rejects them. So a float
+#   is JSON-native right up until it is not, and the failure arrives from the
+#   driver rather than the encoder.
+# - **A non-string mapping key is refused.** `json.dumps` coerces silently:
+#   `{1: "a"}` is stored and read back as `{"1": "a"}`, and `{True: "a"}` as
+#   `{"true": "a"}`. Two structurally different objects become one value with no
+#   error anywhere. Harmless today, because both planes round-trip through
+#   storage before comparison and so both sides see the coerced form -- but it is
+#   silent coercion at a boundary whose job is to have opinions out loud.
+#
+# The walk is iterative rather than recursive. A barricade that converts a crash
+# into a domain error must not be able to raise `RecursionError` on a deeply
+# nested provider payload, which is the same defect in a new hat.
+
+_JSON_NATIVE_SCALARS = (str, bool, int)
+
+
+def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapshot) -> None:
+    """Raise `MalformedProviderData` for the first attribute that breaks the rule.
+
+    Raised rather than returned so it joins the rejection path every other bad
+    record takes: logged once, counted once, and never aborting the read.
+    """
+    problem = _unstorable_attribute(snapshot.attributes)
+    if problem is None:
+        return
+    raise MalformedProviderData(
+        f"collector {collector.name} normalized {snapshot.kind}/{snapshot.scope}/{snapshot.name} "
+        f"to an attribute that cannot be stored or compared: {problem}"
+    )
+
+
+def _unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
+    """Describe the first attribute value that is not JSON-native, or None.
+
+    Iterative on purpose; see the note above on `RecursionError`.
+    """
+    pending: list[tuple[str, object]] = list(attributes.items())
+    while pending:
+        path, value = pending.pop()
+        problem, children = _inspected(path, value)
+        if problem is not None:
+            return problem
+        pending.extend(children)
+    return None
+
+
+def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, object]]]:
+    """One value: what is wrong with it, and what it contains that still needs looking at."""
+    if value is None or isinstance(value, _JSON_NATIVE_SCALARS):
+        return (None, [])
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return (f"{path} is {value!r}, which JSON cannot represent", [])
+        return (None, [])
+    if isinstance(value, list):
+        return (None, [(f"{path}[{index}]", item) for index, item in enumerate(value)])
+    if isinstance(value, dict):
+        return _inspected_mapping(path, value)
+    return (f"{path} is {type(value).__name__}, which is not a JSON type", [])
+
+
+def _inspected_mapping(
+    path: str, value: dict[object, object]
+) -> tuple[str | None, list[tuple[str, object]]]:
+    """A mapping's keys must be strings before its values are worth walking."""
+    for key in value:
+        if not isinstance(key, str):
+            return (
+                f"{path} has key {key!r} of type {type(key).__name__}, "
+                "and JSON silently renders it as a string",
+                [],
+            )
+    return (None, [(f"{path}.{key}", item) for key, item in value.items()])
 
 
 def _log_unknown_kind(collector: Collector, snapshot: ResourceSnapshot, tenant_id: str) -> None:

@@ -21,8 +21,20 @@ def canonical(value: object) -> str:
     decide is numeric and deep comparison semantics, which are open questions
     owned by WBS 1.5.2 (DESIGN section 13). Changing this function is how those
     get answered; nothing downstream should re-derive its own version.
+
+    No `default=`, so a value JSON cannot represent raises here rather than
+    being stringified into agreement with the literal string of its `__str__`
+    (issue #47). That collision was real: `canonical({"a": Weird()})` equalled
+    `canonical({"a": "weird-str"})`, and `PlaneValue` equality agreed.
+
+    Raising is safe *because* both planes now guarantee JSON-native attributes
+    before this is reached -- the declared side at `intent/documents.py`, the
+    discovered side at `discovery/collector.py`. Without those, this would be a
+    crash where there used to be a wrong answer, which is louder but not a fix.
+    A `TypeError` from here therefore means a barricade was bypassed, not that a
+    provider sent something unusual.
     """
-    return json.dumps(value, sort_keys=True, default=str)
+    return json.dumps(value, sort_keys=True)
 
 
 @dataclass(frozen=True, eq=False)

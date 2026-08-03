@@ -6,11 +6,16 @@ pair. The counts are as much the subject as the rows: `resources_read`
 under-reporting what a run saw is the silent half of that defect.
 """
 
+import datetime
 import json
 
 import pytest
 
-from datum.discovery.collector import run_collector
+from datum.discovery.collector import (
+    _refuse_unstorable_attributes,
+    _unstorable_attribute,
+    run_collector,
+)
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
 from datum.discovery.kubernetes import ENVELOPE_KEY, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
@@ -266,6 +271,205 @@ def test_a_collector_whose_declared_kind_was_never_seeded_is_counted_not_raised(
     assert (run.resources_read, run.resources_written, run.errors) == (2, 0, 2)
     assert run.status == CollectorRunStatus.PARTIAL
     assert names_written() == set()
+
+
+# ---------------------------------------------------------------------------
+# The attribute-type barricade (issue #47)
+# ---------------------------------------------------------------------------
+
+
+def emitting(attributes: dict, name: str = "one") -> CollectorRun:
+    """Run a collector whose normalizer emits exactly these attributes.
+
+    Written past the adapters on purpose. Both shipped normalizers happen to
+    emit clean types today, so a test going through them would assert the
+    adapters' good behaviour rather than the framework's guarantee -- and the
+    guarantee is the point: an adapter that has not been written yet must not
+    be able to get this wrong.
+    """
+
+    class Emitter:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return [{"name": name}]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record["name"],
+                provider_id=f"uid-{record['name']}",
+                attributes=attributes,
+            )
+
+    return run_collector(Emitter(), TENANT)
+
+
+@pytest.mark.parametrize(
+    ("attributes", "because"),
+    [
+        ({"created": datetime.datetime(2026, 8, 3)}, "datetime is not a JSON type"),
+        ({"created": datetime.date(2026, 8, 3)}, "date is not a JSON type"),
+        ({"raw": b"bytes"}, "bytes is not a JSON type"),
+        ({"tags": {"a", "b"}}, "set is not a JSON type"),
+        ({"ratio": float("nan")}, "NaN is not representable in JSON"),
+        ({"ratio": float("inf")}, "Infinity is not representable in JSON"),
+        ({"ratio": float("-inf")}, "-Infinity is not representable in JSON"),
+        ({"labels": {1: "a"}}, "an int key is silently rendered as a string"),
+        ({"labels": {True: "a"}}, "a bool key is silently rendered as a string"),
+        ({"ports": [1, datetime.date(2026, 8, 3)]}, "nested inside a list"),
+        ({"spec": {"inner": {"when": datetime.date(2026, 8, 3)}}}, "nested two levels deep"),
+        ({"spec": {"ports": [{"t": float("inf")}]}}, "nested through a list inside a dict"),
+    ],
+)
+def test_an_attribute_that_cannot_be_stored_is_rejected_not_raised(attributes, because):
+    """Each of these previously escaped as a raw TypeError or DataError.
+
+    Measured before the barricade was written: `datetime`, `date`, `bytes` and
+    `set` raised `TypeError` out of `json.dumps` inside Django's field
+    serialization, and the non-finite floats raised `DataError` out of the
+    driver, because `json.dumps` emits bare `NaN` and `Infinity` which are not
+    valid JSON. Both arrived across a module boundary naming neither the
+    collector nor the field.
+
+    The two mapping-key cases never raised at all -- they were stored, silently
+    coerced to `{"1": "a"}` and `{"true": "a"}`. Those are the ones a test that
+    only looked for exceptions would have missed.
+
+    `because` is unused by the assertion and is there to name the case in the
+    test id.
+    """
+    run = emitting(attributes)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (1, 0, 1)
+    assert run.status == CollectorRunStatus.PARTIAL
+    assert names_written() == set()
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"replicas": 3},
+        {"name": "api"},
+        {"enabled": True},
+        {"ratio": 1.5},
+        {"missing": None},
+        {"ports": [80, 443]},
+        {"labels": {"app": "api", "tier": "web"}},
+        {"spec": {"ports": [{"port": 80, "tls": False}], "note": None}},
+        {"empty_list": [], "empty_dict": {}},
+        {"deep": {"a": {"b": {"c": [1, {"d": "e"}]}}}},
+    ],
+)
+def test_ordinary_attributes_are_untouched(attributes):
+    """The guard must refuse only what it was written to refuse.
+
+    Every JSON-native shape, including the containers and the edge values a
+    careless check would catch: `False` and `0` are not absent, `None` is a
+    legal leaf rather than a missing one, and an empty container is not a
+    violation. A barricade that rejected any of these would leave every test in
+    the class above passing.
+    """
+    run = emitting(attributes)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (1, 1, 0)
+    assert run.status == CollectorRunStatus.SUCCESS
+    assert DiscoveredResource.objects.get(tenant_id=TENANT, name="one").attributes == attributes
+
+
+def test_one_unstorable_record_does_not_take_its_siblings():
+    """CF-1's rule applied to the new rejection reason.
+
+    A type violation must behave exactly like every other malformed record:
+    counted, logged, and survived. Rejecting it by letting the write fail would
+    have aborted the transaction and lost the healthy rows -- which is why this
+    is caught at normalize time rather than left to the database.
+    """
+
+    class Mixed:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return ["good-a", "bad", "good-b"]
+
+        def normalize(self, record, tenant_id):
+            attributes = (
+                {"created": datetime.date(2026, 8, 3)} if record == "bad" else {"replicas": 1}
+            )
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record,
+                provider_id=f"uid-{record}",
+                attributes=attributes,
+            )
+
+    run = run_collector(Mixed(), TENANT)
+
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+    assert names_written() == {"good-a", "good-b"}
+
+
+def test_the_rejection_names_the_collector_the_resource_and_the_path():
+    """The whole point: a domain error a reader can act on, not a TypeError.
+
+    The old failure said `Object of type date is not JSON serializable` and
+    named nothing else. This asserts the four facts an operator needs to find
+    the offending normalizer: which collector, which resource, which attribute,
+    and how far inside it.
+    """
+
+    class Nested:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return [1]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="prod",
+                name="api",
+                provider_id="uid-api",
+                attributes={"spec": {"ports": [{"seen": datetime.date(2026, 8, 3)}]}},
+            )
+
+    with pytest.raises(MalformedProviderData) as caught:
+        _refuse_unstorable_attributes(Nested(), Nested().normalize(1, TENANT))
+
+    message = str(caught.value)
+    assert "kubernetes" in message
+    assert "Deployment/prod/api" in message
+    assert "spec.ports[0].seen" in message
+    assert "date" in message
+
+
+def test_a_deeply_nested_payload_does_not_exhaust_the_stack():
+    """The barricade must not become the crash it exists to prevent.
+
+    A recursive walk raises `RecursionError` past ~1000 levels, which would be
+    the same defect wearing a new hat: a boundary condition escaping as a raw
+    Python exception. 5000 is comfortably past the default recursion limit, so
+    this fails loudly if the walk is ever rewritten recursively.
+    """
+    deep: object = "leaf"
+    for _ in range(5000):
+        deep = {"k": [deep]}
+
+    assert _unstorable_attribute({"nest": deep}) is None
+
+    bad: object = datetime.date(2026, 8, 3)
+    for _ in range(5000):
+        bad = {"k": [bad]}
+
+    assert "date" in (_unstorable_attribute({"nest": bad}) or "")
 
 
 # ---------------------------------------------------------------------------

@@ -232,6 +232,31 @@ class TestObjectVersion:
         """
         assert compare_values({"version": [1, 2]}, {"version": [2, 1]}, "version") is False
 
+    def test_a_structured_version_never_agrees_with_a_string_spelling_it(self):
+        """A dict is not a version string, however the two are spelled.
+
+        The trap the fix for #39 walked into on its first attempt. Rendering a
+        structured value with `canonical()` emits JSON, while a scalar is still
+        rendered with `str()`, so an ordinary provider string reading
+        `{"a": 1}` rendered identically to the object of that shape and the two
+        agreed silently -- with an audit log showing both sides alike, because
+        the rendering was doing the deciding.
+
+        Cross-type comparison is deliberate *within* scalars: `1` and `"1"` are
+        the same version. This is where that licence has to stop. The kind now
+        travels beside the rendering rather than inside it, so no spelling can
+        cross the boundary.
+
+        The fixture discriminates: every pair below renders to one identical
+        string on both sides, so any implementation deciding on the rendering
+        alone returns True for all of them.
+        """
+        assert compare_values({"version": {"a": 1}}, {"version": '{"a": 1}'}, "version") is False
+        assert (
+            compare_values({"version": ["a", "b"]}, {"version": '["a", "b"]'}, "version") is False
+        )
+        assert compare_values({"version": [1, 2]}, {"version": "[1, 2]"}, "version") is False
+
     def test_key_order_inside_a_list_valued_version_does_not_matter(self):
         """The other half of the pair above: objects *inside* a list.
 

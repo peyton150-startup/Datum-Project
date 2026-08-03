@@ -14,7 +14,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
-from typing import Any
+from typing import Any, NamedTuple
 
 from datum.reconcile.domain import PlaneValue, canonical
 from datum.reconcile.schema import (
@@ -69,11 +69,14 @@ class AuditLogEntry:
 STATEMENT_ABSENT = "absent"
 STATEMENT_NULL = "null"
 
-# Tags a statement that carries a value, so a provider string can never spell a
-# presence statement. Named once because `_key_statement` writes it and
-# `_rendered_key` strips it: two literals that drifted apart would leave the
-# rendering silently unstripped rather than failing.
-STATEMENT_VALUE_PREFIX = "value:"
+# The two kinds a *stated* key value can be, for the keyed object modes. They
+# are kinds rather than spellings because a spelling can be forged: `canonical`
+# emits JSON, so an ordinary provider string reading `{"a": 1}` would otherwise
+# agree with the object of that shape. Scalars compare across types on purpose
+# -- `1` and `"1"` are the same version -- and that licence must stop at the
+# structure boundary, which only a separate kind can enforce.
+STATEMENT_SCALAR = "scalar"
+STATEMENT_STRUCTURED = "structured"
 
 # Two planes agree here only when they made the same statement AND that
 # statement is one a comparison can affirm. Two sides that both hold a value the
@@ -1134,57 +1137,79 @@ def _compare_by_key(
     return (is_equal, declared_extracted, discovered_extracted)
 
 
-def _key_statement(value: dict[str, Any], key: str) -> str:
+class KeyStatement(NamedTuple):
+    """What one object said about one key: of what kind, and spelled how.
+
+    The kind travels *beside* the rendering rather than inside it, for the
+    reason `_compare_by_key` gives about statements generally: anything folded
+    into a string can be spelled by data. A prefix would only move the forgery
+    -- a provider emitting the prefix as an ordinary string would reach the
+    same collision one step later.
+
+    `rendering` is empty for the two unstated kinds. They carry no value to
+    spell, and giving them one would invite comparing it.
+    """
+
+    kind: str
+    rendering: str
+
+
+def _key_statement(value: dict[str, Any], key: str) -> KeyStatement:
     """Name what one object said about one key, presence and nullity included.
 
     The inner-key counterpart of `_plane_statement`, and it reuses that
-    section's constants rather than restating absence a second time. A stated
-    value carries its string form, because comparing values as strings is the
-    configured semantics here -- `1` and `"1"` are the same version.
+    section's constants rather than restating absence a second time.
     """
     if key not in value:
-        return STATEMENT_ABSENT
+        return KeyStatement(STATEMENT_ABSENT, "")
     if value[key] is None:
-        return STATEMENT_NULL
-    return f"{STATEMENT_VALUE_PREFIX}{_stated_key_rendering(value[key])}"
+        return KeyStatement(STATEMENT_NULL, "")
+    return _stated_key_statement(value[key])
 
 
-def _stated_key_rendering(stated: Any) -> str:
-    """The string a stated key value is compared as.
+def _stated_key_statement(stated: Any) -> KeyStatement:
+    """How a stated key value is compared: of what kind, and spelled how.
 
-    `str()` for a scalar, because that is what makes `1` and `"1"` the same
-    version -- the configured semantics of these two modes.
+    **Scalars** are spelled with `str()` and compared across types, because
+    that is what makes `1` and `"1"` the same version -- the configured
+    semantics of these two modes, which compare a version *as a string*.
 
-    `canonical()` for a structured value, because `str()` on a dict spells it
-    in insertion order, and two structurally identical values inserted in
-    different orders would then be reported as a discrepancy (#39). That would
-    contradict the invariant `compare_object` states about itself, and which
-    every other object mode keeps: key order never changes a result, at any
-    depth, in any mode. `opaque` hashes through `canonical()` and the
-    `recurse(N)` modes sort at every level; these two were the exception.
+    **Structured values** are spelled with `canonical()`, because `str()` on a
+    dict spells it in insertion order, and two structurally identical values
+    built in different orders would then be reported as a discrepancy (#39).
+    That would contradict the invariant `compare_object` states about itself,
+    and which every other object mode keeps: key order never changes a result,
+    at any depth, in any mode.
+
+    **The two kinds never compare equal to each other**, whatever they spell.
+    A dict is not a version string, and `canonical()` emits JSON, so a string
+    that happens to spell `{"a": 1}` would otherwise agree with the object of
+    that shape -- silently, and with an audit log showing both sides alike.
+    Cross-type comparison is intended *within* scalars and wrong across this
+    boundary, so the boundary is a separate kind rather than a spelling.
 
     A structured value here is out of spec rather than expected -- the spec
     says a version *field* compared *as strings* -- but out of spec is not the
-    same as unreachable, and an order-dependent verdict is the worst of the
-    available answers to give about one.
+    same as unreachable, and an order-dependent verdict, or a silent agreement
+    with an unrelated string, are the two worst answers available about one.
     """
     if isinstance(stated, dict | list):
-        return canonical(stated)
-    return str(stated)
+        return KeyStatement(STATEMENT_STRUCTURED, canonical(stated))
+    return KeyStatement(STATEMENT_SCALAR, str(stated))
 
 
-def _rendered_key(statement: str) -> str:
+def _rendered_key(statement: KeyStatement) -> str:
     """The audit log's spelling of one key statement.
 
     Rendering is one-way on purpose: two different statements may never render
     alike into a *decision*, only into the log, because the decision was already
     made on the statements themselves.
     """
-    if statement == STATEMENT_ABSENT:
+    if statement.kind == STATEMENT_ABSENT:
         return MISSING_KEY_MARKER
-    if statement == STATEMENT_NULL:
+    if statement.kind == STATEMENT_NULL:
         return NULL_KEY_MARKER
-    return statement.removeprefix(STATEMENT_VALUE_PREFIX)
+    return statement.rendering
 
 
 def _compare_version(

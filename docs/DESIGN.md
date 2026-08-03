@@ -253,16 +253,18 @@ The counter is written by a process other than the one that owns the run, so it 
 
 **The rule: a concurrency conflict is a domain condition, and must surface as a domain exception.** A conflict that reaches the caller as `IntegrityError` has inverted the barricade exactly as CF-2 did — the boundary passed a condition inward and the database caught it. That the database *does* catch it is not the defect. The defect is that the rejection depends on a constraint firing mid-transaction and arrives wearing a lower module's abstraction, so no caller can be written to expect it. CF-2 was one instance of this. It is a class.
 
-Four instances exist today. Two honour the rule; two do not:
+Four instances exist today. All four honour the rule; the first two did not until 2026-07-29:
 
 | Where | The race, under READ COMMITTED | What holds integrity | What the caller sees |
 |---|---|---|---|
-| `intent/ingest.py::ingest_revision` | Check-then-insert on `(tenant, commit_sha)`. Two triggers carrying the same commit both read "no existing revision", both project. | `uq_revision_tenant_commit` | `IntegrityError` |
-| `intent/ingest.py::_project` | `UPDATE ... WHERE is_active` then `INSERT is_active=True`. T2's scan cannot see the row T1 has not yet committed, so both may insert an active revision. | `uq_one_active_revision_per_tenant` | `IntegrityError` |
+| `intent/ingest.py::ingest_revision` | Check-then-insert on `(tenant, commit_sha)`. Two triggers carrying the same commit both read "no existing revision", both project. | `uq_revision_tenant_commit` | **Domain exception — fixed 2026-07-29 (`611b516`)** |
+| `intent/ingest.py::_project` | `UPDATE ... WHERE is_active` then `INSERT is_active=True`. T2's scan cannot see the row T1 has not yet committed, so both may insert an active revision. | `uq_one_active_revision_per_tenant` | **Domain exception — fixed 2026-07-29 (`611b516`)** |
 | `discovery/collector.py::_upsert` | `update_or_create` is a read followed by a write, not one statement. Two overlapping runs may both find no row and both insert. | `uq_discovered_natural_key` | **Excluded — see below** |
 | `reconcile/service.py::run_reconciliation` | Read both planes, `_reset`, then insert. An *empty* `_reset` DELETE takes no row locks, so two overlapping runs compute the same pairings and both insert. | `uq_active_match_per_declared` | **Excluded by `locked_run`; the later run is skipped** |
 
-The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. They are tracked separately and are the only two still owing the rule.
+The first two need only a second Celery beat worker, and become certain when the Git webhook deferred in §10 lands beside the poller — two triggers into one idempotent entry point is precisely the design that invites simultaneous delivery. Commit `611b516` closed both: the conflict is caught, discriminated by SQLSTATE class so a non-race `IntegrityError` is re-raised rather than swallowed, and surfaced as a domain exception. `tests/test_intent_concurrency.py` covers it.
+
+**This table was stale for three days and cost a wasted issue.** It still read `IntegrityError` for the first two rows after `611b516` fixed them, and issue #31 was filed against working code by someone reading the table rather than the tree. A row here is a claim about code; when the code changes, the claim is wrong until it is edited.
 
 **Why `_upsert` is safe, in full.** An earlier version of this table credited the collector lock alone. That is half the reason, and the missing half is the part that can change. `uq_discovered_natural_key` covers `(tenant_id, kind, scope, name)`, so a collision needs two writers on one *kind*:
 

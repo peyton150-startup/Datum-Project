@@ -23,6 +23,7 @@ import logging
 from collections.abc import Sequence
 from typing import Protocol
 
+from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -36,7 +37,7 @@ from datum.discovery.lock import collector_lock
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
-from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,9 @@ def _read_once(collector: Collector, tenant_id: str) -> CollectorRun:
             _log_unknown_kind(collector, snapshot, tenant_id)
             errors += 1
             continue
-        _upsert(tenant_id, kind, snapshot, run)
+        if not _stored(tenant_id, kind, snapshot, run, collector):
+            errors += 1
+            continue
         written += 1
 
     finished = _finish(
@@ -220,7 +223,9 @@ def _start(collector: Collector, tenant_id: str) -> CollectorRun:
 def _normalized(collector: Collector, record: object, tenant_id: str) -> ResourceSnapshot | None:
     """One record's worth of the barricade. None means rejected, never raised."""
     try:
-        return collector.normalize(record, tenant_id)
+        snapshot = collector.normalize(record, tenant_id)
+        _refuse_unstorable_attributes(collector, snapshot)
+        return snapshot
     except MalformedProviderData:
         # Swallowed deliberately: this is the robustness rule, not an oversight.
         # The rejection is counted by the caller and logged here with the
@@ -230,6 +235,34 @@ def _normalized(collector: Collector, record: object, tenant_id: str) -> Resourc
             "collector %s rejected a record for tenant %s", collector.name, tenant_id, exc_info=True
         )
         return None
+
+
+# --- The attribute-type barricade (issue #47) --------------------------------
+#
+# The rule itself lives in `reconcile.domain`, because both planes need it and a
+# rule both planes need must not be written twice. What belongs here is only the
+# decision about what a violation *means* to a collector run: a rejected record,
+# counted and survived, exactly like every other malformed one.
+#
+# Enforced in the framework rather than asked of each adapter, for the reason the
+# fetch/normalize split exists. CF-1 was fixed by making the mistake unavailable,
+# and the second collector inherited that fix without knowing the rule existed.
+# An adapter cannot forget a check it never had to write.
+
+
+def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapshot) -> None:
+    """Raise `MalformedProviderData` for the first attribute that breaks the rule.
+
+    Raised rather than returned so it joins the rejection path every other bad
+    record takes: logged once, counted once, and never aborting the read.
+    """
+    problem = unstorable_attribute(snapshot.attributes)
+    if problem is None:
+        return
+    raise MalformedProviderData(
+        f"collector {collector.name} normalized {snapshot.kind}/{snapshot.scope}/{snapshot.name} "
+        f"to an attribute that cannot be stored or compared: {problem}"
+    )
 
 
 def _log_unknown_kind(collector: Collector, snapshot: ResourceSnapshot, tenant_id: str) -> None:
@@ -249,6 +282,68 @@ def _log_unknown_kind(collector: Collector, snapshot: ResourceSnapshot, tenant_i
         snapshot.scope,
         snapshot.name,
     )
+
+
+def _stored(
+    tenant_id: str,
+    kind: Kind,
+    snapshot: ResourceSnapshot,
+    run: CollectorRun,
+    collector: Collector,
+) -> bool:
+    """Write one observation, or count it as a rejection. Never raises.
+
+    The last mile of the robustness rule, and the one that was missing. Every
+    other way a record can fail is already caught and counted, but the write
+    itself was bare: a value the type barricade did not anticipate raised out
+    of `run_collector` entirely, leaving the run at its provisional FAILED with
+    no `finished_at`, and every record after it in the batch was never read,
+    counted, or stored. That is CF-1's shape -- one bad record taking its
+    siblings -- reached through the one door still open.
+
+    **This is deliberately not a second encoding of the type rule.** It makes no
+    judgement about what a storable value is; it catches whatever the database
+    refuses and turns it into the rejection every other failure already is. The
+    barricade's completeness stops being load-bearing, which matters because no
+    type table can be proven to anticipate everything Postgres declines.
+
+    Catches `Exception`, and the two narrower guesses that came before it are
+    why. First `DatabaseError`, which missed `InterfaceError` -- a sibling under
+    `Error`, not a child. Then `django.db.Error`, which missed more: **psycopg
+    serializes the JSONB parameter client-side, before any SQL is sent**, so a
+    payload too deep or an integer too large raises `RecursionError` or
+    `ValueError` out of `json.dumps` and never reaches the database layer at
+    all. Both escaped and took every later record in the batch with them.
+
+    Each narrowing was an attempt to name the failures worth surviving, and each
+    was wrong in a direction nobody predicted. This is the robustness zone:
+    DESIGN section 11 ranks robustness first here and explicitly sacrifices
+    strict correctness, and the rule it states is that one record must never end
+    a read. A record that cannot be written **for any reason** is a counted
+    rejection. `BaseException` still propagates, so a `KeyboardInterrupt` mid-run
+    leaves the run FAILED as it must.
+
+    Nothing is silent: `logger.exception` carries the traceback, so a genuine
+    bug here surfaces as a logged stack rather than as a lost record.
+
+    `atomic` per record so a refused write rolls back only itself and leaves the
+    connection usable for the rest of the batch.
+    """
+    try:
+        with transaction.atomic():
+            _upsert(tenant_id, kind, snapshot, run)
+    except Exception:
+        logger.exception(
+            "collector %s produced a record the database refused; "
+            "tenant %s, kind %s, scope %s, name %s",
+            collector.name,
+            tenant_id,
+            snapshot.kind,
+            snapshot.scope,
+            snapshot.name,
+        )
+        return False
+    return True
 
 
 def _upsert(tenant_id: str, kind: Kind, snapshot: ResourceSnapshot, run: CollectorRun) -> None:

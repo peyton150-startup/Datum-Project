@@ -375,3 +375,62 @@ def test_rendered_message_locates_every_error():
     rendered = str(caught.value)
     assert "1 error(s)" in rendered
     assert "deployments/web.yaml:" in rendered
+
+
+# --------------------------------------------------------------------------
+# Storability: the right type is not the same as a storable value (issue #47)
+# --------------------------------------------------------------------------
+
+
+def bucket_with(name_prefix_literal: str) -> str:
+    """A valid Bucket whose `name_prefix` is the given YAML scalar."""
+    return (
+        "apiVersion: datum.dev/v1\n"
+        "kind: Bucket\n"
+        "metadata:\n"
+        "  name: assets\n"
+        "  scope: default\n"
+        "attributes:\n"
+        f"  name_prefix: {name_prefix_literal}\n"
+        "  is_public: false\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("literal", "names"),
+    [
+        (r'"a\0b"', "NUL"),
+        (r'"p\ud800q"', "unpaired surrogate"),
+    ],
+)
+def test_a_string_of_the_right_type_that_cannot_be_stored_is_rejected(literal, names):
+    """The declared plane checked what a value IS and never what it holds.
+
+    `_TYPE_PREDICATES["str"]` answers `type(value) is str` and stops there, so
+    a double-quoted YAML escape decoding to a real NUL or an unpaired surrogate
+    passed validation intact. It then raised `DataError` out of projection --
+    past `ingest_revision`, whose contract is two domain errors, and into the
+    poll task's catch-all for the unanticipated. The author saw a dropped
+    revision and an opaque log line rather than the file and field.
+
+    Asserted through the real parser with a real YAML escape, not by calling
+    the checker with a hand-built string, because the point is that YAML
+    produces this from text a person can type.
+    """
+    (error,) = errors_from(bucket_with(literal))
+
+    assert "name_prefix" in str(error)
+    assert "cannot be stored" in str(error)
+    assert names.split()[-1] in str(error)
+
+
+def test_an_ordinary_string_is_still_accepted():
+    """The nearby case: the guard reads contents, so it must not reject content.
+
+    A quoted string full of escapes that are perfectly storable. Without this,
+    a guard that rejected every double-quoted scalar would pass the two cases
+    above and look correct.
+    """
+    (snapshot,) = parse(bucket_with(r'"tab\there \u00e9\u00e8 \u4e2d\u6587"'))
+
+    assert snapshot.attributes["name_prefix"] == "tab\there éè 中文"

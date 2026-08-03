@@ -21,8 +21,9 @@ import threading
 import pytest
 from django.db import connection, connections, transaction
 
+from datum import locks
 from datum.discovery.models import CollectorRun, DiscoveredResource
-from datum.enums import CollectorRunStatus
+from datum.enums import CollectorRunStatus, MatchState
 from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
 from datum.kinds.models import Kind
@@ -282,6 +283,72 @@ def test_a_callers_transaction_does_not_free_the_lock_early(second_connection):
         "the lock was free while the caller's transaction was still open, so "
         "the run's writes were unpublished and unprotected at the same time"
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_run_that_raises_inside_a_callers_transaction_strands_nothing(second_connection):
+    """The edge a transaction-scoped lock does not close by itself.
+
+    `ROLLBACK TO SAVEPOINT` releases a lock acquired inside that savepoint, so
+    when the body raises under a caller's own transaction the lock is freed
+    while the outer transaction is still open. That is safe only because
+    `locked_run` keeps the lock and the body's writes in one block: the
+    rollback undoes both together.
+
+    The bug this excludes is therefore not "the lock was released" -- it was,
+    correctly -- but "the lock was released while this run's writes survived."
+    A second worker acquiring the lock here must find no trace of the failed
+    run to build on.
+
+    The fixture discriminates on the *pair*: it asserts the lock is grantable
+    and that nothing was written. An implementation that let the body's writes
+    escape the rolled-back savepoint would satisfy the first and fail the
+    second.
+    """
+    _seed()
+
+    def explode(tenant_id: str) -> None:
+        Match.objects.create(
+            tenant_id=tenant_id,
+            declared_kind="Deployment",
+            declared_scope="default",
+            declared_name="web",
+            discovered_provider_id="uid-0001",
+            state=MatchState.PROPOSED,
+        )
+        raise RuntimeError("reconciliation failed after writing")
+
+    original = service._reconcile_once
+    service._reconcile_once = explode
+    try:
+        with transaction.atomic():
+            with pytest.raises(RuntimeError):
+                run_reconciliation(TENANT)
+            granted = second_connection(run_lock, TENANT, RECONCILE_OPERATION)
+    finally:
+        service._reconcile_once = original
+
+    assert granted is True, "a failed run must not wedge the tenant"
+    assert not Match.objects.filter(tenant_id=TENANT).exists(), (
+        "the lock was freed while the failed run's writes survived, so a second "
+        "worker would build on state the first never committed"
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_the_transaction_scoped_lock_refuses_to_be_taken_outside_one():
+    """The contract `_try_acquire_until_commit` states in prose, pinned.
+
+    A transaction-scoped lock acquired with no transaction open is released
+    inside the implicit single-statement transaction: it reports success and
+    excludes nothing. The assertion is what turns that silent no-op into a
+    failure, and nothing else in this file reaches it -- `locked_run` opens the
+    transaction first, so the branch is unreachable through the public helper.
+    """
+    assert not connection.in_atomic_block, "this test requires autocommit"
+
+    with pytest.raises(AssertionError, match="transaction"):
+        locks._try_acquire_until_commit(locks._advisory_key(TENANT, RECONCILE_OPERATION))
 
 
 @pytest.mark.django_db(transaction=True)

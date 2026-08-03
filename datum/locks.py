@@ -33,13 +33,24 @@ around `transaction.atomic()`, which stopped a *callee* from inverting them but
 not a *caller*: Django turns a nested `atomic()` into a savepoint, so the block
 exits by releasing a savepoint rather than committing, and a session-scoped
 unlock then fires while the real commit is still pending (#36). A
-transaction-scoped lock has no such failure mode -- nested or not, it is held
-until the transaction that will actually commit ends, so the correct ordering is
-the only ordering expressible.
+transaction-scoped lock removes that failure mode -- nested or not, it is held
+until the transaction that will actually commit ends, so no code chooses the
+moment of release.
+
+**The one edge, stated because it is not obvious.** A transaction-scoped lock is
+released by `ROLLBACK TO SAVEPOINT` as well as by the end of the transaction, so
+a lock taken inside a nested `atomic()` that then rolls back *is* freed while the
+outer transaction is still open. That is safe here for a reason worth naming
+rather than assuming: `locked_run` puts the lock and the body's writes in the
+same block, so a rollback undoes both together and there is never a moment when
+a write survives that the lock was protecting. Anything that acquires the lock in
+one block and writes in another loses that guarantee.
 
 **Do not swap `run_lock` to the transaction-scoped call.** Acquired outside a
 transaction it is taken and released inside the implicit single-statement
-transaction, so it excludes nothing at all, silently.
+transaction, so it excludes nothing at all. Going through
+`_try_acquire_until_commit` this fails loudly on its assertion; reimplementing
+the raw SQL is what makes it silent.
 """
 
 import logging
@@ -103,12 +114,17 @@ def locked_run(tenant_id: str, operation: str) -> Iterator[bool]:
     lock.
 
     The lock is transaction-scoped, so Postgres releases it when the transaction
-    ends and never before. Nothing here chooses the moment of release, which is
-    the point: the ordering bug this guards against is not available to write.
-    That holds when a caller has already opened a transaction of its own, too --
-    the `atomic()` below is then a savepoint, the lock binds to the outer
-    transaction that will really commit, and it is held until that commit rather
-    than until this block exits (#36).
+    ends. Nothing here chooses the moment of release, which is the point: the
+    caller cannot hold the lock and the commit apart. That holds when a caller
+    has already opened a transaction of its own -- the `atomic()` below is then a
+    savepoint, the lock binds to the outer transaction that will really commit,
+    and it is held until that commit rather than until this block exits (#36).
+
+    Not "never released before the commit", which would be too strong: a
+    savepoint rollback releases it too. What holds is that the lock and the
+    body's writes are inside the same block, so the two are released and undone
+    together and no write ever outlives the lock protecting it. The module
+    docstring says what that costs anyone composing the two by hand.
 
     Note the asymmetry with `run_lock`, which is session-scoped and must stay
     that way. The module docstring says why.

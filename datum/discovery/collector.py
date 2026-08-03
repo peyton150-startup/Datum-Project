@@ -21,9 +21,11 @@ bad record from ending a read.
 
 import logging
 import math
+from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from django.db import DatabaseError, transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -183,7 +185,9 @@ def _read_once(collector: Collector, tenant_id: str) -> CollectorRun:
             _log_unknown_kind(collector, snapshot, tenant_id)
             errors += 1
             continue
-        _upsert(tenant_id, kind, snapshot, run)
+        if not _stored(tenant_id, kind, snapshot, run, collector):
+            errors += 1
+            continue
         written += 1
 
     finished = _finish(
@@ -276,7 +280,17 @@ def _normalized(collector: Collector, record: object, tenant_id: str) -> Resourc
 # into a domain error must not be able to raise `RecursionError` on a deeply
 # nested provider payload, which is the same defect in a new hat.
 
-_JSON_NATIVE_SCALARS = (str, bool, int)
+_JSON_NATIVE_SCALARS = (bool, int)
+
+# Postgres `text`, which backs every string inside a `jsonb`, cannot hold a NUL.
+# `json.dumps` escapes it to `\u0000` quite happily and the driver then refuses
+# the result, so this is a third way a value can be JSON-native and unstorable.
+_NUL = "\x00"
+
+# `next()` needs a default that cannot be confused with a real key, and `None`
+# can be one -- a mapping keyed by None is exactly the sort of thing this
+# refuses, so it must not double as "nothing found".
+_NO_KEY = object()
 
 
 def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapshot) -> None:
@@ -297,11 +311,25 @@ def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapsh
 def _unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
     """Describe the first attribute value that is not JSON-native, or None.
 
+    The attribute names are checked for the same reason nested mapping keys are,
+    and were not at first: the walk was seeded from `attributes.items()`, so the
+    outermost keys were the one mapping in the structure nobody looked at.
+    `ResourceSnapshot.attributes` is annotated `Mapping[str, object]`, which is
+    a promise the type checker cannot keep about a dict built at runtime.
+
+    Breadth-first through a deque rather than depth-first through `list.pop()`,
+    so the attribute named is the first one in insertion order. It reported the
+    last, under a docstring that said first.
+
     Iterative on purpose; see the note above on `RecursionError`.
     """
-    pending: list[tuple[str, object]] = list(attributes.items())
+    stray = _first_non_string_key(attributes)
+    if stray is not _NO_KEY:
+        return f"the attribute name {stray!r} is {type(stray).__name__} rather than a string"
+
+    pending: deque[tuple[str, object]] = deque(attributes.items())
     while pending:
-        path, value = pending.pop()
+        path, value = pending.popleft()
         problem, children = _inspected(path, value)
         if problem is not None:
             return problem
@@ -309,32 +337,61 @@ def _unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
     return None
 
 
+def _first_non_string_key(mapping: Mapping[object, object]) -> object:
+    """The first key that is not a string, or `_NO_KEY` when every key is one.
+
+    One encoding of the rule, two callers: an attribute name and a nested
+    mapping key are the same constraint reported in two different sentences,
+    and the constraint is the part that must not drift.
+    """
+    return next((key for key in mapping if not isinstance(key, str)), _NO_KEY)
+
+
 def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, object]]]:
     """One value: what is wrong with it, and what it contains that still needs looking at."""
     if value is None or isinstance(value, _JSON_NATIVE_SCALARS):
         return (None, [])
+    if isinstance(value, str):
+        return (_unstorable_text(path, value), [])
     if isinstance(value, float):
         if not math.isfinite(value):
             return (f"{path} is {value!r}, which JSON cannot represent", [])
         return (None, [])
-    if isinstance(value, list):
+    if isinstance(value, list | tuple):
         return (None, [(f"{path}[{index}]", item) for index, item in enumerate(value)])
     if isinstance(value, dict):
         return _inspected_mapping(path, value)
     return (f"{path} is {type(value).__name__}, which is not a JSON type", [])
 
 
+def _unstorable_text(path: str, value: str) -> str | None:
+    """A string JSON accepts that Postgres will not store, or None.
+
+    The gap this closes: every other type here is judged by what it *is*, and a
+    string was waved through on that basis while being the one type whose
+    *contents* can fail. `json.dumps` escapes a NUL to `\\u0000` and an unpaired
+    surrogate to `\\udXXX` without complaint, and the driver then rejects both.
+    """
+    if _NUL in value:
+        return f"{path} contains a NUL, which Postgres cannot store in text"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return f"{path} contains an unpaired surrogate, which is not valid UTF-8"
+    return None
+
+
 def _inspected_mapping(
     path: str, value: dict[object, object]
 ) -> tuple[str | None, list[tuple[str, object]]]:
     """A mapping's keys must be strings before its values are worth walking."""
-    for key in value:
-        if not isinstance(key, str):
-            return (
-                f"{path} has key {key!r} of type {type(key).__name__}, "
-                "and JSON silently renders it as a string",
-                [],
-            )
+    stray = _first_non_string_key(value)
+    if stray is not _NO_KEY:
+        return (
+            f"{path} has key {stray!r} of type {type(stray).__name__}, "
+            "and JSON silently renders it as a string",
+            [],
+        )
     return (None, [(f"{path}.{key}", item) for key, item in value.items()])
 
 
@@ -355,6 +412,49 @@ def _log_unknown_kind(collector: Collector, snapshot: ResourceSnapshot, tenant_i
         snapshot.scope,
         snapshot.name,
     )
+
+
+def _stored(
+    tenant_id: str,
+    kind: Kind,
+    snapshot: ResourceSnapshot,
+    run: CollectorRun,
+    collector: Collector,
+) -> bool:
+    """Write one observation, or count it as a rejection. Never raises.
+
+    The last mile of the robustness rule, and the one that was missing. Every
+    other way a record can fail is already caught and counted, but the write
+    itself was bare: a value the type barricade did not anticipate raised out
+    of `run_collector` entirely, leaving the run at its provisional FAILED with
+    no `finished_at`, and every record after it in the batch was never read,
+    counted, or stored. That is CF-1's shape -- one bad record taking its
+    siblings -- reached through the one door still open.
+
+    **This is deliberately not a second encoding of the type rule.** It makes no
+    judgement about what a storable value is; it catches whatever the database
+    refuses and turns it into the rejection every other failure already is. The
+    barricade's completeness stops being load-bearing, which matters because no
+    type table can be proven to anticipate everything Postgres declines.
+
+    `atomic` per record so a refused write rolls back only itself and leaves the
+    connection usable for the rest of the batch.
+    """
+    try:
+        with transaction.atomic():
+            _upsert(tenant_id, kind, snapshot, run)
+    except DatabaseError:
+        logger.exception(
+            "collector %s produced a record the database refused; "
+            "tenant %s, kind %s, scope %s, name %s",
+            collector.name,
+            tenant_id,
+            snapshot.kind,
+            snapshot.scope,
+            snapshot.name,
+        )
+        return False
+    return True
 
 
 def _upsert(tenant_id: str, kind: Kind, snapshot: ResourceSnapshot, run: CollectorRun) -> None:

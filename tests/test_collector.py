@@ -8,8 +8,10 @@ under-reporting what a run saw is the silent half of that defect.
 
 import datetime
 import json
+from unittest import mock
 
 import pytest
+from django.db import DataError
 
 from datum.discovery.collector import (
     _refuse_unstorable_attributes,
@@ -320,6 +322,12 @@ def emitting(attributes: dict, name: str = "one") -> CollectorRun:
         ({"ratio": float("-inf")}, "-Infinity is not representable in JSON"),
         ({"labels": {1: "a"}}, "an int key is silently rendered as a string"),
         ({"labels": {True: "a"}}, "a bool key is silently rendered as a string"),
+        ({1: "a"}, "an int attribute name, which nothing was checking"),
+        ({None: "a"}, "a None attribute name, which nothing was checking"),
+        ({"note": "a\x00b"}, "a NUL, which Postgres cannot store in text"),
+        ({"note": "\ud800"}, "an unpaired surrogate, which is not valid UTF-8"),
+        ({"labels": {"k": "pre\x00post"}}, "a NUL nested inside a mapping value"),
+        ({"args": ["fine", "\udfff"]}, "a surrogate nested inside a list"),
         ({"ports": [1, datetime.date(2026, 8, 3)]}, "nested inside a list"),
         ({"spec": {"inner": {"when": datetime.date(2026, 8, 3)}}}, "nested two levels deep"),
         ({"spec": {"ports": [{"t": float("inf")}]}}, "nested through a list inside a dict"),
@@ -362,6 +370,17 @@ def test_an_attribute_that_cannot_be_stored_is_rejected_not_raised(attributes, b
         {"spec": {"ports": [{"port": 80, "tls": False}], "note": None}},
         {"empty_list": [], "empty_dict": {}},
         {"deep": {"a": {"b": {"c": [1, {"d": "e"}]}}}},
+        # A tuple is JSON-safe: `json.dumps` emits it as an array, storage keeps
+        # it as one, and it canonicalizes identically to the list. Rejecting it
+        # dropped a healthy resource for no correctness gain, which is the
+        # over-broad direction and the worse one.
+        {"ports": (80, 443)},
+        {"spec": {"args": ("--v", "2")}},
+        # Strings whose contents are unusual but storable. The NUL and surrogate
+        # rules must not become "reject anything non-ASCII".
+        {"note": "emoji \U0001f600 and éè and 中文"},
+        {"note": 'tab\tnewline\nquote"backslash\\'},
+        {"note": "😀"},  # a *paired* surrogate: one valid astral char
     ],
 )
 def test_ordinary_attributes_are_untouched(attributes):
@@ -377,7 +396,14 @@ def test_ordinary_attributes_are_untouched(attributes):
 
     assert (run.resources_read, run.resources_written, run.errors) == (1, 1, 0)
     assert run.status == CollectorRunStatus.SUCCESS
-    assert DiscoveredResource.objects.get(tenant_id=TENANT, name="one").attributes == attributes
+
+    # Compared against the JSON round-trip rather than the input, because
+    # storage normalizes and one of these cases proves it: a tuple is stored as
+    # an array and read back as a list. Asserting equality with the input would
+    # have quietly required tuples to be rejected, which is the thing this case
+    # exists to say they are not.
+    stored = DiscoveredResource.objects.get(tenant_id=TENANT, name="one").attributes
+    assert stored == json.loads(json.dumps(attributes))
 
 
 def test_one_unstorable_record_does_not_take_its_siblings():
@@ -449,6 +475,71 @@ def test_the_rejection_names_the_collector_the_resource_and_the_path():
     assert "Deployment/prod/api" in message
     assert "spec.ports[0].seen" in message
     assert "date" in message
+
+
+def test_a_write_the_database_refuses_is_counted_not_raised():
+    """The last mile: a value the type barricade did not anticipate.
+
+    The barricade is a list of types, and no such list can be proven to
+    anticipate everything Postgres declines. Before this, an unanticipated
+    value raised out of `run_collector`: the run was left at its provisional
+    FAILED with no `finished_at`, and every record after it was never read,
+    counted, or stored -- CF-1's shape, through the one door still open.
+
+    Simulated by making the *write* fail for one record while the barricade
+    passes it, which is exactly the situation an incomplete type table
+    produces. The point is that the run survives whether or not the table is
+    complete, so this deliberately does not go through a known-bad type.
+    """
+    from datum.discovery import collector as collector_module
+
+    real_upsert = collector_module._upsert
+
+    def refusing_upsert(tenant_id, kind, snapshot, run):
+        if snapshot.name == "poison":
+            raise DataError("simulated: the database refused this row")
+        return real_upsert(tenant_id, kind, snapshot, run)
+
+    class Batch:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return ["before", "poison", "after"]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record,
+                provider_id=f"uid-{record}",
+                attributes={"replicas": 1},
+            )
+
+    with mock.patch.object(collector_module, "_upsert", refusing_upsert):
+        run = run_collector(Batch(), TENANT)
+
+    # The record after the poisoned one is the whole point: it must be read,
+    # written, and present. Before the fix the run died at "poison".
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+    assert run.status == CollectorRunStatus.PARTIAL
+    assert run.finished_at is not None
+    assert names_written() == {"before", "after"}
+
+
+def test_the_first_offending_attribute_is_the_one_named():
+    """The walk reports insertion order, which its docstring already claimed.
+
+    A LIFO stack named the last-inserted bad attribute while the docstring said
+    first. Cosmetic on its own, and asserted because a message that names a
+    different field than the one a reader looks at first costs debugging time.
+    """
+    problem = _unstorable_attribute({"aaa_first": b"bytes", "zzz_last": {1: "x"}})
+
+    assert problem is not None
+    assert "aaa_first" in problem
+    assert "zzz_last" not in problem
 
 
 def test_a_deeply_nested_payload_does_not_exhaust_the_stack():

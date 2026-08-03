@@ -13,17 +13,14 @@ from unittest import mock
 import pytest
 from django.db import DataError
 
-from datum.discovery.collector import (
-    _refuse_unstorable_attributes,
-    _unstorable_attribute,
-    run_collector,
-)
+from datum.discovery.collector import _refuse_unstorable_attributes, run_collector
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
 from datum.discovery.kubernetes import ENVELOPE_KEY, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.discovery.recorded import RecordedSource
 from datum.enums import CollectorRunStatus
 from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import unstorable_attribute as _unstorable_attribute
 
 TENANT = "00000000-0000-0000-0000-000000000001"
 FIXTURE = "fixtures/k8s/deployments.json"
@@ -528,18 +525,31 @@ def test_a_write_the_database_refuses_is_counted_not_raised():
     assert names_written() == {"before", "after"}
 
 
-def test_the_first_offending_attribute_is_the_one_named():
-    """The walk reports insertion order, which its docstring already claimed.
-
-    A LIFO stack named the last-inserted bad attribute while the docstring said
-    first. Cosmetic on its own, and asserted because a message that names a
-    different field than the one a reader looks at first costs debugging time.
-    """
+def test_among_equally_shallow_problems_the_first_written_is_named():
+    """A LIFO stack named the last-inserted attribute while claiming the first."""
     problem = _unstorable_attribute({"aaa_first": b"bytes", "zzz_last": {1: "x"}})
 
     assert problem is not None
     assert "aaa_first" in problem
     assert "zzz_last" not in problem
+
+
+def test_a_shallower_problem_outranks_an_earlier_deeper_one():
+    """The case that tells breadth-first apart from insertion order.
+
+    The test above cannot: both its problems sit at the same depth, so it passes
+    under either rule and the docstring's "first in insertion order" borrowed
+    credit from it. Here `a` is written first and its problem is nested, while
+    `b` is written second and its problem is at the top level -- so the two
+    rules give different answers and only one of them is what the code does.
+
+    Asserted rather than corrected because shallowest-first is the better
+    behaviour to report: it names the attribute an operator can see.
+    """
+    problem = _unstorable_attribute({"a": {"nested": b"bytes"}, "b": b"bytes-2"})
+
+    assert problem is not None
+    assert problem.startswith("b is bytes")
 
 
 def test_a_deeply_nested_payload_does_not_exhaust_the_stack():

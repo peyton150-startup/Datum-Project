@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 import yaml
 
 from datum.intent.errors import DocumentError, InvalidDocument, InvalidRevision
-from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 FORMAT_VERSION = "datum.dev/v1"
 
@@ -266,6 +266,26 @@ def _check_attribute_type(kind: str, attribute_name: str, value: object, type_na
     if not is_expected_type(value):
         raise InvalidDocument(
             f"attribute {attribute_name!r} of kind {kind!r} must be {type_name}, got {value!r}",
+            path=path,
+        )
+
+    # Being the right type is not the same as being storable, and this table
+    # only ever answered the first question. A `str` carrying a NUL or an
+    # unpaired surrogate passed here, then raised `DataError` out of projection
+    # -- past `ingest_revision`, which catches `IntegrityError` and
+    # `OperationalError` and promises a contract of two domain errors, and into
+    # the task's catch-all, whose comment says it only ever sees the
+    # unanticipated. The author got a silently dropped revision instead of an
+    # `InvalidDocument` naming the file and the field.
+    #
+    # Shared with the discovered plane rather than restated, so the two cannot
+    # come to disagree about what a storable value is -- and so that widening
+    # this type table (issue #53) inherits the guarantee rather than needing to
+    # remember it.
+    unstorable = unstorable_attribute({attribute_name: value})
+    if unstorable is not None:
+        raise InvalidDocument(
+            f"attribute {attribute_name!r} of kind {kind!r} cannot be stored: {unstorable}",
             path=path,
         )
 

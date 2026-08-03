@@ -20,12 +20,11 @@ bad record from ending a read.
 """
 
 import logging
-import math
-from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Protocol
 
-from django.db import DatabaseError, transaction
+from django.db import Error as DatabaseLayerError
+from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -39,7 +38,7 @@ from datum.discovery.lock import collector_lock
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
-from datum.reconcile.domain import ResourceSnapshot
+from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -241,56 +240,15 @@ def _normalized(collector: Collector, record: object, tenant_id: str) -> Resourc
 
 # --- The attribute-type barricade (issue #47) --------------------------------
 #
-# Every attribute value reaching kernel comparison is JSON-native, recursively:
-# leaves are `str`, `int`, `float`, `bool`, or `None`, and containers are `list`
-# or `dict` with string keys whose contents satisfy the same rule.
+# The rule itself lives in `reconcile.domain`, because both planes need it and a
+# rule both planes need must not be written twice. What belongs here is only the
+# decision about what a violation *means* to a collector run: a rejected record,
+# counted and survived, exactly like every other malformed one.
 #
-# The kernel depends on this and nothing stated it. `canonical()` is defined over
-# it, and so are `PlaneValue` equality and hashing, the `opaque` structure hash,
-# the `recurse(N)` modes, and the keyed `version`/`identity` comparisons.
-#
-# It held only because storage refused the rest, which is a boundary condition
-# surfacing as a lower layer's exception -- the class DESIGN section 11 names and
-# CF-2 was. Measured against the compose Postgres, a normalizer emitting a
-# `datetime` (the Kubernetes client returns those for timestamps) produced a raw
-# `TypeError` out of a JSON encoder, and one emitting `float("nan")` produced a
-# `DataError` out of the driver, both across a module boundary and neither
-# naming the collector, the resource, or the field.
-#
-# Enforced here rather than asked of each adapter, for the reason the fetch and
-# normalize split exists: CF-1 was fixed by making the mistake unavailable, and
-# the second collector inherited that fix without knowing the rule existed. An
-# adapter cannot forget a check it never had to write.
-#
-# Two rules here are not what "JSON-native" suggests, and both were measured
-# rather than reasoned:
-#
-# - **A non-finite float is refused.** `json.dumps` emits bare `NaN` and
-#   `Infinity`, which are not valid JSON, and Postgres rejects them. So a float
-#   is JSON-native right up until it is not, and the failure arrives from the
-#   driver rather than the encoder.
-# - **A non-string mapping key is refused.** `json.dumps` coerces silently:
-#   `{1: "a"}` is stored and read back as `{"1": "a"}`, and `{True: "a"}` as
-#   `{"true": "a"}`. Two structurally different objects become one value with no
-#   error anywhere. Harmless today, because both planes round-trip through
-#   storage before comparison and so both sides see the coerced form -- but it is
-#   silent coercion at a boundary whose job is to have opinions out loud.
-#
-# The walk is iterative rather than recursive. A barricade that converts a crash
-# into a domain error must not be able to raise `RecursionError` on a deeply
-# nested provider payload, which is the same defect in a new hat.
-
-_JSON_NATIVE_SCALARS = (bool, int)
-
-# Postgres `text`, which backs every string inside a `jsonb`, cannot hold a NUL.
-# `json.dumps` escapes it to `\u0000` quite happily and the driver then refuses
-# the result, so this is a third way a value can be JSON-native and unstorable.
-_NUL = "\x00"
-
-# `next()` needs a default that cannot be confused with a real key, and `None`
-# can be one -- a mapping keyed by None is exactly the sort of thing this
-# refuses, so it must not double as "nothing found".
-_NO_KEY = object()
+# Enforced in the framework rather than asked of each adapter, for the reason the
+# fetch/normalize split exists. CF-1 was fixed by making the mistake unavailable,
+# and the second collector inherited that fix without knowing the rule existed.
+# An adapter cannot forget a check it never had to write.
 
 
 def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapshot) -> None:
@@ -299,100 +257,13 @@ def _refuse_unstorable_attributes(collector: Collector, snapshot: ResourceSnapsh
     Raised rather than returned so it joins the rejection path every other bad
     record takes: logged once, counted once, and never aborting the read.
     """
-    problem = _unstorable_attribute(snapshot.attributes)
+    problem = unstorable_attribute(snapshot.attributes)
     if problem is None:
         return
     raise MalformedProviderData(
         f"collector {collector.name} normalized {snapshot.kind}/{snapshot.scope}/{snapshot.name} "
         f"to an attribute that cannot be stored or compared: {problem}"
     )
-
-
-def _unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
-    """Describe the first attribute value that is not JSON-native, or None.
-
-    The attribute names are checked for the same reason nested mapping keys are,
-    and were not at first: the walk was seeded from `attributes.items()`, so the
-    outermost keys were the one mapping in the structure nobody looked at.
-    `ResourceSnapshot.attributes` is annotated `Mapping[str, object]`, which is
-    a promise the type checker cannot keep about a dict built at runtime.
-
-    Breadth-first through a deque rather than depth-first through `list.pop()`,
-    so the attribute named is the first one in insertion order. It reported the
-    last, under a docstring that said first.
-
-    Iterative on purpose; see the note above on `RecursionError`.
-    """
-    stray = _first_non_string_key(attributes)
-    if stray is not _NO_KEY:
-        return f"the attribute name {stray!r} is {type(stray).__name__} rather than a string"
-
-    pending: deque[tuple[str, object]] = deque(attributes.items())
-    while pending:
-        path, value = pending.popleft()
-        problem, children = _inspected(path, value)
-        if problem is not None:
-            return problem
-        pending.extend(children)
-    return None
-
-
-def _first_non_string_key(mapping: Mapping[object, object]) -> object:
-    """The first key that is not a string, or `_NO_KEY` when every key is one.
-
-    One encoding of the rule, two callers: an attribute name and a nested
-    mapping key are the same constraint reported in two different sentences,
-    and the constraint is the part that must not drift.
-    """
-    return next((key for key in mapping if not isinstance(key, str)), _NO_KEY)
-
-
-def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, object]]]:
-    """One value: what is wrong with it, and what it contains that still needs looking at."""
-    if value is None or isinstance(value, _JSON_NATIVE_SCALARS):
-        return (None, [])
-    if isinstance(value, str):
-        return (_unstorable_text(path, value), [])
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return (f"{path} is {value!r}, which JSON cannot represent", [])
-        return (None, [])
-    if isinstance(value, list | tuple):
-        return (None, [(f"{path}[{index}]", item) for index, item in enumerate(value)])
-    if isinstance(value, dict):
-        return _inspected_mapping(path, value)
-    return (f"{path} is {type(value).__name__}, which is not a JSON type", [])
-
-
-def _unstorable_text(path: str, value: str) -> str | None:
-    """A string JSON accepts that Postgres will not store, or None.
-
-    The gap this closes: every other type here is judged by what it *is*, and a
-    string was waved through on that basis while being the one type whose
-    *contents* can fail. `json.dumps` escapes a NUL to `\\u0000` and an unpaired
-    surrogate to `\\udXXX` without complaint, and the driver then rejects both.
-    """
-    if _NUL in value:
-        return f"{path} contains a NUL, which Postgres cannot store in text"
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return f"{path} contains an unpaired surrogate, which is not valid UTF-8"
-    return None
-
-
-def _inspected_mapping(
-    path: str, value: dict[object, object]
-) -> tuple[str | None, list[tuple[str, object]]]:
-    """A mapping's keys must be strings before its values are worth walking."""
-    stray = _first_non_string_key(value)
-    if stray is not _NO_KEY:
-        return (
-            f"{path} has key {stray!r} of type {type(stray).__name__}, "
-            "and JSON silently renders it as a string",
-            [],
-        )
-    return (None, [(f"{path}.{key}", item) for key, item in value.items()])
 
 
 def _log_unknown_kind(collector: Collector, snapshot: ResourceSnapshot, tenant_id: str) -> None:
@@ -437,13 +308,21 @@ def _stored(
     barricade's completeness stops being load-bearing, which matters because no
     type table can be proven to anticipate everything Postgres declines.
 
+    Catches `django.db.Error`, not `DatabaseError`. Those are siblings rather
+    than parent and child -- `InterfaceError` is an `Error` and is *not* a
+    `DatabaseError` -- so catching the narrower one left a connection-level
+    failure escaping the very loop this exists to protect. `Error` is the one
+    name that covers both, which is the point: this catches whatever the
+    database layer raises, and the moment it needs a list of specific types it
+    has started encoding the type rule a second time.
+
     `atomic` per record so a refused write rolls back only itself and leaves the
     connection usable for the rest of the batch.
     """
     try:
         with transaction.atomic():
             _upsert(tenant_id, kind, snapshot, run)
-    except DatabaseError:
+    except DatabaseLayerError:
         logger.exception(
             "collector %s produced a record the database refused; "
             "tenant %s, kind %s, scope %s, name %s",

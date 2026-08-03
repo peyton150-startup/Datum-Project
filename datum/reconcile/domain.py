@@ -1,5 +1,7 @@
 import json
-from collections.abc import Callable, Mapping, Sequence
+import math
+from collections import deque
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -27,14 +29,156 @@ def canonical(value: object) -> str:
     (issue #47). That collision was real: `canonical({"a": Weird()})` equalled
     `canonical({"a": "weird-str"})`, and `PlaneValue` equality agreed.
 
-    Raising is safe *because* both planes now guarantee JSON-native attributes
-    before this is reached -- the declared side at `intent/documents.py`, the
-    discovered side at `discovery/collector.py`. Without those, this would be a
-    crash where there used to be a wrong answer, which is louder but not a fix.
-    A `TypeError` from here therefore means a barricade was bypassed, not that a
-    provider sent something unusual.
+    Raising is safe *because* both planes screen attributes against
+    `unstorable_attribute` below before anything is written -- the declared side
+    in `intent/documents.py`, the discovered side in `discovery/collector.py`.
+    Without those, this would be a crash where there used to be a wrong answer,
+    which is louder but not a fix. A `TypeError` from here therefore means a
+    barricade was bypassed, not that a provider sent something unusual.
     """
     return json.dumps(value, sort_keys=True)
+
+
+# --- What a plane may state about a field (issue #47) -------------------------
+#
+# Every attribute value reaching kernel comparison is JSON-native, recursively:
+# leaves are `str`, `int`, `float`, `bool`, or `None`, and containers are `list`
+# or `dict` with string keys whose contents satisfy the same rule.
+#
+# `canonical` is defined over this, and so are `PlaneValue` equality and hashing,
+# the opaque structure hash, the `recurse(N)` modes, and the keyed
+# `version`/`identity` comparisons.
+#
+# **It lives here because both planes need it, and a rule both planes need must
+# not be written twice.** It was: the discovered side had this walk and the
+# declared side had a type table that never looked at string contents, so a NUL
+# in a declared string passed validation and raised `DataError` out of ingestion
+# -- the same class the discovered-side barricade exists to close, reached
+# through the door nobody had checked. Writing a second copy into
+# `intent/documents.py` would have made both correct today and free to drift
+# tomorrow, which is the shape CLAUDE.md names as this project's most productive
+# bug family.
+#
+# Two rules here are not what "JSON-native" suggests, and both were measured
+# against the real database rather than reasoned about:
+#
+# - **A non-finite float is refused.** `json.dumps` emits bare `NaN` and
+#   `Infinity`, which are not valid JSON, and Postgres rejects them. A float is
+#   JSON-native right up until it is not, and the failure arrives from the driver
+#   rather than the encoder.
+# - **A non-string mapping key is refused.** `json.dumps` coerces silently:
+#   `{1: "a"}` stores and reads back as `{"1": "a"}`, and `{True: "a"}` as
+#   `{"true": "a"}`. Two structurally different objects become one value with no
+#   error anywhere -- the case a guard written from a traceback would miss,
+#   because there is no traceback.
+#
+# And one type is judged by its contents rather than by what it is: see
+# `_unstorable_text`.
+#
+# The walk is iterative. A boundary that converts a crash into a domain error
+# must not raise `RecursionError` on a deeply nested payload, which is the same
+# defect in a new hat.
+
+_JSON_NATIVE_SCALARS = (bool, int)
+
+# Postgres `text`, which backs every string inside a `jsonb`, cannot hold a NUL.
+# `json.dumps` escapes it to a six-character sequence quite happily and the
+# driver then refuses the result.
+_NUL = chr(0)
+
+# `next()` needs a default that cannot be confused with a real key, and `None`
+# can be one -- a mapping keyed by None is exactly what this refuses, so it must
+# not double as "nothing found".
+_NO_KEY = object()
+
+
+def unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
+    """Describe the first attribute that could not survive storage, or None.
+
+    "First" means shallowest, and among equally shallow ones, first in insertion
+    order -- the walk is breadth-first. It is not "first in insertion order"
+    outright: a top-level `bytes` is reported ahead of a problem nested inside an
+    earlier attribute. Stated precisely because the looser phrasing was here
+    first and the test could not tell the two apart.
+
+    The attribute names are checked for the same reason nested mapping keys are.
+    `ResourceSnapshot.attributes` is annotated `Mapping[str, object]`, which is a
+    promise the type checker cannot keep about a dict built at runtime.
+    """
+    stray = _first_non_string_key(attributes)
+    if stray is not _NO_KEY:
+        return f"the attribute name {stray!r} is {type(stray).__name__} rather than a string"
+
+    pending: deque[tuple[str, object]] = deque(attributes.items())
+    while pending:
+        path, value = pending.popleft()
+        problem, children = _inspected(path, value)
+        if problem is not None:
+            return problem
+        pending.extend(children)
+    return None
+
+
+def _first_non_string_key(keys: Iterable[object]) -> object:
+    """The first key that is not a string, or `_NO_KEY` when every key is one.
+
+    One encoding, two callers: an attribute name and a nested mapping key are
+    the same constraint reported in two different sentences, and the constraint
+    is the part that must not drift.
+
+    Takes the keys rather than the mapping because `Mapping` is invariant in its
+    key type, so a `Mapping[str, object]` is not a `Mapping[object, object]` --
+    and iterating is all this needs.
+    """
+    return next((key for key in keys if not isinstance(key, str)), _NO_KEY)
+
+
+def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, object]]]:
+    """One value: what is wrong with it, and what it holds that still needs looking at."""
+    if value is None or isinstance(value, _JSON_NATIVE_SCALARS):
+        return (None, [])
+    if isinstance(value, str):
+        return (_unstorable_text(path, value), [])
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return (f"{path} is {value!r}, which JSON cannot represent", [])
+        return (None, [])
+    if isinstance(value, list | tuple):
+        return (None, [(f"{path}[{index}]", item) for index, item in enumerate(value)])
+    if isinstance(value, dict):
+        return _inspected_mapping(path, value)
+    return (f"{path} is {type(value).__name__}, which is not a JSON type", [])
+
+
+def _unstorable_text(path: str, value: str) -> str | None:
+    """A string JSON accepts that Postgres will not store, or None.
+
+    The gap this closes: every other type here is judged by what it *is*, and a
+    string was waved through on that basis while being the one type whose
+    *contents* can fail. `json.dumps` escapes a NUL and an unpaired surrogate
+    without complaint, and the driver then rejects both.
+    """
+    if _NUL in value:
+        return f"{path} contains a NUL, which Postgres cannot store in text"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return f"{path} contains an unpaired surrogate, which is not valid UTF-8"
+    return None
+
+
+def _inspected_mapping(
+    path: str, value: dict[object, object]
+) -> tuple[str | None, list[tuple[str, object]]]:
+    """A mapping's keys must be strings before its values are worth walking."""
+    stray = _first_non_string_key(value)
+    if stray is not _NO_KEY:
+        return (
+            f"{path} has key {stray!r} of type {type(stray).__name__}, "
+            "and JSON silently renders it as a string",
+            [],
+        )
+    return (None, [(f"{path}.{key}", item) for key, item in value.items()])
 
 
 @dataclass(frozen=True, eq=False)

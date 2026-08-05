@@ -285,6 +285,8 @@ The rule stated above therefore reads too narrowly. It is not "never as `Integri
 
 What must *not* be swallowed with them is an `OperationalError` that is not a race at all: a dropped connection, an exhausted pool. Answering one of those as a lost race would report a database outage as a successful no-op, which is worse than the defect it was closing. The discrimination is on the SQLSTATE class, not the exception type.
 
+**The three paragraphs above are about `ingest`, and only `ingest`.** They were written when both writers were expected to classify their own race, and they read as a general rule for this system. They are not one: `collector` does no SQLSTATE discrimination and no re-read, because it cannot — its conflict is resolved inside `update_or_create` before any handler sees it, which the row above and issue #61 cover. Scoped here rather than rewritten, because the reasoning is right for the caller that still does this and the mistake was the missing subject.
+
 **Decisions:**
 
 - **Exclusion for collector runs is a Postgres advisory lock** keyed on `(tenant_id, collector_name)`, taken for the duration of the run and released by the connection. Chosen over a row lock because there is no natural row to lock — the run being excluded does not exist yet — and over a broker-level lock because the database is already the thing both workers agree on, and adding a second coordination authority means two things that can disagree about who holds the lock.

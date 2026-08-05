@@ -79,10 +79,11 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
 def _is_concurrency_rollback(exc: OperationalError) -> bool:
     """Whether this database error means "another writer got in the way".
 
-    Only the rollback codes count here, not `UNIQUE_VIOLATION`: a unique
-    violation on this path arrives as `IntegrityError` and is already handled
-    by the clause above. The reading of the SQLSTATE is shared with the
-    collector (`datum.locks`); which codes matter is each caller's own question.
+    Only the class 40 rollback codes count here. A unique violation on this path
+    arrives as `IntegrityError` and is already handled by the clause above, so
+    it never reaches this question. How a SQLSTATE is read off a Django
+    exception lives in `datum.locks`, because that is a fact about the driver;
+    which codes mean a race is this caller's own question and stays here.
     """
     return sqlstate_of(exc) in CONCURRENCY_ROLLBACK_CODES
 

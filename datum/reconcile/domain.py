@@ -72,12 +72,11 @@ def canonical(value: object) -> str:
 #   one value with no error anywhere -- the case a guard written from a
 #   traceback would miss, because there is no traceback.
 #
-#   **A key's *contents* are not checked, only its type.** A NUL or an unpaired
-#   surrogate inside a key passes here and is refused by Postgres instead, so
-#   the operator gets the driver's text rather than a path. Stated rather than
-#   implied, because the sentence above reads as covering keys generally and
-#   does not: issue #56 closes it. Contained, not dangerous -- nothing wrong is
-#   stored, and `_stored` counts the rejection like any other.
+#   **A key is checked for its contents as well as its type** (issue #56). It
+#   was not, and the split was what hid it: the type question was asked where
+#   keys are enumerated and the contents question in the walk, which never
+#   visits a key. Both now live in `_unusable_key`, so the next rule about keys
+#   has one place to go rather than two to remember.
 #
 # And one type is judged by its contents rather than by what it is: see
 # `_unstorable_text`.
@@ -92,11 +91,6 @@ _JSON_NATIVE_SCALARS = (bool, int)
 # `json.dumps` escapes it to a six-character sequence quite happily and the
 # driver then refuses the result.
 _NUL = chr(0)
-
-# `next()` needs a default that cannot be confused with a real key, and `None`
-# can be one -- a mapping keyed by None is exactly what this refuses, so it must
-# not double as "nothing found".
-_NO_KEY = object()
 
 
 def unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
@@ -115,9 +109,10 @@ def unstorable_attribute(attributes: Mapping[str, object]) -> str | None:
     **The encoder is asked before the walk runs, and that ordering is the whole
     design.** See `_unencodable`.
     """
-    stray = _first_non_string_key(attributes)
-    if stray is not _NO_KEY:
-        return f"the attribute name {stray!r} is {type(stray).__name__} rather than a string"
+    unusable = _unusable_key(attributes)
+    if unusable is not None:
+        key, reason = unusable
+        return f"the attribute name {key!r} {reason}"
 
     unencodable = _unencodable(attributes)
     if unencodable is not None:
@@ -173,18 +168,36 @@ def _unencodable(attributes: Mapping[str, object]) -> str | None:
     return None
 
 
-def _first_non_string_key(keys: Iterable[object]) -> object:
-    """The first key that is not a string, or `_NO_KEY` when every key is one.
+def _unusable_key(keys: Iterable[object]) -> tuple[object, str] | None:
+    """The first key that cannot be used and why, or None when every key can.
+
+    **Both halves in one function on purpose.** A key must be a string *and* be
+    a storable one, and the previous version checked only the first. That gap
+    was invisible precisely because it was split: the type question was asked
+    here and the contents question was asked in the walk, which never visits a
+    key. A NUL inside a key therefore passed both barricades and was refused by
+    Postgres, which reports the driver's text instead of a path (issue #56).
 
     One encoding, two callers: an attribute name and a nested mapping key are
     the same constraint reported in two different sentences, and the constraint
-    is the part that must not drift.
+    is the part that must not drift. The reasons read as predicates so either
+    caller can put its own subject in front of them.
 
     Takes the keys rather than the mapping because `Mapping` is invariant in its
     key type, so a `Mapping[str, object]` is not a `Mapping[object, object]` --
     and iterating is all this needs.
     """
-    return next((key for key in keys if not isinstance(key, str)), _NO_KEY)
+    for key in keys:
+        if not isinstance(key, str):
+            return (
+                key,
+                f"is {type(key).__name__} rather than a string, "
+                "and JSON silently renders it as one",
+            )
+        problem = _text_problem(key)
+        if problem is not None:
+            return (key, problem)
+    return None
 
 
 def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, object]]]:
@@ -205,33 +218,40 @@ def _inspected(path: str, value: object) -> tuple[str | None, list[tuple[str, ob
 
 
 def _unstorable_text(path: str, value: str) -> str | None:
-    """A string JSON accepts that Postgres will not store, or None.
+    """A string value JSON accepts that Postgres will not store, or None."""
+    problem = _text_problem(value)
+    return None if problem is None else f"{path} {problem}"
+
+
+def _text_problem(value: str) -> str | None:
+    """Why this string cannot survive storage, as a predicate, or None.
 
     The gap this closes: every other type here is judged by what it *is*, and a
     string was waved through on that basis while being the one type whose
     *contents* can fail. `json.dumps` escapes a NUL and an unpaired surrogate
     without complaint, and the driver then rejects both.
+
+    Pathless on purpose, so a key and a value can ask the same question. A key
+    is not addressable by the path that would name its value, and giving each
+    its own copy of this rule is how the key half came to be missing.
     """
     if _NUL in value:
-        return f"{path} contains a NUL, which Postgres cannot store in text"
+        return "contains a NUL, which Postgres cannot store in text"
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
-        return f"{path} contains an unpaired surrogate, which is not valid UTF-8"
+        return "contains an unpaired surrogate, which is not valid UTF-8"
     return None
 
 
 def _inspected_mapping(
     path: str, value: dict[object, object]
 ) -> tuple[str | None, list[tuple[str, object]]]:
-    """A mapping's keys must be strings before its values are worth walking."""
-    stray = _first_non_string_key(value)
-    if stray is not _NO_KEY:
-        return (
-            f"{path} has key {stray!r} of type {type(stray).__name__}, "
-            "and JSON silently renders it as a string",
-            [],
-        )
+    """A mapping's keys must be usable before its values are worth walking."""
+    unusable = _unusable_key(value)
+    if unusable is not None:
+        key, reason = unusable
+        return (f"{path} has key {key!r}, which {reason}", [])
     return (None, [(f"{path}.{key}", item) for key, item in value.items()])
 
 

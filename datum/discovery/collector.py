@@ -37,6 +37,7 @@ from datum.discovery.lock import collector_lock
 from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
+from datum.locks import CONCURRENCY_ROLLBACK_CODES, UNIQUE_VIOLATION, sqlstate_of
 from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 logger = logging.getLogger(__name__)
@@ -323,6 +324,18 @@ def _stored(
     rejection. `BaseException` still propagates, so a `KeyboardInterrupt` mid-run
     leaves the run FAILED as it must.
 
+    **`AssertionError` is re-raised** (issue #57). It is an `Exception`, so the
+    blanket catch swallowed it, and an assertion is the one thing here that is
+    *supposed* to end the run: ADR-008 makes it the mechanism for a condition the
+    code believes impossible, and a silent per-record rejection is precisely the
+    outcome it exists to prevent. The broad catch is for failures nobody
+    predicted; an assertion is a failure someone predicted and declared fatal.
+
+    **A lost write race is not a rejection** (DESIGN section 11). Nothing was
+    malformed, the resource is in the discovered plane, and counting it as an
+    error would force the run PARTIAL and bar absence semantics from a run where
+    everything was in fact read and recorded. See `_lost_a_write_race`.
+
     Nothing is silent: `logger.exception` carries the traceback, so a genuine
     bug here surfaces as a logged stack rather than as a lost record.
 
@@ -332,7 +345,19 @@ def _stored(
     try:
         with transaction.atomic():
             _upsert(tenant_id, kind, snapshot, run)
-    except Exception:
+    except AssertionError:
+        raise
+    except Exception as exc:
+        if _lost_a_write_race(exc, tenant_id, kind, snapshot):
+            logger.info(
+                "collector %s lost a write race for %s/%s/%s; "
+                "the resource is recorded, so this is a skipped write rather than a rejection",
+                collector.name,
+                snapshot.kind,
+                snapshot.scope,
+                snapshot.name,
+            )
+            return True
         logger.exception(
             "collector %s produced a record the database refused; "
             "tenant %s, kind %s, scope %s, name %s",
@@ -344,6 +369,43 @@ def _stored(
         )
         return False
     return True
+
+
+# The two ways this write loses to another writer. A race has two exits and a
+# handler watching one of them leaves the hole half-closed (DESIGN section 11):
+# the constraint refuses the insert, or the transaction manager rolls one side
+# back to break a deadlock or preserve serializability.
+_LOST_RACE_CODES = CONCURRENCY_ROLLBACK_CODES | {UNIQUE_VIOLATION}
+
+
+def _lost_a_write_race(
+    exc: Exception, tenant_id: str, kind: Kind, snapshot: ResourceSnapshot
+) -> bool:
+    """Whether another writer recorded this resource while we were writing it.
+
+    Two halves, and both are required.
+
+    The **SQLSTATE** says the database refused the write for a reason that means
+    concurrency rather than malformed data. Read rather than guessed from the
+    exception type, because `IntegrityError` and `OperationalError` are two
+    exits from the same race and an `OperationalError` that is *not* a race -- a
+    dropped connection, an exhausted pool -- must never be answered as one.
+
+    The **re-read** is what DESIGN section 11 calls the idempotency check that
+    may make the loss a non-event. Without it a serialization failure whose
+    winner also rolled back would be reported as a successful write of a row
+    nobody stored, which is the one direction this must not fail in: absence
+    semantics would then be entitled to treat a resource nobody recorded as
+    present. The SQLSTATE says a race happened; only the re-read says we can
+    stop caring about it.
+
+    Runs outside the rolled-back `atomic` block, so it sees committed state.
+    """
+    if sqlstate_of(exc) not in _LOST_RACE_CODES:
+        return False
+    return DiscoveredResource.objects.filter(
+        tenant_id=tenant_id, kind=kind, scope=snapshot.scope, name=snapshot.name
+    ).exists()
 
 
 def _upsert(tenant_id: str, kind: Kind, snapshot: ResourceSnapshot, run: CollectorRun) -> None:

@@ -17,6 +17,7 @@ from datum.intent.errors import RevisionConflict
 from datum.intent.models import IntentRevision
 from datum.intent.repository import head_sha
 from datum.kinds.models import Kind
+from datum.locks import CONCURRENCY_ROLLBACK_CODES, sqlstate_of
 from datum.reconcile.domain import ResourceSnapshot
 
 DOCUMENT_SUFFIXES = frozenset({".yaml", ".yml"})
@@ -75,26 +76,15 @@ def ingest_revision(tenant_id: str, repo_path: str) -> IntentRevision:
         return _resolve_conflict(tenant_id, commit_sha, exc)
 
 
-# SQLSTATE class 40: the transaction was rolled back because of concurrent
-# activity rather than because of anything wrong with it. 40001 is a
-# serialization failure, 40P01 a detected deadlock. Anything else arriving as an
-# OperationalError -- a dropped connection, an exhausted pool -- is not a race
-# and must not be answered as one.
-_CONCURRENCY_ROLLBACK_CODES = frozenset({"40001", "40P01"})
-
-
 def _is_concurrency_rollback(exc: OperationalError) -> bool:
     """Whether this database error means "another writer got in the way".
 
-    Django re-raises its own exception type wrapping the driver's, so the
-    SQLSTATE lives on the cause rather than on what was caught. Both are checked
-    because that wrapping is Django's implementation detail, not a promise.
+    Only the rollback codes count here, not `UNIQUE_VIOLATION`: a unique
+    violation on this path arrives as `IntegrityError` and is already handled
+    by the clause above. The reading of the SQLSTATE is shared with the
+    collector (`datum.locks`); which codes matter is each caller's own question.
     """
-    for candidate in (exc, exc.__cause__):
-        sqlstate = getattr(candidate, "sqlstate", None)
-        if sqlstate in _CONCURRENCY_ROLLBACK_CODES:
-            return True
-    return False
+    return sqlstate_of(exc) in CONCURRENCY_ROLLBACK_CODES
 
 
 def _existing_revision(tenant_id: str, commit_sha: str) -> IntentRevision | None:

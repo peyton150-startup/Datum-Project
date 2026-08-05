@@ -12,8 +12,9 @@ from unittest import mock
 
 import pytest
 from django.db import DataError, IntegrityError, InterfaceError, OperationalError
+from django.db.models import QuerySet
 
-from datum.discovery.collector import _refuse_unstorable_attributes, run_collector
+from datum.discovery.collector import _refuse_unstorable_attributes, _upsert, run_collector
 from datum.discovery.errors import MalformedProviderData, ProviderUnavailable
 from datum.discovery.kubernetes import ENVELOPE_KEY, from_recording
 from datum.discovery.models import CollectorRun, DiscoveredResource
@@ -705,79 +706,142 @@ def test_an_assertion_is_not_swallowed_by_the_blanket_catch():
         batch_whose_write_raises(AssertionError("impossible condition reached"))
 
 
-@pytest.mark.parametrize(
-    ("sqlstate", "names"),
-    [
-        ("23505", "unique violation: the constraint refused the insert"),
-        ("40001", "serialization failure"),
-        ("40P01", "detected deadlock"),
-    ],
-)
-def test_a_lost_write_race_is_a_skipped_write_rather_than_a_rejection(sqlstate, names):
-    """DESIGN section 11: the loser is a skipped write, because nothing was malformed.
+def seed_the_resource_the_batch_will_fail_to_write(name: str = "poison") -> CollectorRun:
+    """A row for `name` already present, recorded by some *earlier* run.
 
-    Counting it as an error would force the run PARTIAL, and `may_infer_absence`
-    refuses to read deletion into a run that is not SUCCESS. So a race between
-    two collectors -- which DESIGN says a third collector emitting an existing
-    kind reopens -- would silently suspend absence detection for that tenant.
-
-    All three codes, because a race has two exits: the constraint refuses the
-    insert (23505) or the transaction manager rolls one side back (class 40).
-    A handler watching only one leaves the hole half-closed.
-
-    The poisoned record's row is created first, so the re-read finds it -- which
-    is what the real race leaves behind, and what makes the loss a non-event.
+    This is the state a lost race leaves behind, and it is what made the removed
+    `_lost_a_write_race` answer "this counts as written": it re-read the natural
+    key, found this row, and stopped there. The seed is therefore load-bearing in
+    every test below -- without it those tests pass against the defect too,
+    because the handler's own re-read would have failed.
     """
-    from datum.discovery.models import CollectorRun as Run
-
     kind = Kind.objects.get(name="Deployment")
-    seed = Run.objects.create(tenant_id=TENANT, collector_name="kubernetes", status="SUCCESS")
+    earlier = CollectorRun.objects.create(
+        tenant_id=TENANT, collector_name="kubernetes", status=CollectorRunStatus.SUCCESS
+    )
     DiscoveredResource.objects.create(
         tenant_id=TENANT,
         kind=kind,
         scope="default",
-        name="poison",
+        name=name,
         provider_id="uid-poison",
         attributes={"replicas": 1},
-        last_seen_run=seed,
+        last_seen_run=earlier,
+    )
+    return earlier
+
+
+@pytest.mark.parametrize(
+    ("exception_class", "sqlstate", "names"),
+    [
+        (IntegrityError, "23505", "unique violation"),
+        (OperationalError, "40001", "serialization failure"),
+        (OperationalError, "40P01", "detected deadlock"),
+        (OperationalError, "08006", "connection failure"),
+    ],
+)
+def test_a_refused_write_is_a_rejection_whatever_the_sqlstate_says(
+    exception_class, sqlstate, names
+):
+    """Issue #61. No SQLSTATE buys a record its way into the written count.
+
+    The bug this excludes is `_stored` reclassifying a failed write as a
+    successful one on the strength of the code plus a re-read. The three race
+    codes are listed beside `08006` because the removed handler treated the
+    first three differently, and the seeded row is what made it do so -- under
+    that handler this fixture reports (3, 3, 0) and SUCCESS.
+
+    Each code carries the exception type it really arrives as, because a race
+    has two exits and they are not the same Django exception. That is why the
+    removed handler read the SQLSTATE rather than the type, and it is why
+    `08006` -- an `OperationalError`, like the two rollback codes -- is the case
+    that shows the type alone was never the discriminator.
+
+    The rule that replaced it is simpler than the one it removed: a write that
+    did not happen is not a write. DESIGN section 11's "skipped write" needs the
+    write to succeed, which is `_upsert`'s job, not this catch's.
+    """
+    seed_the_resource_the_batch_will_fail_to_write()
+
+    run = batch_whose_write_raises(raising(exception_class, sqlstate))
+
+    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
+    assert run.status == CollectorRunStatus.PARTIAL
+
+
+def test_a_run_never_marks_absent_a_resource_it_counted_as_written():
+    """Issue #61, the consequence that made the removed handler worse than the gap.
+
+    `mark_absent_after` reads `last_seen_run`; the run counters are not consulted
+    and cannot be. So a verdict of "count this written" reached without setting
+    that column leaves `_unseen_by` collecting the very row the run just declared
+    recorded, and `run_collector` marks it absent before returning -- inside a
+    run reporting SUCCESS.
+
+    Asserted as the invariant rather than as the old failure, because the
+    invariant is what any future handling of this path has to keep: every
+    resource contributing to `resources_written` carries this run in
+    `last_seen_run` and is not absent. Under the removed handler `poison`
+    contributes to the count while carrying the seed run, and this fails.
+    """
+    seed_the_resource_the_batch_will_fail_to_write()
+
+    run = batch_whose_write_raises(raising(IntegrityError, "40P01"))
+
+    recorded = DiscoveredResource.objects.filter(tenant_id=TENANT, last_seen_run=run)
+    assert recorded.count() == run.resources_written
+    assert not recorded.filter(is_absent=True).exists()
+    assert not DiscoveredResource.objects.filter(tenant_id=TENANT, is_absent=True).exists()
+
+
+def test_a_natural_key_collision_never_escapes_update_or_create():
+    """Issue #61. Why `_stored` has no unique-violation branch: it could never fire.
+
+    A guard on an assumption, not a demonstration of a bug. `update_or_create`
+    is built on `get_or_create`, which catches the losing `IntegrityError` and
+    retries the *same* natural-key lookup; `uq_discovered_natural_key` is the
+    only unique constraint on the table, so the retry finds the winner's row and
+    returns it. If a future Django lets that exception escape, the reasoning
+    that deleted the handler has expired and this test is where that surfaces.
+
+    The collision is real, raised by Postgres against the real constraint. Only
+    the first `get()` is patched to miss, because that is the single part of the
+    interleaving one process cannot produce.
+    """
+    kind = Kind.objects.get(name="Deployment")
+    winner = seed_the_resource_the_batch_will_fail_to_write("api")
+    loser = CollectorRun.objects.create(
+        tenant_id=TENANT, collector_name="kubernetes", status=CollectorRunStatus.SUCCESS
+    )
+    snapshot = ResourceSnapshot(
+        kind="Deployment",
+        tenant_id=TENANT,
+        scope="default",
+        name="api",
+        provider_id="uid-loser",
+        attributes={"replicas": 9},
     )
 
-    run = batch_whose_write_raises(raising(IntegrityError, sqlstate))
+    real_get = QuerySet.get
+    calls = {"n": 0}
 
-    assert (run.resources_read, run.resources_written, run.errors) == (3, 3, 0)
-    assert run.status == CollectorRunStatus.SUCCESS
-    assert names_written() == {"before", "poison", "after"}
+    def get_missing_once(self, *args, **kwargs):
+        if self.model is DiscoveredResource:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise DiscoveredResource.DoesNotExist
+        return real_get(self, *args, **kwargs)
 
+    with mock.patch.object(QuerySet, "get", get_missing_once):
+        _upsert(TENANT, kind, snapshot, loser)
 
-def test_a_race_code_whose_row_is_absent_is_still_a_rejection():
-    """The half of the check a SQLSTATE alone cannot answer.
+    assert calls["n"] >= 2, "the create() never collided; the fixture did not race"
 
-    DESIGN section 11 calls the re-read the idempotency check that may make the
-    loss a non-event. Without it, a serialization failure whose winner also
-    rolled back would be counted as a successful write of a row nobody stored --
-    and absence semantics would then treat a resource nobody recorded as
-    present, which is the one direction this must not fail in.
-
-    Same SQLSTATE as the test above, no pre-existing row. The verdict must flip.
-    """
-    run = batch_whose_write_raises(raising(IntegrityError, "40001"))
-
-    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
-    assert run.status == CollectorRunStatus.PARTIAL
-    assert names_written() == {"before", "after"}
-
-
-def test_a_database_error_that_is_not_a_race_is_still_a_rejection():
-    """A dropped connection is not a lost race, whatever else it is.
-
-    `08006` is connection_failure. Answering it as a race would report a
-    database outage as a successful no-op, which DESIGN section 11 names as
-    worse than the defect the discrimination was closing.
-    """
-    run = batch_whose_write_raises(raising(OperationalError, "08006"))
-
-    assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
-    assert run.status == CollectorRunStatus.PARTIAL
+    row = DiscoveredResource.objects.get(tenant_id=TENANT, kind=kind, scope="default", name="api")
+    # The loser does not lose. It overwrites -- the clobber DESIGN section 11
+    # now names as this row's real vulnerability.
+    assert (row.provider_id, row.last_seen_run_id) == ("uid-loser", loser.id)
+    assert winner.id != loser.id
 
 
 def test_a_connection_level_failure_is_also_survived():

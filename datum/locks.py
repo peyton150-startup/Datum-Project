@@ -57,9 +57,15 @@ DESIGN section 11 lists two decisions side by side: exclusion by advisory lock,
 and idempotent insertion stating the conflict where a unique constraint already
 expresses the invariant. The first prevents two writers from meeting; the second
 handles the meeting where prevention does not apply. `sqlstate_of` and the code
-sets below serve the second, and they are here rather than in either caller
-because `intent` and `discovery` both need them and each having its own copy is
-how the two would come to disagree about what a race looks like.
+set below serve the second.
+
+They are here rather than in their one caller because reading a SQLSTATE off a
+Django exception is a fact about the driver, not about `intent`. **Only `intent`
+calls them today.** `discovery` did briefly, and issue #61 is the record of why
+it no longer does: its write goes through `update_or_create`, which catches the
+unique violation itself and retries the same natural-key lookup, so the code
+never reaches a caller at all. A constant nothing calls is a claim nobody
+checks, which is why `UNIQUE_VIOLATION` is not here.
 """
 
 import logging
@@ -81,26 +87,29 @@ logger = logging.getLogger(__name__)
 # and must not be answered as one.
 CONCURRENCY_ROLLBACK_CODES = frozenset({"40001", "40P01"})
 
-# 23505, unique_violation: another writer already holds this key. The other way
-# a race loses, and the one a handler watching only for rollback codes misses.
-# Deliberately not the whole of class 23 -- a NOT NULL or CHECK violation is a
-# bug in the writer, not a second writer.
-UNIQUE_VIOLATION = "23505"
-
 
 def sqlstate_of(exc: BaseException) -> str | None:
     """The SQLSTATE the database reported, or None when it reported none.
 
     Django re-raises its own exception type wrapping the driver's, so the code
-    lives on the cause rather than on what was caught. Both are checked because
-    that wrapping is Django's implementation detail rather than a promise.
+    lives on the cause rather than on what was caught. Measured against the real
+    driver rather than assumed: a unique violation arrives as a Django
+    `IntegrityError` whose `__cause__` is a `psycopg.errors.UniqueViolation`
+    carrying `.sqlstate`, and the outer exception carries nothing -- Django
+    builds it as `dj_exc_type(*exc_value.args)` and copies no attributes.
+
+    **The cause is nonetheless not the only place looked, and the first code
+    found wins.** That wrapping is Django's implementation detail rather than a
+    promise, so a version that did copy the attribute must not make this return
+    None. What it means is that if both ever carried a code and they disagreed,
+    the outer would win rather than either matching -- an ordering, not a search.
+    The direction is the safe one: `intent`'s caller would raise its
+    `RevisionConflict` rather than silently resolving a conflict it misread.
 
     Returning the code rather than answering a yes/no question is deliberate:
-    the two callers ask different questions of it. `intent` treats only a
-    rollback as a race, because its conflict is resolved by re-reading the
-    revision; `discovery` also treats a unique violation as one, because its
-    write is an upsert on a natural key. One reader, two questions, so neither
-    caller has to re-derive how a SQLSTATE is found.
+    which codes count is the caller's question, not this function's. `intent`
+    treats only a rollback as a race, because its conflict is resolved by
+    re-reading the revision.
     """
     for candidate in (exc, exc.__cause__):
         code = getattr(candidate, "sqlstate", None)

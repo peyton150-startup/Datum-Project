@@ -25,7 +25,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==8.*",
-    "pytest-django==4.*",
+    # Pinned to the minor, not the major. 4.13.0 published 2026-08-05 and broke
+    # every `django_db` fixture against Django 5.0 with `AttributeError: type
+    # object 'PytestDjangoTestCase' has no attribute '_pre_setup_ran_eagerly'`.
+    # CI resolves fresh on every run, so an unpinned minor makes a green build
+    # depend on the day it ran: main passed at 14:55 and the identical tree
+    # failed at 23:42 with no commit in between. A test runner is not a
+    # dependency this project wants floating.
+    "pytest-django==4.12.*",
     "pytest-cov==5.*",
     "hypothesis==6.*",
     "ruff==0.6.*",

@@ -319,6 +319,14 @@ def emitting(attributes: dict, name: str = "one") -> CollectorRun:
         ({"ratio": float("-inf")}, "-Infinity is not representable in JSON"),
         ({"labels": {1: "a"}}, "an int key is silently rendered as a string"),
         ({"labels": {True: "a"}}, "a bool key is silently rendered as a string"),
+        # Issue #56: a key's contents, not just its type. These reached Postgres
+        # and came back as driver text, because the type question was asked
+        # where keys are enumerated and the contents question in the walk, which
+        # never visits a key.
+        ({"labels": {"a" + chr(0) + "b": "safe"}}, "a NUL inside a nested key"),
+        ({"labels": {"a" + chr(0xD800) + "b": "safe"}}, "a surrogate inside a nested key"),
+        ({"a" + chr(0) + "b": "safe"}, "a NUL inside a top-level attribute name"),
+        ({"a" + chr(0xD800) + "b": "safe"}, "a surrogate inside an attribute name"),
         ({1: "a"}, "an int attribute name, which nothing was checking"),
         ({None: "a"}, "a None attribute name, which nothing was checking"),
         ({"note": "a\x00b"}, "a NUL, which Postgres cannot store in text"),
@@ -340,9 +348,16 @@ def test_an_attribute_that_cannot_be_stored_is_rejected_not_raised(attributes, b
     valid JSON. Both arrived across a module boundary naming neither the
     collector nor the field.
 
-    The two mapping-key cases never raised at all -- they were stored, silently
-    coerced to `{"1": "a"}` and `{"true": "a"}`. Those are the ones a test that
-    only looked for exceptions would have missed.
+    The two mapping-key type cases never raised at all -- they were stored,
+    silently coerced to `{"1": "a"}` and `{"true": "a"}`. Those are the ones a
+    test that only looked for exceptions would have missed.
+
+    **The four key-*contents* cases are true here and prove nothing here.** With
+    the key check removed the record still reaches Postgres, Postgres still
+    refuses it, and the counts are still `(1, 0, 1)`. What changes is who
+    decided and what the operator is told, which this assertion cannot see.
+    `test_a_bad_key_is_caught_by_the_barricade_and_not_by_postgres` is where
+    that is pinned; they are listed here for the end-to-end claim only.
 
     `because` is unused by the assertion and is there to name the case in the
     test id.
@@ -626,6 +641,54 @@ def test_an_encoder_refusal_does_not_take_the_rest_of_the_batch():
     assert names_written() == {"before", "after"}
 
 
+def batch_whose_write_raises(error: BaseException, poisoned: str = "poison"):
+    """Run a three-record batch where one record's write raises `error`."""
+    from datum.discovery import collector as collector_module
+
+    real_upsert = collector_module._upsert
+
+    def failing(tenant_id, kind, snapshot, run):
+        if snapshot.name == poisoned:
+            raise error
+        return real_upsert(tenant_id, kind, snapshot, run)
+
+    class Batch:
+        name = "kubernetes"
+        kind = "Deployment"
+
+        def fetch(self):
+            return ["before", poisoned, "after"]
+
+        def normalize(self, record, tenant_id):
+            return ResourceSnapshot(
+                kind=self.kind,
+                tenant_id=tenant_id,
+                scope="default",
+                name=record,
+                provider_id=f"uid-{record}",
+                attributes={"replicas": 1},
+            )
+
+    with mock.patch.object(collector_module, "_upsert", failing):
+        return run_collector(Batch(), TENANT)
+
+
+def test_an_assertion_is_not_swallowed_by_the_blanket_catch():
+    """Issue #57. `AssertionError` is an `Exception`, so `except Exception` ate it.
+
+    ADR-008 makes an assertion the mechanism for a condition the code believes
+    impossible, which means it is the one failure here that is *supposed* to end
+    the run. Turning it into a counted per-record rejection is precisely the
+    outcome it exists to prevent, and it would be invisible: the run would look
+    like an ordinary PARTIAL over slightly bad provider data.
+
+    The broad catch is for failures nobody predicted. An assertion is a failure
+    someone predicted and declared fatal.
+    """
+    with pytest.raises(AssertionError, match="impossible"):
+        batch_whose_write_raises(AssertionError("impossible condition reached"))
+
+
 def test_a_connection_level_failure_is_also_survived():
     """`InterfaceError` is a sibling of `DatabaseError`, not a child.
 
@@ -665,6 +728,69 @@ def test_a_connection_level_failure_is_also_survived():
 
     assert (run.resources_read, run.resources_written, run.errors) == (3, 2, 1)
     assert names_written() == {"before", "after"}
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"labels": {"a" + chr(0) + "b": "safe"}},
+        {"labels": {"a" + chr(0xD800) + "b": "safe"}},
+        {"a" + chr(0) + "b": "safe"},
+        {"a" + chr(0xD800) + "b": "safe"},
+    ],
+)
+def test_a_bad_key_is_caught_by_the_barricade_and_not_by_postgres(attributes):
+    """The run-level cases for keys do not discriminate, and this does.
+
+    With the key check removed, those cases still pass: the record reaches
+    Postgres, Postgres refuses it, `_stored` counts the rejection, and the run
+    is still `(1, 0, 1)` PARTIAL. The *outcome* is identical either way — what
+    differs is who decided and what the operator is told, which is the whole
+    content of issue #56.
+
+    So the run-level assertions are true and prove nothing here, and this one
+    is where the fix is actually pinned. Confirmed by reverting the key check
+    and watching only this test and the message test fail.
+    """
+    assert _unstorable_attribute(attributes) is not None
+
+
+def test_a_key_is_named_and_placed_the_way_a_value_is():
+    """Issue #56: the message has to be actionable for a key too.
+
+    A key is not addressable by the path that would name its value, so the two
+    report differently on purpose. Both must still say which mapping and which
+    key, or the operator is back to grepping the driver's text.
+    """
+    nested = _unstorable_attribute({"labels": {"a" + chr(0) + "b": "safe"}})
+    assert nested is not None
+    assert "labels" in nested
+    assert "NUL" in nested
+
+    top = _unstorable_attribute({"a" + chr(0) + "b": "safe"})
+    assert top is not None
+    assert "attribute name" in top
+    assert "NUL" in top
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"labels": {"app": "api"}},
+        {"labels": {"": "an empty key is a key"}},
+        {"labels": {"emoji-\U0001f600-key": "v"}},
+        {"labels": {"tab\tkey": "v"}},
+        {"a-é中-name": "v"},
+    ],
+)
+def test_ordinary_keys_are_untouched(attributes):
+    """The guard reads key contents, so it must not reject ordinary contents.
+
+    An empty key and a key carrying non-ASCII are both storable. Without these,
+    a guard that rejected any key it had to look inside would pass every case
+    above and look correct.
+    """
+    assert _unstorable_attribute(attributes) is None
 
 
 def test_the_walks_own_unknown_type_branch_still_answers():

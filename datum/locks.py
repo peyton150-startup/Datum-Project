@@ -51,6 +51,15 @@ transaction it is taken and released inside the implicit single-statement
 transaction, so it excludes nothing at all. Going through
 `_try_acquire_until_commit` this fails loudly on its assertion; reimplementing
 the raw SQL is what makes it silent.
+
+**Recognising a race is the other half of this subject, and lives here too.**
+DESIGN section 11 lists two decisions side by side: exclusion by advisory lock,
+and idempotent insertion stating the conflict where a unique constraint already
+expresses the invariant. The first prevents two writers from meeting; the second
+handles the meeting where prevention does not apply. `sqlstate_of` and the code
+sets below serve the second, and they are here rather than in either caller
+because `intent` and `discovery` both need them and each having its own copy is
+how the two would come to disagree about what a race looks like.
 """
 
 import logging
@@ -61,6 +70,44 @@ from hashlib import blake2b
 from django.db import connection, transaction
 
 logger = logging.getLogger(__name__)
+
+
+# --- Recognising a race the lock did not exclude ------------------------------
+
+# SQLSTATE class 40: the transaction was rolled back because of concurrent
+# activity rather than because of anything wrong with it. 40001 is a
+# serialization failure, 40P01 a detected deadlock. Anything else arriving as an
+# OperationalError -- a dropped connection, an exhausted pool -- is not a race
+# and must not be answered as one.
+CONCURRENCY_ROLLBACK_CODES = frozenset({"40001", "40P01"})
+
+# 23505, unique_violation: another writer already holds this key. The other way
+# a race loses, and the one a handler watching only for rollback codes misses.
+# Deliberately not the whole of class 23 -- a NOT NULL or CHECK violation is a
+# bug in the writer, not a second writer.
+UNIQUE_VIOLATION = "23505"
+
+
+def sqlstate_of(exc: BaseException) -> str | None:
+    """The SQLSTATE the database reported, or None when it reported none.
+
+    Django re-raises its own exception type wrapping the driver's, so the code
+    lives on the cause rather than on what was caught. Both are checked because
+    that wrapping is Django's implementation detail rather than a promise.
+
+    Returning the code rather than answering a yes/no question is deliberate:
+    the two callers ask different questions of it. `intent` treats only a
+    rollback as a race, because its conflict is resolved by re-reading the
+    revision; `discovery` also treats a unique violation as one, because its
+    write is an upsert on a natural key. One reader, two questions, so neither
+    caller has to re-derive how a SQLSTATE is found.
+    """
+    for candidate in (exc, exc.__cause__):
+        code = getattr(candidate, "sqlstate", None)
+        if code is not None:
+            return str(code)
+    return None
+
 
 # Postgres advisory locks are keyed on a signed 64-bit integer, and the key here
 # is a pair of strings, so it is hashed down. blake2b rather than Python's hash()

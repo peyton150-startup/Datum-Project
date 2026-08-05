@@ -323,6 +323,13 @@ def _stored(
     rejection. `BaseException` still propagates, so a `KeyboardInterrupt` mid-run
     leaves the run FAILED as it must.
 
+    **`AssertionError` is re-raised** (issue #57). It is an `Exception`, so the
+    blanket catch swallowed it, and an assertion is the one thing here that is
+    *supposed* to end the run: ADR-008 makes it the mechanism for a condition the
+    code believes impossible, and a silent per-record rejection is precisely the
+    outcome it exists to prevent. The broad catch is for failures nobody
+    predicted; an assertion is a failure someone predicted and declared fatal.
+
     Nothing is silent: `logger.exception` carries the traceback, so a genuine
     bug here surfaces as a logged stack rather than as a lost record.
 
@@ -332,6 +339,8 @@ def _stored(
     try:
         with transaction.atomic():
             _upsert(tenant_id, kind, snapshot, run)
+    except AssertionError:
+        raise
     except Exception:
         logger.exception(
             "collector %s produced a record the database refused; "

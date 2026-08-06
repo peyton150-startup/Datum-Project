@@ -421,6 +421,7 @@ class TestEveryValidFieldTypeHasAValidator:
             "string": {"mode": "exact"},
             "timestamp": {"mode": "string"},
             "object": {"mode": "opaque"},
+            "boolean": {"mode": "exact"},
         }
         assert set(minimal_config) == VALID_FIELD_TYPES, (
             "a field type was added without a case here; the validator table "

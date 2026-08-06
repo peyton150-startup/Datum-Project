@@ -1,6 +1,10 @@
 services:
   postgres:
     image: postgres:16
+    # The test suite dies with it, and it has stopped on its own more than once
+    # (exit 255, no compose command issued). `unless-stopped` rather than
+    # `always` so a deliberate `docker compose stop` stays stopped.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: datum
       POSTGRES_USER: datum
@@ -15,11 +19,13 @@ services:
 
   valkey:
     image: valkey/valkey:8
+    restart: unless-stopped
     ports: ["6399:6379"]
     volumes: ["valkey-data:/data"]
 
   app:
     build: .
+    restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
       VALKEY_URL: redis://valkey:6379/0
@@ -31,6 +37,7 @@ services:
 
   worker:
     build: .
+    restart: unless-stopped
     command: celery -A datum.celery worker --beat --loglevel=info
     environment:
       POSTGRES_HOST: postgres
@@ -51,6 +58,7 @@ services:
 
   caddy:
     image: caddy:2
+    restart: unless-stopped
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile

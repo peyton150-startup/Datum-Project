@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from datum.reconcile.attribute_types import VALID_FIELD_TYPES
+
 # int for recurse(N), float for tolerance(N). Constrained rather than bounded so
 # the parser returns the parameter's own type, not a widened one.
 _Parameter = TypeVar("_Parameter", int, float)
@@ -51,8 +53,12 @@ class InvalidModeParameter(SchemaError):
     pass
 
 
-# Valid field types
-VALID_FIELD_TYPES = {"list", "numeric", "string", "timestamp", "object"}
+# The field-type vocabulary is not stated here. It lives in
+# `reconcile.attribute_types` beside the declared types it has to agree with,
+# because the two were written in two places and drifted (issue #53): two field
+# types could never receive a declared value, and one declared type named no
+# field type at all.
+
 
 # Valid logging levels (3 tiers)
 VALID_LOGGING_LEVELS = {"debug", "discrepancy", "sampled_audit"}
@@ -233,6 +239,7 @@ class FieldConfig:
             "string": self._validate_string_config,
             "timestamp": self._validate_timestamp_config,
             "object": self._validate_object_config,
+            "boolean": self._validate_boolean_config,
         }
         validators[self.field_type](mode)
 
@@ -317,6 +324,21 @@ class FieldConfig:
             raise InvalidModeParameter(
                 f"Field {self.field_name}: invalid recurse mode {mode!r}. "
                 f"Expected 'recurse(N)' where N is an integer >= -1."
+            )
+
+    def _validate_boolean_config(self, mode: str) -> None:
+        """Validate boolean-type comparison config.
+
+        One mode, because a boolean has two values and nothing to normalise
+        between them. There is no `exact_string` counterpart the way `numeric`
+        has one: a declared boolean is `type(value) is bool` at the barricade,
+        so a declaration that reads `true` never arrives here as the string.
+        """
+        valid_modes = {"exact"}
+        if mode not in valid_modes:
+            raise InvalidComparisonMode(
+                f"Field {self.field_name}: invalid boolean mode {mode!r}. "
+                f"Valid modes: {', '.join(sorted(valid_modes))}"
             )
 
 

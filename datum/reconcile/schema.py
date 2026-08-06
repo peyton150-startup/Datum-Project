@@ -58,7 +58,8 @@ class InvalidModeParameter(SchemaError):
 # because the two were written in two places and drifted (issue #53): two field
 # types could never receive a declared value, and one declared type named no
 # field type at all.
-#
+
+
 # Valid logging levels (3 tiers)
 VALID_LOGGING_LEVELS = {"debug", "discrepancy", "sampled_audit"}
 

@@ -138,7 +138,7 @@ One document declares exactly one resource. Multi-document YAML streams are not 
 
 `attribute_schema` is a flat mapping of attribute name to type name, drawn from a closed table: `int`, `str`, `bool`. Evaluation is a lookup, not an if-chain.
 
-**That table is not written here, and not written in this module either.** It lives in `datum/reconcile/attribute_types.py` as `DECLARED_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
+**That table is not written in this document, and not written in the barricade either.** It lives in `datum/reconcile/attribute_types.py` as `DECLARED_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
 
 **Known limit, deliberate:** every key in a kind's `attribute_schema` is required, and unknown keys are rejected. Optionality is not yet expressible. This is the same simplification §24 records for null-vs-absent in the diff engine, and it is held for the same reason: one kind with one required integer field cannot motivate the design. Both are revisited together when phase 3 adds a second kind — that is the point at which this stops being a simplification and becomes a correctness bug.
 

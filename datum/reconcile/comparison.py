@@ -139,6 +139,19 @@ def _states_an_object(present: bool, value: Any) -> bool:
     return _states_a_value(present, value) and isinstance(value, dict)
 
 
+def _states_a_boolean(present: bool, value: Any) -> bool:
+    """True when a plane both mentioned the field and gave it a boolean value.
+
+    `type(value) is bool` rather than isinstance, for the same reason the
+    declared barricade uses it: bool is a subclass of int, so isinstance would
+    read a discovered `1` as `True`. The discovered plane has no type barricade,
+    so this is the only place that distinction gets made -- and a provider
+    reporting `1` where a declaration says `true` is exactly the drift a
+    reconciler exists to surface, not to smooth over.
+    """
+    return _states_a_value(present, value) and type(value) is bool
+
+
 def _plane_statement(present: bool, value: Any) -> str:
     """Name what one plane said about a field, presence included."""
     if not present:
@@ -1368,3 +1381,73 @@ OBJECT_MODE_HANDLERS: dict[str, Callable[[Any, Any, list[str]], tuple[bool, str,
     "version": _compare_version,
     "identity": _compare_identity,
 }
+
+
+# --- Boolean -----------------------------------------------------------------
+
+
+def compare_boolean(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Compare boolean fields.
+
+    One mode, `exact`. A boolean has two values and nothing to normalise
+    between them, so there is no second mode to offer and no transformation to
+    record -- the transformed values on the audit entry are the raw ones.
+
+    Added with the type itself (issue #53): `bool` was declarable through intent
+    ingestion while `Kind.attribute_schema` had no field type that could name
+    it, so a declared boolean could be written and never compared.
+
+    Anything that is not a boolean on either side lands in the statement rule
+    rather than here, `_states_a_boolean` being where that is decided. That
+    includes a discovered `1`, which is the case worth naming: the discovered
+    plane has no type barricade, and reading `1` as `True` would silence exactly
+    the drift this exists to report.
+
+    Args:
+        declared: Value from declared plane
+        discovered: Value from discovered plane
+        field_config: Configuration with mode and parameters
+
+    Returns:
+        (is_equal, audit_log_entry) tuple
+    """
+    mode: Any = field_config.comparison.get("mode")
+    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    steps: list[str] = []
+
+    declared_state = _presence_and_value(declared)
+    discovered_state = _presence_and_value(discovered)
+    declared_val = declared_state[1]
+    discovered_val = discovered_state[1]
+
+    if not _states_a_boolean(*declared_state) or not _states_a_boolean(*discovered_state):
+        return _unstated_comparison(
+            field_config, "boolean", declared_state, discovered_state, steps
+        )
+
+    if mode == "exact":
+        is_equal = declared_val == discovered_val
+        steps.append(f"Exact boolean comparison: {declared_val} vs {discovered_val} -> {is_equal}")
+    else:
+        steps.append(_unknown_mode_step(mode))
+        is_equal = False
+
+    return (
+        is_equal,
+        AuditLogEntry(
+            kind_name=kind_name,
+            field_name=field_config.field_name,
+            field_type="boolean",
+            comparison_mode=mode,
+            declared_raw=declared_val,
+            declared_transformed=declared_val,
+            discovered_raw=discovered_val,
+            discovered_transformed=discovered_val,
+            result=is_equal,
+            steps=steps,
+        ),
+    )

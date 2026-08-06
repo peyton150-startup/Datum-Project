@@ -138,6 +138,8 @@ One document declares exactly one resource. Multi-document YAML streams are not 
 
 `attribute_schema` is a flat mapping of attribute name to type name, drawn from a closed table: `int`, `str`, `bool`. Evaluation is a lookup, not an if-chain.
 
+**That table is not written here, and not written in this module either.** It lives in `datum/reconcile/attribute_types.py` as `DECLARED_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
+
 **Known limit, deliberate:** every key in a kind's `attribute_schema` is required, and unknown keys are rejected. Optionality is not yet expressible. This is the same simplification §24 records for null-vs-absent in the diff engine, and it is held for the same reason: one kind with one required integer field cannot motivate the design. Both are revisited together when phase 3 adds a second kind — that is the point at which this stops being a simplification and becomes a correctness bug.
 
 ### Validation layers
@@ -486,6 +488,25 @@ Both directions are enumerated rather than one plus a symmetry note, because the
 That is easy to miss because §12 sits next to it and is genuinely finished: matching has its strategy table, its confidence assignment, its error bias, and an adversarial corpus with expected outcomes, all written before its code. The diff engine has no equivalent. §12's corpus is about matching and does not exercise a single comparison rule. **The largest package in phase 4, and the one this document calls the correctness kernel, is the least specified thing in it** — which is precisely the shape of package where a wrong rule gets implemented, confirmed by tests written to match it, and handed over self-consistent.
 
 This section's own corpus, in the sense §12 has one, is part of 1.5.2's specification rather than of its implementation.
+
+### The two attribute-type vocabularies — WBS 1.5.2, decided 2026-08-05
+
+Issue #53. There are two type vocabularies here, they are different questions, and **neither is a subset of the other**:
+
+- **Declared types** — what an author may write in an intent document, and what §10's `attribute_schema` names: `int`, `str`, `bool`.
+- **Field types** — what `Kind.attribute_schema` names to select a comparison: `numeric`, `string`, `timestamp`, `boolean`, `list`, `object`.
+
+They were written in three modules that each looked correct alone, and the relation between them was nobody's job. Two field types (`list`, `object`) could never receive a declared value; one declared type (`bool`) named no field type at all, so a document could say `enabled: true` and no schema could say how to compare it.
+
+**Decided: one encoding, in `datum/reconcile/attribute_types.py`.** `DECLARED_TYPES` and `FIELD_TYPES` sit adjacent; `FIELD_TYPES` maps each field type to the declared type that can feed it, or `None` where none can. `VALID_FIELD_TYPES`, `DECLARED_TYPE_NAMES` and `DISCOVERED_ONLY_FIELD_TYPES` are derived from those two and never restated. `intent/documents.py` and `reconcile/schema.py` read them. **The mistake this makes unavailable:** adding a field type without answering which declared type feeds it — the `None` is a stated answer, not a gap, and `tests/kernel/test_attribute_types.py` fails if the tables stop agreeing in either direction.
+
+**Decided: `bool` closes by gaining a comparison, not by losing its declaration.** `boolean` is a field type with one mode, `exact`. Removing `bool` from the declared side was the alternative and is worse: it breaks existing documents to fix a gap that adding forty lines closes.
+
+`type(value) is bool`, not `isinstance`, on both planes. bool subclasses int in Python, and the discovered plane has no type barricade, so a provider reporting `1` where intent says `true` must read as drift rather than as a match.
+
+**Deliberately not settled here, and still open on #53:** whether the declared vocabulary widens to reach `float`, `list` and `object`. `DISCOVERED_ONLY_FIELD_TYPES` records today's answer as data so that widening is a visible edit to one literal rather than an archaeology exercise. That question is sequenced behind #55 (YAML coercion) and the null/§10 all-required decision, because both change what a parsed declared value even is.
+
+**Storability is a separate question and stays separate.** `unstorable_attribute` asks whether a value survives JSON and Postgres, which is about the encoder, not the domain. Folding it in would put a rule about `bytes` beside a rule about `numeric` and make both harder to change.
 
 ## 14. Precedence policy
 

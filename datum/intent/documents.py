@@ -9,11 +9,12 @@ document texts and the kind schemas, which makes every validation layer
 testable without a repository or a migration.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 import yaml
 
 from datum.intent.errors import DocumentError, InvalidDocument, InvalidRevision
+from datum.reconcile.attribute_types import DECLARED_TYPES
 from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 FORMAT_VERSION = "datum.dev/v1"
@@ -25,18 +26,11 @@ MAX_IDENTIFIER_LENGTH = 253
 
 PROVIDER_ID_KEY = "provider_id"
 
-# The closed type vocabulary a Kind.attribute_schema may draw on.
-#
-# `type(v) is int` rather than isinstance, deliberately: bool is a subclass of
-# int in Python, so isinstance would quietly accept `replicas: true` as an
-# integer. A declaration that says "three replicas" and a declaration that says
-# "yes replicas" must not validate the same way.
-_TYPE_PREDICATES: Mapping[str, Callable[[object], bool]] = {
-    "int": lambda value: type(value) is int,
-    "str": lambda value: type(value) is str,
-    "bool": lambda value: type(value) is bool,
-}
-
+# The closed type vocabulary a Kind.attribute_schema may draw on lives in
+# `reconcile.attribute_types`, next to the comparison field types it has to
+# agree with (issue #53). This barricade validates against it rather than
+# restating it: the two sets are related but not equal, and when they were
+# written in two places the relation was nobody's job to keep.
 KindSchemas = Mapping[str, Mapping[str, str]]
 DocumentSource = tuple[str, str]  # (source name, raw text)
 KeyPath = tuple[str, ...]
@@ -255,11 +249,11 @@ def _validated_attributes(
 
 def _check_attribute_type(kind: str, attribute_name: str, value: object, type_name: str) -> None:
     path = ("attributes", attribute_name)
-    is_expected_type = _TYPE_PREDICATES.get(type_name)
+    is_expected_type = DECLARED_TYPES.get(type_name)
     if is_expected_type is None:
         raise InvalidDocument(
             f"kind {kind!r} declares attribute {attribute_name!r} with type {type_name!r}, "
-            f"which is not one of {sorted(_TYPE_PREDICATES)} -- the kind is wrong, "
+            f"which is not one of {sorted(DECLARED_TYPES)} -- the kind is wrong, "
             "not the document",
             path=path,
         )

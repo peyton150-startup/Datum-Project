@@ -246,11 +246,16 @@ def _document_view(root: yaml.MappingNode) -> tuple[Mapping[str, object], yaml.N
     """
     envelope: dict[str, object] = {}
     attributes: yaml.Node | None = None
+    # One cache for the whole document, so a node shared between two envelope
+    # keys is built once. Scoped to this call and not to the module: it is keyed
+    # on `id()`, and node objects from a finished parse are free to be collected
+    # and have their addresses reused by the next one.
+    built: dict[int, object] = {}
     for name, value_node in _entries(root, ()):
         if name == ATTRIBUTES_KEY:
             attributes = value_node
         else:
-            envelope[name] = _constructed(value_node, (name,), frozenset({id(root)}))
+            envelope[name] = _constructed(value_node, (name,), frozenset({id(root)}), built)
     return envelope, attributes
 
 
@@ -310,7 +315,9 @@ def _key_name(key_node: yaml.Node, path: KeyPath) -> str:
     return str(key_node.value)
 
 
-def _constructed(node: yaml.Node, path: KeyPath, ancestors: frozenset[int]) -> object:
+def _constructed(
+    node: yaml.Node, path: KeyPath, ancestors: frozenset[int], built: dict[int, object]
+) -> object:
     """An envelope node as the value YAML says it is.
 
     Collections are walked here rather than handed to the constructor, so that
@@ -318,9 +325,27 @@ def _constructed(node: yaml.Node, path: KeyPath, ancestors: frozenset[int]) -> o
     are still converted by YAML itself, which is what keeps the envelope's
     behaviour exactly what it was.
 
-    `ancestors` carries the nodes currently being built, which is what stops a
-    self-referential alias (`&a {k: *a}`) from recursing forever. An alias to a
-    node that is merely *finished* is not a cycle and is built again normally.
+    **Aliases meet one rule, in two halves, and both halves are needed.**
+    `ancestors` is the nodes on the path currently being built and answers "am I
+    inside myself", which is a cycle. `built` is every node this document has
+    already produced a value for and answers "have I done this", which is a
+    repeat. A node graph is a DAG with sharing in it, so both questions are
+    real: `&a {k: *a}` is a cycle and must be refused, while `[*a, *a]` is
+    ordinary reuse and must be built once and handed out twice.
+
+    Answering only the first is what a composed graph punishes. An alias
+    referenced `K` times at each of `N` nested levels reaches the same node
+    `K**N` times, so a 335-byte document rebuilt one scalar 280,000 times and
+    took 1.8 seconds where `safe_load` took 3 milliseconds. That is the
+    "billion laughs" shape, and PyYAML is not vulnerable to it precisely
+    *because* `BaseConstructor.construct_object` caches by node -- so replacing
+    the constructor with a walk and keeping only the cycle half of its guard
+    removed a protection that was never written down here.
+
+    `built` is therefore not an optimisation. It is the second half of the rule
+    `_collect_key_lines` states in one piece, and it is threaded the same way
+    for the same reason: one mutable map, keyed on node identity, living as long
+    as the walk. Two walks over one graph, one discipline.
     """
     if id(node) in ancestors:
         raise InvalidDocument(
@@ -329,18 +354,29 @@ def _constructed(node: yaml.Node, path: KeyPath, ancestors: frozenset[int]) -> o
             "text an author could have meant",
             path=path,
         )
+    # Membership, not truthiness: a declared scalar legitimately builds to
+    # `None`, and `built.get(...) is None` would rebuild every null forever.
+    if id(node) in built:
+        return built[id(node)]
+
     within = ancestors | {id(node)}
-
+    value: object
     if isinstance(node, yaml.ScalarNode):
-        return _scalar_value(node, path)
+        value = _scalar_value(node, path)
+    else:
+        _reject_retagged_collection(node, path)
+        if isinstance(node, yaml.MappingNode):
+            value = {
+                name: _constructed(value_node, (*path, name), within, built)
+                for name, value_node in _entries(node, path)
+            }
+        else:
+            value = [_constructed(item, path, within, built) for item in node.value]
 
-    _reject_retagged_collection(node, path)
-    if isinstance(node, yaml.MappingNode):
-        return {
-            name: _constructed(value_node, (*path, name), within)
-            for name, value_node in _entries(node, path)
-        }
-    return [_constructed(item, path, within) for item in node.value]
+    # Cached only on success. A node that raised has no value to hand out, and
+    # a second reference to it must reach the same refusal rather than a hole.
+    built[id(node)] = value
+    return value
 
 
 def _reject_retagged_collection(node: yaml.Node, path: KeyPath) -> None:

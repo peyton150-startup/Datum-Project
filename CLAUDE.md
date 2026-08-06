@@ -116,3 +116,17 @@ Reproduce reliably before hypothesizing. Fix the cause, not the symptom; a speci
 - Confirm no later-phase scope was pulled forward.
 - If you are closing a phase, walk its acceptance criteria in writing and state any not met plainly, rather than redefining them.
 - If you learned something durable, put it in this file or in the memory directory — both load automatically. Do not put it in a handoff section; that is how it goes stale.
+
+## Session naming convention
+
+Every Claude Code session that touches the Datum project should start its title with the PR number(s) it addresses, in the format `PR. #X` or `PR. #X, #Y` for multiple PRs. This makes it trivial to find which session touched which PR when you need to return to context.
+
+**Automatic naming:** When you create a session or branch, immediately name it with the PR number at the front. For example:
+- `PR. #65 — fix(intent): the schema decides a declared scalar's type, YAML does not`
+- `PR. #56, #59 — PR #58 split and unblock`
+
+**Status-only sessions:** Sessions that are research, exploration, or status review (no PR opened yet) should be clearly marked as such:
+- `Status: Project status and next steps`
+- `Exploration: Schema type architecture`
+
+This convention makes your session list scannable at a glance and eliminates the need to search transcripts to find which work touched which PR.

@@ -553,6 +553,68 @@ class TestWhatComposingLeavesToDatum:
 
         assert snapshot.name == "n"
 
+    def test_a_shared_node_is_built_once_and_handed_out_twice(self):
+        """The mechanism, asserted exactly rather than by stopwatch.
+
+        Two aliases to one anchor are one node in the composed graph. Building
+        it once and returning the same object is what PyYAML's constructor did
+        via its own node cache, and is what the envelope walk has to keep doing
+        now that it has replaced the constructor. Equal-but-distinct objects
+        here means the walk rebuilt it, which is correct in value and is the
+        defect below in miniature.
+        """
+        from datum.intent.documents import _document_view, _single_mapping_node
+
+        env, _ = _document_view(
+            _single_mapping_node(
+                "shared: &s {k: v}\napiVersion: datum.dev/v1\nkind: K\n"
+                "metadata:\n  name: n\n  scope: s\nalso: *s\nattributes:\n  v: x\n"
+            )
+        )
+
+        assert env["also"] == {"k": "v"}
+        assert env["also"] is env["shared"]
+
+    def test_an_alias_fan_out_does_not_take_exponential_time(self):
+        """A 400-byte document that used to take a minute, and why.
+
+        The walk answered "am I inside myself" and not "have I done this", so a
+        node reached through `K` aliases at each of `N` levels was rebuilt
+        `K**N` times. `K=6, N=9` below is 10 million rebuilds of one scalar;
+        measured at 1.8s for `N=7` and growing sixfold per level, against 3ms
+        for `yaml.safe_load` on the same text. This is the "billion laughs"
+        shape, and it was reachable from any file in a polled repository.
+
+        The bound is deliberately loose. Under the fix this is single-digit
+        milliseconds, so a second is a thousandfold margin and cannot fail from
+        a slow machine; under the bug it is tens of seconds, so the test fails
+        rather than hanging a CI run forever.
+        """
+        import time
+
+        levels = ["L0: &L0 [x, x, x, x, x, x]"]
+        levels += [f"L{i}: &L{i} [" + ", ".join([f"*L{i - 1}"] * 6) + "]" for i in range(1, 9)]
+        text = "\n".join(
+            [
+                *levels,
+                "apiVersion: datum.dev/v1",
+                "kind: K",
+                "metadata:",
+                "  name: n",
+                "  scope: s",
+                "  hidden: *L8",
+                "attributes:",
+                "  v: x",
+            ]
+        )
+
+        started = time.perf_counter()
+        [snapshot] = parse_document_set([("d.yaml", text)], "t", {"K": {"v": "str"}})
+        elapsed = time.perf_counter() - started
+
+        assert snapshot.name == "n"
+        assert elapsed < 1.0
+
     @pytest.mark.parametrize("written", ["!!set {a, b}", "!!omap [{a: 1}]"])
     def test_an_envelope_collection_may_not_be_retagged(self, written):
         """A walk reads entries and not tags, so an ignored tag is a silent change.

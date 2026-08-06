@@ -32,6 +32,11 @@ Thumbs.db
 # Datum local state
 postgres-data/
 valkey-data/
+# Celery Beat's record of when each periodic task last ran. Written inside the
+# worker container and surfaced here by the `.:/app` bind mount, in the Linux
+# dbm format, so it is not even readable on a Windows host. Deleting it costs
+# one immediate run of each schedule.
+celerybeat-schedule
 # Local checkout of the intent repo; a cache of the remote, never authored here.
 .intent-worktree/
 
@@ -42,3 +47,6 @@ valkey-data/
 # Per-invocation scratch files dropped in the repo root, each holding only the
 # working directory path. 116 had accumulated before this line existed.
 tmpclaude-*-cwd
+# AgentDB's vector store and its writer lock, both dropped in the repo root.
+agentdb.rvf
+agentdb.rvf.lock

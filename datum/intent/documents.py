@@ -168,6 +168,20 @@ def _single_mapping(text: str) -> Mapping[str, object]:
         documents = list(yaml.safe_load_all(text))
     except yaml.YAMLError as exc:
         raise InvalidDocument(f"unparseable YAML: {exc}", line=_yaml_error_line(exc)) from exc
+    except ValueError as exc:
+        # Not every failure inside PyYAML is a `YAMLError`. Its constructor
+        # calls `int()` on a scalar it resolved as an integer, and CPython caps
+        # int-from-string at `sys.get_int_max_str_digits()` -- 4300 by default
+        # since 3.11 -- raising a bare `ValueError` past it.
+        #
+        # This barricade promises `InvalidDocument` or nothing. Without this the
+        # `ValueError` escaped `parse_document_set` entirely, past
+        # `ingest_revision`, and reached the polling task's catch-all for the
+        # unanticipated: the author saw a silently dropped revision rather than
+        # an error naming their file. Predates the node-level parser -- the same
+        # text has escaped here for as long as `safe_load_all` has been the
+        # syntax layer.
+        raise InvalidDocument(f"unparseable YAML: {exc}") from exc
 
     if len(documents) != 1:
         raise InvalidDocument(
@@ -193,11 +207,15 @@ def _attribute_nodes(text: str) -> Mapping[str, yaml.Node]:
     also asked about it, because a key set derived in two places is a key set
     that can come to disagree with itself.
     """
-    root = yaml.compose(text)
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
     # `_single_mapping` parsed this same text first and proved it holds exactly
     # one document and that the document is a mapping, so composing it again
-    # can neither fail nor yield anything else.
+    # can neither fail nor yield anything else. The loader is pinned to the same
+    # one it used rather than left to default, so that this is a fact about the
+    # code and not about two loaders happening to share a resolver today.
     assert isinstance(root, yaml.MappingNode)
+
+    _reject_repeated_key(root, ())
 
     for key_node, value_node in root.value:
         if not isinstance(key_node, yaml.ScalarNode) or key_node.value != ATTRIBUTES_KEY:
@@ -213,13 +231,52 @@ def _attribute_nodes(text: str) -> Mapping[str, yaml.Node]:
     raise InvalidDocument(f"{ATTRIBUTES_KEY} must be a mapping, got None", path=(ATTRIBUTES_KEY,))
 
 
+def _reject_repeated_key(mapping_node: yaml.MappingNode, path: KeyPath) -> None:
+    """A key written twice is refused rather than silently resolved.
+
+    The document is read two ways -- loaded for the envelope, composed for the
+    attributes -- and those two ways resolve a repeated key differently: a dict
+    built from the loader keeps the last occurrence, and a scan of the composed
+    node list reaches the first. So `attributes:` written twice made the two
+    readings disagree about which block was authoritative, with no error either
+    way. The declared plane held values from one block while the document said
+    the other.
+
+    Aligning the two readings on "last wins" would have made both correct today
+    and left them free to drift, which is the trade CLAUDE.md names. Refusing
+    the input removes the question instead: with no repeated key there is no
+    occurrence to choose between, so the two readings cannot disagree whatever
+    either one does next.
+
+    Refused for every key at both levels, not only for `attributes`. `kind:`
+    written twice resolves to the last silently today, and so did a repeated
+    attribute name; those are the same trap waiting for the next reader to be
+    added, and a rule with an exception in it is the thing that was already
+    going wrong here.
+    """
+    seen: set[str] = set()
+    for key_node, _ in mapping_node.value:
+        # Hashable by the time this runs -- see `_named_nodes`.
+        assert isinstance(key_node, yaml.ScalarNode)
+        name = str(key_node.value)
+        if name in seen:
+            raise InvalidDocument(
+                f"{_label(path)} states {name!r} more than once; a repeated key is "
+                "refused rather than resolved, because which occurrence wins is "
+                "not visible to the person reading the file",
+                path=(*path, name),
+            )
+        seen.add(name)
+
+
 def _named_nodes(mapping_node: yaml.MappingNode) -> dict[str, yaml.Node]:
     """One mapping node's entries, keyed by name.
 
-    A duplicated key keeps the last entry, which is what `safe_load` does with
-    the same document; this reads the same text a second way and must not come
-    to a different answer than the first way about which keys exist.
+    A repeated name is refused above rather than resolved here, so the dict
+    below cannot be silently dropping an entry the author wrote.
     """
+    _reject_repeated_key(mapping_node, (ATTRIBUTES_KEY,))
+
     named: dict[str, yaml.Node] = {}
     for key_node, value_node in mapping_node.value:
         # A non-scalar key cannot arrive here: YAML's own constructor needs a
@@ -229,7 +286,10 @@ def _named_nodes(mapping_node: yaml.MappingNode) -> dict[str, yaml.Node]:
         # handler reads as a guarantee that something checks this, when nothing
         # here does.
         assert isinstance(key_node, yaml.ScalarNode)
-        if key_node.value == MERGE_KEY:
+        # Unquoted only, for the same reason the declared null is unquoted only:
+        # `"<<"` is an ordinary key to YAML, not a merge, and refusing it here
+        # would apply the quoting rule in one place and ignore it in the other.
+        if key_node.style is None and key_node.value == MERGE_KEY:
             raise InvalidDocument(
                 f"{ATTRIBUTES_KEY} uses the YAML merge key {MERGE_KEY!r}, which intent "
                 "documents may not do; every attribute a resource declares is written "

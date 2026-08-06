@@ -86,7 +86,22 @@ def _parse_integer(text: str) -> int:
             "hexadecimal and sexagesimal forms are refused -- if the exact text "
             "matters, declare the attribute as a str"
         )
-    return int(text)
+    try:
+        return int(text)
+    except ValueError as exc:
+        # Matching the grammar is not the same as being convertible. CPython
+        # caps int-from-string at `sys.get_int_max_str_digits()` (4300 by
+        # default since 3.11) and raises a bare `ValueError` past it, which
+        # would escape this barricade entirely and reach the ingestion task's
+        # catch-all as a silently dropped revision.
+        #
+        # The limit is asked for rather than restated as a length bound in the
+        # grammar above: it is a runtime setting, so a second copy here would be
+        # a number that is right until someone calls `set_int_max_str_digits`.
+        raise UnacceptableLiteral(
+            f"the integer written has {len(text)} digits, which this interpreter "
+            f"will not convert: {exc}"
+        ) from exc
 
 
 def _parse_string(text: str) -> str:
@@ -101,9 +116,17 @@ def _parse_string(text: str) -> str:
 
 
 # What an intent document may write, and how to read each one from its scalar
-# text. The parser receives the text alone and never the YAML node, so it cannot
-# consult the implicit resolver's tag even by accident -- which is the whole
-# mechanism by which "the schema decides the type" stays true (issue #55).
+# text. The parser receives the text alone and never the YAML node, so nothing
+# it is given carries the implicit resolver's tag -- which is how "the schema
+# decides the type" stays true in practice (issue #55).
+#
+# **This is a signature, not a capability boundary, and the difference is worth
+# stating.** A parser determined to reach the node can still walk the stack to
+# its caller's frame and read it; that was demonstrated against this interface
+# rather than imagined. What the signature buys is that a parser cannot consult
+# the tag by *writing the obvious code*, and that `_stated_value` is the single
+# place the choice is made. Against careless data it holds; against a determined
+# parser author it does not, and no signature would.
 #
 # A plain callable rather than a record with one field: there is nothing else a
 # declared type needs today, and a record whose only member is the parser is the

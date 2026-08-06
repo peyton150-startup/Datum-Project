@@ -129,6 +129,39 @@ class TestIntegerLiterals:
         """
         assert "expected a decimal integer" in rejection("int", written)
 
+    def test_an_integer_too_long_for_the_interpreter_is_a_document_error(self):
+        """A bare `ValueError` escaped this barricade, by two separate routes.
+
+        CPython caps int-from-string at `sys.get_int_max_str_digits()`, 4300 by
+        default since 3.11, and raises a `ValueError` -- not a `YAMLError` --
+        past it. Escaping `parse_document_set` means passing `ingest_revision`,
+        which does not catch it, and reaching the polling task's catch-all for
+        the unanticipated: a silently dropped revision rather than an error
+        naming the file.
+
+        **Unquoted** dies inside PyYAML's own constructor, which resolves the
+        scalar as an integer and calls `int()` on it -- before any Datum parser
+        runs. That route predates the node-level reader and escapes on `main`
+        today, for a long integer anywhere in a document.
+
+        **Quoted** is never converted by PyYAML, so it reaches `_parse_integer`,
+        matches the grammar, and dies on `int(text)` there. Two throw sites, one
+        interpreter limit, and fixing either alone leaves the other open.
+
+        Boundaries either side: 4300 digits converts, 4301 does not. Both
+        asserted, because a fix that rejected every long integer would pass a
+        test that only checked the failing side.
+        """
+        assert declared("int", "1" * 4300) == int("1" * 4300)
+        assert declared("int", '"' + "1" * 4300 + '"') == int("1" * 4300)
+
+        assert "unparseable YAML" in rejection("int", "1" * 4301)
+
+        quoted = rejection("int", '"' + "1" * 4301 + '"')
+
+        assert "4301 digits" in quoted
+        assert "will not convert" in quoted
+
     def test_minus_zero_is_accepted_and_is_zero(self):
         """The one place the grammar is not a bijection, pinned rather than found.
 
@@ -233,18 +266,85 @@ class TestTheNullState:
 class TestTheTwoParsesCannotDisagree:
     """The envelope is loaded and the attributes are composed, from one text.
 
-    Two readings of one document is a drift hazard by construction, so the two
-    places they are known to differ are pinned here rather than trusted.
+    Two readings of one document is a drift hazard by construction. This class
+    was written asserting that they could not disagree, and covering only
+    repeated keys *inside* `attributes` and the merge key -- a name broader than
+    its fixtures, and the gap was exactly where the disagreement lived. A
+    repeated `attributes:` key one level up resolved to the last occurrence for
+    the loader and the first for the node scan, silently.
+
+    The fix is that a repeated key is now refused at both levels rather than
+    resolved, so there is no occurrence to choose between and the two readings
+    have nothing left to disagree about. These tests pin that.
     """
 
-    def test_a_duplicate_attribute_keeps_the_last_one_either_way(self):
-        """`safe_load` keeps the last of a duplicated key; so does the node reader.
+    def test_a_repeated_attribute_name_is_refused(self):
+        """Which of two `v:` entries wins is not visible to someone reading the file.
 
-        The composer preserves both entries where the loader silently dropped
-        one, so this could have been the two readings disagreeing about which
-        attributes exist. It is not, because the node reader builds a dict.
+        The loader and the node reader both happen to keep the last one, so
+        this is not a disagreement -- it is the same rule as the case below,
+        applied where it would otherwise have had an exception.
         """
-        assert declared("int", "1\n  v: 2") == 2
+        assert "more than once" in rejection("int", "1\n  v: 2")
+
+    def test_a_repeated_attributes_block_is_refused(self):
+        """The defect: two `attributes:` blocks, and the two readings differed.
+
+        Verified before the fix -- `yaml.safe_load` resolved this document to
+        `{"v": "second"}` while `parse_document_set` returned `{"v": "first"}`,
+        with no error raised either way. The declared plane held one block while
+        the document showed the other.
+
+        Break the fix and this fails: without the refusal, the document parses
+        and the assertion below never sees an exception at all.
+        """
+        document = (
+            "d.yaml",
+            "apiVersion: datum.dev/v1\nkind: K\nmetadata:\n  name: n\n  scope: s\n"
+            "attributes:\n  v: first\n"
+            "attributes:\n  v: second\n",
+        )
+
+        with pytest.raises(InvalidRevision) as caught:
+            parse_document_set([document], "t", {"K": {"v": "str"}})
+
+        assert "'attributes'" in str(caught.value)
+        assert "more than once" in str(caught.value)
+
+    def test_a_repeated_envelope_key_is_refused_too(self):
+        """`kind:` twice resolved to the last silently, which is the same trap.
+
+        Refused for every key rather than for `attributes` alone: a rule with an
+        exception in it is what was already going wrong here, and the next
+        reader added to this file would inherit the exception.
+        """
+        document = (
+            "d.yaml",
+            "apiVersion: datum.dev/v1\nkind: K\nkind: Other\n"
+            "metadata:\n  name: n\n  scope: s\nattributes:\n  v: x\n",
+        )
+
+        with pytest.raises(InvalidRevision) as caught:
+            parse_document_set([document], "t", {"K": {"v": "str"}})
+
+        assert "'kind'" in str(caught.value)
+
+    def test_a_quoted_merge_key_is_an_ordinary_attribute_name(self):
+        """Quoting decides here as it decides for null, rather than being ignored.
+
+        `safe_load` treats `"<<"` as a literal key and not a merge, so refusing
+        it would be the quoting rule applied in one place and dropped in the
+        other -- inside the one file whose subject is a rule written twice.
+        """
+        document = (
+            "d.yaml",
+            "apiVersion: datum.dev/v1\nkind: K\nmetadata:\n  name: n\n  scope: s\n"
+            'attributes:\n  "<<": 1\n',
+        )
+
+        [snapshot] = parse_document_set([document], "t", {"K": {"<<": "int"}})
+
+        assert snapshot.attributes == {"<<": 1}
 
     def test_a_merge_key_in_attributes_is_refused_by_name(self):
         """`<<` expands under `safe_load` and does not under `compose`.

@@ -138,7 +138,7 @@ One document declares exactly one resource. Multi-document YAML streams are not 
 
 `attribute_schema` is a flat mapping of attribute name to type name, drawn from a closed table: `int`, `str`, `bool`. Evaluation is a lookup, not an if-chain.
 
-**That table is not written in this document, and not written in the barricade either.** It lives in `datum/reconcile/attribute_types.py` as `DECLARED_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
+**That table is not written in this document, and not written in the barricade either.** It lives in `datum/reconcile/attribute_types.py` as `ATTRIBUTE_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
 
 **The type names what a value may be; it does not name what YAML would make of the text.** Declared scalars are read from their nodes and parsed by the type's own literal grammar, so `NO` is not a boolean and `1:30` is not an integer. §13, *The schema decides a declared scalar's type*, holds the grammar and the three strictnesses that come with it.
 
@@ -500,11 +500,11 @@ Issue #53. There are two type vocabularies here, they are different questions, a
 
 They were written in three modules that each looked correct alone, and the relation between them was nobody's job. Two field types (`list`, `object`) could never receive a declared value; one declared type (`bool`) named no field type at all, so a document could say `enabled: true` and no schema could say how to compare it.
 
-**Decided: one encoding, in `datum/reconcile/attribute_types.py`.** `DECLARED_TYPES` and `FIELD_TYPES` sit adjacent; `FIELD_TYPES` maps each field type to the declared type that can feed it, or `None` where none can. `VALID_FIELD_TYPES`, `DECLARED_TYPE_NAMES` and `DISCOVERED_ONLY_FIELD_TYPES` are derived from those two and never restated. `intent/documents.py` and `reconcile/schema.py` read them. **The mistake this makes unavailable:** adding a field type without answering which declared type feeds it — the `None` is a stated answer, not a gap, and `tests/kernel/test_attribute_types.py` fails if the tables stop agreeing in either direction.
+**Decided: one encoding, in `datum/reconcile/attribute_types.py`.** `ATTRIBUTE_TYPES` and `FIELD_TYPES` sit adjacent; `FIELD_TYPES` maps each field type to the declared type that can feed it, or `None` where none can. `VALID_FIELD_TYPES`, `DECLARED_TYPE_NAMES` and `DISCOVERED_ONLY_FIELD_TYPES` are derived from those two and never restated. `intent/documents.py` and `reconcile/schema.py` read them. **The mistake this makes unavailable:** adding a field type without answering which declared type feeds it — the `None` is a stated answer, not a gap, and `tests/kernel/test_attribute_types.py` fails if the tables stop agreeing in either direction.
 
 **Decided: `bool` closes by gaining a comparison, not by losing its declaration.** `boolean` is a field type with one mode, `exact`. Removing `bool` from the declared side was the alternative and is worse: it breaks existing documents to fix a gap that adding forty lines closes.
 
-`type(value) is bool`, not `isinstance`, on both planes. bool subclasses int in Python, and the discovered plane has no type barricade, so a provider reporting `1` where intent says `true` must read as drift rather than as a match.
+A discovered `1` must not read as a declared `true`. bool subclasses int in Python, so `isinstance` would call them the same thing, and the discovered plane has no type barricade to stop one arriving. The guarantee is made twice over and at two different layers, which is deliberate: the comparison side asks `type(value) is bool` in `_states_a_boolean`, and the declared side no longer type-checks at all, because after #55 a declared boolean can only have come from `parse_boolean` and therefore cannot be an int.
 
 ### The schema decides a declared scalar's type, and YAML does not (#55)
 

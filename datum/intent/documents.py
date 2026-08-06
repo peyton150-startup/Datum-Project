@@ -248,11 +248,17 @@ def _reject_repeated_key(mapping_node: yaml.MappingNode, path: KeyPath) -> None:
     occurrence to choose between, so the two readings cannot disagree whatever
     either one does next.
 
-    Refused for every key at both levels, not only for `attributes`. `kind:`
-    written twice resolves to the last silently today, and so did a repeated
-    attribute name; those are the same trap waiting for the next reader to be
-    added, and a rule with an exception in it is the thing that was already
-    going wrong here.
+    Applied to the two mappings that are read twice: the document root, and
+    `attributes`. That is where a disagreement is possible, and `kind:` written
+    twice at the root was the same trap waiting for the next reader to be added.
+
+    **Not applied to `metadata`, and the limit is worth stating rather than
+    leaving to be discovered.** A repeated `metadata.name` still resolves
+    silently to the last occurrence, because `metadata` is read once -- through
+    the loader only -- so the two readings cannot disagree about it. The second
+    argument for this rule, that which occurrence wins is invisible to whoever
+    reads the file, does apply there and is not acted on. Widening it is a
+    change to how the envelope is read, which this is not.
     """
     seen: set[str] = set()
     for key_node, _ in mapping_node.value:

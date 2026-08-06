@@ -134,10 +134,16 @@ class TestIntegerLiterals:
 
         CPython caps int-from-string at `sys.get_int_max_str_digits()`, 4300 by
         default since 3.11, and raises a `ValueError` -- not a `YAMLError` --
-        past it. Escaping `parse_document_set` means passing `ingest_revision`,
-        which does not catch it, and reaching the polling task's catch-all for
-        the unanticipated: a silently dropped revision rather than an error
-        naming the file.
+        past it.
+
+        Traced rather than assumed: `ingest_revision` does not wrap the
+        `parse_document_set` call, so the `ValueError` reaches the polling
+        task's `except Exception` catch-all, whose own comment says it only
+        catches what nobody anticipated. The revision is not ingested and every
+        later poll fails the same way, permanently, until the document changes.
+        The author sees "intent poll failed unexpectedly" with a PyYAML
+        traceback instead of the `InvalidRevision` naming their file and field
+        that the handler one clause above exists to produce.
 
         **Unquoted** dies inside PyYAML's own constructor, which resolves the
         scalar as an integer and calls `int()` on it -- before any Datum parser

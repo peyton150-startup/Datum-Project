@@ -1,0 +1,10 @@
+apiVersion: datum.dev/v1
+kind: Deployment
+metadata:
+  name: web
+  scope: default
+attributes:
+  # A declared null, which is a different claim from an unstated attribute and
+  # was unreachable through ingestion until issue #55. The unquoted spelling is
+  # the whole point: `"null"` here would be the three-character string.
+  replicas: null

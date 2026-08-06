@@ -9,12 +9,12 @@ document texts and the kind schemas, which makes every validation layer
 testable without a repository or a migration.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import yaml
 
 from datum.intent.errors import DocumentError, InvalidDocument, InvalidRevision
-from datum.reconcile.attribute_types import DECLARED_TYPES
+from datum.reconcile.attribute_types import ATTRIBUTE_TYPES, UnacceptableLiteral
 from datum.reconcile.domain import ResourceSnapshot, unstorable_attribute
 
 FORMAT_VERSION = "datum.dev/v1"
@@ -25,6 +25,31 @@ FORMAT_VERSION = "datum.dev/v1"
 MAX_IDENTIFIER_LENGTH = 253
 
 PROVIDER_ID_KEY = "provider_id"
+
+ATTRIBUTES_KEY = "attributes"
+
+# YAML's merge key. Reading attributes as nodes means merges are not expanded
+# for us the way `safe_load` expands them, so a document using one would see an
+# attribute literally named `<<`. Refused by name rather than left to surface as
+# a baffling "unknown attribute" -- and refused rather than expanded here,
+# because expanding it would be a second implementation of a PyYAML feature,
+# and because an attribute assembled from elsewhere in the file is not what the
+# author is looking at when they read their own declaration.
+MERGE_KEY = "<<"
+
+# The one scalar text that states a declared null, and only unquoted. `~`,
+# `Null` and `NULL` are ordinary content read by the declared type -- treating
+# them as null would hand the authority back to YAML's implicit resolver
+# through the one door this barricade closes (issue #55).
+DECLARED_NULL = "null"
+
+# What a non-scalar node is called when one turns up where a value belongs.
+# A lookup rather than a branch: there are exactly three node kinds and the
+# scalar one has already been excluded by the time this is read.
+NODE_SHAPES: Mapping[type, str] = {
+    yaml.SequenceNode: "sequence",
+    yaml.MappingNode: "mapping",
+}
 
 # The closed type vocabulary a Kind.attribute_schema may draw on lives in
 # `reconcile.attribute_types`, next to the comparison field types it has to
@@ -76,7 +101,6 @@ def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> Resource
     _reject_provider_id(metadata, ("metadata",))
     name = _identifier(metadata, ("metadata", "name"))
     scope = _identifier(metadata, ("metadata", "scope"))
-    attributes = _mapping_field(document, ("attributes",))
 
     return ResourceSnapshot(
         kind=kind,
@@ -86,7 +110,7 @@ def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> Resource
         # Intent is authored before the resource exists, so it never carries a
         # provider identity. DESIGN section 12.
         provider_id=None,
-        attributes=_validated_attributes(kind, attributes, kind_schemas),
+        attributes=_validated_attributes(kind, _attribute_nodes(text), kind_schemas),
     )
 
 
@@ -156,6 +180,66 @@ def _single_mapping(text: str) -> Mapping[str, object]:
     return document
 
 
+def _attribute_nodes(text: str) -> Mapping[str, yaml.Node]:
+    """The attributes mapping as YAML nodes rather than as loaded values.
+
+    Declared values are read from their nodes because `safe_load` has already
+    thrown away the two things that decide what a scalar means: whether it was
+    quoted, and what its author actually typed. `enabled: null` and
+    `enabled: "null"` are indistinguishable by the time it returns, and so are
+    `port: 1:30` and `port: 90` (issue #55).
+
+    This is the only reader of the attributes mapping. `_mapping_field` is not
+    also asked about it, because a key set derived in two places is a key set
+    that can come to disagree with itself.
+    """
+    root = yaml.compose(text)
+    # `_single_mapping` parsed this same text first and proved it holds exactly
+    # one document and that the document is a mapping, so composing it again
+    # can neither fail nor yield anything else.
+    assert isinstance(root, yaml.MappingNode)
+
+    for key_node, value_node in root.value:
+        if not isinstance(key_node, yaml.ScalarNode) or key_node.value != ATTRIBUTES_KEY:
+            continue
+        if not isinstance(value_node, yaml.MappingNode):
+            raise InvalidDocument(
+                f"{ATTRIBUTES_KEY} must be a mapping, got a "
+                f"{NODE_SHAPES.get(type(value_node), 'scalar')}",
+                path=(ATTRIBUTES_KEY,),
+            )
+        return _named_nodes(value_node)
+
+    raise InvalidDocument(f"{ATTRIBUTES_KEY} must be a mapping, got None", path=(ATTRIBUTES_KEY,))
+
+
+def _named_nodes(mapping_node: yaml.MappingNode) -> dict[str, yaml.Node]:
+    """One mapping node's entries, keyed by name.
+
+    A duplicated key keeps the last entry, which is what `safe_load` does with
+    the same document; this reads the same text a second way and must not come
+    to a different answer than the first way about which keys exist.
+    """
+    named: dict[str, yaml.Node] = {}
+    for key_node, value_node in mapping_node.value:
+        # A non-scalar key cannot arrive here: YAML's own constructor needs a
+        # hashable key, so `_single_mapping` has already rejected `? [a, b]` as
+        # unparseable. Asserted rather than handled, because a rejection written
+        # for it would be a branch no document can reach -- and an unreachable
+        # handler reads as a guarantee that something checks this, when nothing
+        # here does.
+        assert isinstance(key_node, yaml.ScalarNode)
+        if key_node.value == MERGE_KEY:
+            raise InvalidDocument(
+                f"{ATTRIBUTES_KEY} uses the YAML merge key {MERGE_KEY!r}, which intent "
+                "documents may not do; every attribute a resource declares is written "
+                "in the resource's own document",
+                path=(ATTRIBUTES_KEY,),
+            )
+        named[str(key_node.value)] = value_node
+    return named
+
+
 def _yaml_error_line(exc: yaml.YAMLError) -> int | None:
     """PyYAML marks are 0-indexed; humans and editors count from 1."""
     mark = getattr(exc, "problem_mark", None)
@@ -223,7 +307,7 @@ def _mapping_field(container: Mapping[str, object], path: KeyPath) -> Mapping[st
 
 def _validated_attributes(
     kind: str,
-    attributes: Mapping[str, object],
+    attribute_nodes: Mapping[str, yaml.Node],
     kind_schemas: KindSchemas,
 ) -> dict[str, object]:
     """Referential layer for the kind, then the schema layer for its attributes."""
@@ -233,7 +317,7 @@ def _validated_attributes(
             f"unknown kind {kind!r}; known kinds are {sorted(kind_schemas)}", path=("kind",)
         )
 
-    declared = set(attributes)
+    declared = set(attribute_nodes)
     expected = set(schema)
     if declared != expected:
         raise InvalidDocument(
@@ -242,26 +326,36 @@ def _validated_attributes(
             path=("attributes",),
         )
 
-    for attribute_name, type_name in schema.items():
-        _check_attribute_type(kind, attribute_name, attributes[attribute_name], type_name)
-    return dict(attributes)
+    # Document order, not schema order, so that the first attribute reported is
+    # the first one an author reading their own file would reach.
+    return {
+        name: _declared_attribute(kind, name, node, schema[name])
+        for name, node in attribute_nodes.items()
+    }
 
 
-def _check_attribute_type(kind: str, attribute_name: str, value: object, type_name: str) -> None:
+def _declared_attribute(
+    kind: str,
+    attribute_name: str,
+    node: yaml.Node,
+    type_name: str,
+) -> object:
     path = ("attributes", attribute_name)
-    is_expected_type = DECLARED_TYPES.get(type_name)
-    if is_expected_type is None:
+    parse = ATTRIBUTE_TYPES.get(type_name)
+    if parse is None:
         raise InvalidDocument(
             f"kind {kind!r} declares attribute {attribute_name!r} with type {type_name!r}, "
-            f"which is not one of {sorted(DECLARED_TYPES)} -- the kind is wrong, "
+            f"which is not one of {sorted(ATTRIBUTE_TYPES)} -- the kind is wrong, "
             "not the document",
             path=path,
         )
-    if not is_expected_type(value):
+
+    try:
+        value = _stated_value(node, parse)
+    except UnacceptableLiteral as exc:
         raise InvalidDocument(
-            f"attribute {attribute_name!r} of kind {kind!r} must be {type_name}, got {value!r}",
-            path=path,
-        )
+            f"attribute {attribute_name!r} of kind {kind!r} {exc}", path=path
+        ) from exc
 
     # Being the right type is not the same as being storable, and this table
     # only ever answered the first question. A `str` carrying a NUL or an
@@ -282,6 +376,43 @@ def _check_attribute_type(kind: str, attribute_name: str, value: object, type_na
             f"attribute {attribute_name!r} of kind {kind!r} cannot be stored: {unstorable}",
             path=path,
         )
+    return value
+
+
+def _stated_value(node: yaml.Node, parse: Callable[[str], object]) -> object:
+    """Node shape, then value state, then declared type -- in that order.
+
+    The first two layers answer identically for every declared type, so a type
+    added to `ATTRIBUTE_TYPES` inherits the structural rules rather than
+    restating them. Only the third consults the schema, and it receives the
+    scalar text alone: a parser is never handed the node, so it cannot read the
+    implicit resolver's tag even by accident. That is the mechanism by which
+    "the schema decides the type" stays true rather than being a convention
+    (issue #55).
+
+    Quoting is load-bearing here, and only here. `null` states a declared null;
+    `"null"` and `'null'` state the three-character string. That is a real cost
+    -- this barricade exists partly because `NO` and `"NO"` look identical in
+    review -- and it is unavoidable while both states are expressible at all.
+    """
+    if not isinstance(node, yaml.ScalarNode):
+        raise UnacceptableLiteral(f"must be a scalar, got a {NODE_SHAPES.get(type(node), 'node')}")
+
+    if node.style is not None:
+        # Quoted: the author said "this is content", so no keyword is read out
+        # of it and the empty string is a legitimate value.
+        return parse(node.value)
+
+    if node.value == "":
+        raise UnacceptableLiteral(
+            'has an implicit empty value; write `null` for a declared null, or "" for '
+            "an empty string -- a declared null has to be conspicuous"
+        )
+
+    if node.value == DECLARED_NULL:
+        return None
+
+    return parse(node.value)
 
 
 # --------------------------------------------------------------------------

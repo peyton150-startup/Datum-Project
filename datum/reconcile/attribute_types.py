@@ -1,4 +1,4 @@
-"""What type an attribute may be, stated once (issue #53).
+"""What type an attribute may be, stated once (issues #53, #55).
 
 Three modules used to answer this and they disagreed. `intent/documents.py`
 admitted `int`, `str` and `bool`; `reconcile/schema.py` named `list`, `numeric`,
@@ -15,6 +15,18 @@ type is what an author writes in an intent document. A field type is what
 and neither contains the other: `str` carries two field types, and two field
 types carry no declared value at all.
 
+**Each declared type owns its literal parser, and that is the whole vocabulary
+(issue #55).** There is no separate name list, predicate table, or branch
+statement anywhere that enumerates the declared types a second time. Adding a
+type means adding a parser here; there is no other place that would need to
+learn about it, and therefore no other place that can forget.
+
+The predicate table this module used to hold is gone. It answered "is this
+already-parsed Python value of type X", which was the right question only while
+YAML's implicit resolver decided what a declared value was. It no longer does:
+the parser below establishes the type from the scalar text, so a predicate over
+the result would restate the parser's own answer and be free to drift from it.
+
 **What is deliberately not here: storability.** `unstorable_attribute` asks
 whether a value survives the round trip through JSON and Postgres, which is a
 question about the encoder rather than about the domain, and it makes no type
@@ -29,18 +41,77 @@ two tables stop agreeing in either direction. The alternative -- three constants
 in three modules that happen to compose -- is what this replaces.
 """
 
+import re
 from collections.abc import Callable, Mapping
 
-# What an intent document may write, and how to recognise it.
+
+class UnacceptableLiteral(ValueError):
+    """Scalar text that is not a valid literal for the declared type.
+
+    Raised by the parsers below and converted to a document error at the
+    barricade, which is the only layer that knows which file and line the text
+    came from. Deliberately narrower than `ValueError` so that a genuine bug
+    inside a parser is not mistaken for a rejected document.
+    """
+
+
+# Reserved scalar keywords are lowercase and exact, here and for the declared
+# null the barricade recognises. Accepting `TRUE` while rejecting `NULL` would
+# be two answers to one question inside one ruleset. A declared document is
+# authored intent, not permissive user input, so there is no case to answer for
+# the six spellings YAML would take.
+BOOLEAN_LITERALS: Mapping[str, bool] = {"true": True, "false": False}
+
+# Canonical signed decimal, no leading zeros. `007` is refused rather than read
+# as 7: if the padding carries meaning the value is an identifier and belongs in
+# a `str` field, and truncating it silently is the same defect as reading the
+# YAML 1.1 sexagesimal `1:30` as 90. Both are why this parser exists.
+INTEGER_LITERAL = re.compile(r"^[+-]?(0|[1-9][0-9]*)$")
+
+
+def _parse_boolean(text: str) -> bool:
+    literal = BOOLEAN_LITERALS.get(text)
+    if literal is None:
+        raise UnacceptableLiteral(
+            f"expected {' or '.join(BOOLEAN_LITERALS)}, got {text!r}; "
+            "boolean literals are lowercase and exact"
+        )
+    return literal
+
+
+def _parse_integer(text: str) -> int:
+    if INTEGER_LITERAL.match(text) is None:
+        raise UnacceptableLiteral(
+            f"expected a decimal integer, got {text!r}; leading zeros, underscores, "
+            "hexadecimal and sexagesimal forms are refused -- if the exact text "
+            "matters, declare the attribute as a str"
+        )
+    return int(text)
+
+
+def _parse_string(text: str) -> str:
+    """The scalar content, unchanged.
+
+    Not "the raw source text": quotes are already removed, escape sequences
+    already decoded and block scalars already folded by the time a parser sees
+    this. What this promises is that Datum adds no trimming, coercion or
+    normalisation of its own on top.
+    """
+    return text
+
+
+# What an intent document may write, and how to read each one from its scalar
+# text. The parser receives the text alone and never the YAML node, so it cannot
+# consult the implicit resolver's tag even by accident -- which is the whole
+# mechanism by which "the schema decides the type" stays true (issue #55).
 #
-# `type(v) is int` rather than isinstance, deliberately: bool is a subclass of
-# int in Python, so isinstance would quietly accept `replicas: true` as an
-# integer. A declaration that says "three replicas" and a declaration that says
-# "yes replicas" must not validate the same way.
-DECLARED_TYPES: Mapping[str, Callable[[object], bool]] = {
-    "int": lambda value: type(value) is int,
-    "str": lambda value: type(value) is str,
-    "bool": lambda value: type(value) is bool,
+# A plain callable rather than a record with one field: there is nothing else a
+# declared type needs today, and a record whose only member is the parser is the
+# parser wearing a hat.
+ATTRIBUTE_TYPES: Mapping[str, Callable[[str], object]] = {
+    "int": _parse_integer,
+    "str": _parse_string,
+    "bool": _parse_boolean,
 }
 
 # What `Kind.attribute_schema` may name, and which declared type can carry a
@@ -67,7 +138,7 @@ FIELD_TYPES: Mapping[str, str | None] = {
 # Derived, never written twice. `schema.py` validates against the first and
 # `documents.py` against the second.
 VALID_FIELD_TYPES = frozenset(FIELD_TYPES)
-DECLARED_TYPE_NAMES = frozenset(DECLARED_TYPES)
+DECLARED_TYPE_NAMES = frozenset(ATTRIBUTE_TYPES)
 
 # The field types no declared value can reach. Named so a caller can say so
 # rather than re-deriving it from a `None`.
@@ -77,9 +148,12 @@ DISCOVERED_ONLY_FIELD_TYPES = frozenset(
 
 
 __all__ = [
-    "DECLARED_TYPES",
+    "ATTRIBUTE_TYPES",
+    "BOOLEAN_LITERALS",
     "DECLARED_TYPE_NAMES",
     "DISCOVERED_ONLY_FIELD_TYPES",
     "FIELD_TYPES",
+    "INTEGER_LITERAL",
+    "UnacceptableLiteral",
     "VALID_FIELD_TYPES",
 ]

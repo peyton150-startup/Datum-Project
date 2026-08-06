@@ -183,14 +183,20 @@ def test_unknown_attribute_is_rejected():
 
 def test_wrong_attribute_type_is_rejected():
     (error,) = errors_from(VALID.replace("replicas: 3", "replicas: 'three'"))
-    assert "must be int" in error.message
+    assert "decimal integer" in error.message
+    assert "'three'" in error.message
 
 
 def test_boolean_is_not_accepted_as_an_integer():
-    # The trap: bool subclasses int in Python, so an isinstance check would let
-    # "yes replicas" validate as "some number of replicas".
+    # Guards the int parser against the text `true`, which is all this can
+    # demonstrate now. The bug it was originally written for -- bool subclassing
+    # int in Python, so an isinstance check reads "yes replicas" as "some number
+    # of replicas" -- is no longer reachable to be tested for: the parser is
+    # handed scalar text and never a Python bool, so there is no isinstance
+    # check left to get wrong (issue #55).
     (error,) = errors_from(VALID.replace("replicas: 3", "replicas: true"))
-    assert "must be int" in error.message
+    assert "decimal integer" in error.message
+    assert "'true'" in error.message
 
 
 def test_integer_is_not_accepted_as_a_boolean():
@@ -200,7 +206,8 @@ def test_integer_is_not_accepted_as_a_boolean():
         "attributes:\n  name_prefix: img-\n  is_public: 1\n"
     )
     (error,) = errors_from(text)
-    assert "must be bool" in error.message
+    assert "true or false" in error.message
+    assert "'1'" in error.message
 
 
 def test_every_scalar_type_in_the_vocabulary_round_trips():

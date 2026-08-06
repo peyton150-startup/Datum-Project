@@ -406,7 +406,7 @@ def bucket_with(name_prefix_literal: str) -> str:
 def test_a_string_of_the_right_type_that_cannot_be_stored_is_rejected(literal, names):
     """The declared plane checked what a value IS and never what it holds.
 
-    `_TYPE_PREDICATES["str"]` answers `type(value) is str` and stops there, so
+    `DECLARED_TYPES["str"]` answers `type(value) is str` and stops there, so
     a double-quoted YAML escape decoding to a real NUL or an unpaired surrogate
     passed validation intact. It then raised `DataError` out of projection --
     past `ingest_revision`, whose contract is two domain errors, and into the

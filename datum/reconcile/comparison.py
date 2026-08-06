@@ -148,6 +148,17 @@ def _states_a_boolean(present: bool, value: Any) -> bool:
     so this is the only place that distinction gets made -- and a provider
     reporting `1` where a declaration says `true` is exactly the drift a
     reconciler exists to surface, not to smooth over.
+
+    **Not routed through `DECLARED_TYPES["bool"]`, deliberately.** The two spell
+    the same Python idiom and answer different questions: that table says what
+    an author may write in an intent document, while this asks what a plane
+    stated, and it runs on the discovered plane, which has no declared barricade
+    and is never going to get one. Binding them would mean widening the declared
+    vocabulary -- issue #53's open half -- silently redefining what the
+    *discovered* side counts as a boolean, which is a worse coupling than the
+    shared idiom is a duplication. `_states_a_list` and `_states_an_object`
+    write their own shape test for the same reason, and have no declared
+    counterpart to route through at all.
     """
     return _states_a_value(present, value) and type(value) is bool
 
@@ -1430,8 +1441,16 @@ def compare_boolean(
         )
 
     if mode == "exact":
+        # Spelled the way every other mode spells it. The audit log is what an
+        # operator greps, and this path saying "-> False" where the rest of the
+        # file says "Result: False" would hide every boolean discrepancy from
+        # the search that was looking for it -- the exact failure the degraded
+        # comparisons at the top of this file were consolidated to end.
+        steps.append("Mode: exact")
+        steps.append(f"Declared: {declared_val!r}")
+        steps.append(f"Discovered: {discovered_val!r}")
         is_equal = declared_val == discovered_val
-        steps.append(f"Exact boolean comparison: {declared_val} vs {discovered_val} -> {is_equal}")
+        steps.append(f"Result: {is_equal}")
     else:
         steps.append(_unknown_mode_step(mode))
         is_equal = False

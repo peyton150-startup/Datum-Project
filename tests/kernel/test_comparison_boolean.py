@@ -48,6 +48,26 @@ class TestBooleanExact:
         assert (log.declared_raw, log.declared_transformed) == (True, True)
         assert (log.discovered_raw, log.discovered_transformed) == (False, False)
 
+    def test_the_steps_spell_the_mode_and_result_the_way_every_other_path_does(self):
+        """The bug excluded: this path inventing its own audit wording.
+
+        The file's degraded-comparison note records what that cost once -- the
+        numeric path said "Unusable mode parameter" where the object path said
+        "Unknown mode", and an operator grepping one silently missed every
+        instance of the other. A boolean path writing its verdict as
+        `true vs false -> False` is the same mistake in the success direction:
+        `grep "Result: False"` would miss every boolean discrepancy in the
+        estate while the structured result stayed correct, so nothing else in
+        this file would fail.
+
+        Asserted as membership rather than as the whole list, so adding a step
+        does not break it but renaming these two does.
+        """
+        _, log = compare_boolean(PlaneValue.of(True), PlaneValue.of(False), CONFIG)
+
+        assert "Mode: exact" in log.steps
+        assert "Result: False" in log.steps
+
 
 class TestOnlyABooleanIsABoolean:
     """The bug excluded: `type(v) is bool` relaxed to `isinstance`.

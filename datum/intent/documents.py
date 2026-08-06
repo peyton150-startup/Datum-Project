@@ -12,6 +12,7 @@ testable without a repository or a migration.
 from collections.abc import Callable, Mapping, Sequence
 
 import yaml
+from yaml.constructor import SafeConstructor
 
 from datum.intent.errors import DocumentError, InvalidDocument, InvalidRevision
 from datum.reconcile.attribute_types import ATTRIBUTE_TYPES, UnacceptableLiteral
@@ -28,13 +29,14 @@ PROVIDER_ID_KEY = "provider_id"
 
 ATTRIBUTES_KEY = "attributes"
 
-# YAML's merge key. Reading attributes as nodes means merges are not expanded
-# for us the way `safe_load` expands them, so a document using one would see an
-# attribute literally named `<<`. Refused by name rather than left to surface as
-# a baffling "unknown attribute" -- and refused rather than expanded here,
-# because expanding it would be a second implementation of a PyYAML feature,
-# and because an attribute assembled from elsewhere in the file is not what the
-# author is looking at when they read their own declaration.
+# YAML's merge key. The document is composed and never loaded, and a composer
+# does not expand merges the way a loader does, so a document using one would
+# see a key literally named `<<` -- silently, and anywhere in the file. Refused
+# by name rather than left to surface as a baffling "unknown attribute", and
+# refused rather than expanded, because expanding it would be a second
+# implementation of a PyYAML feature, and because a value assembled from
+# elsewhere in the file is not what the author is looking at when they read
+# their own declaration.
 MERGE_KEY = "<<"
 
 # The one scalar text that states a declared null, and only unquoted. `~`,
@@ -43,12 +45,25 @@ MERGE_KEY = "<<"
 # through the one door this barricade closes (issue #55).
 DECLARED_NULL = "null"
 
-# What a non-scalar node is called when one turns up where a value belongs.
-# A lookup rather than a branch: there are exactly three node kinds and the
-# scalar one has already been excluded by the time this is read.
+# What a node is called when one turns up somewhere it does not belong. A
+# lookup rather than a branch: there are exactly three node kinds, and naming
+# them in one table means an error message cannot learn a fourth spelling.
 NODE_SHAPES: Mapping[type, str] = {
     yaml.SequenceNode: "sequence",
     yaml.MappingNode: "mapping",
+    yaml.ScalarNode: "scalar",
+}
+
+# The tag YAML resolves onto a collection nobody has tagged by hand. An envelope
+# collection is walked here rather than handed to the constructor, and a walk
+# reads the entries and not the tag -- so `!!set`, `!!omap` and every unsafe
+# `!!python/...` tag would quietly become an ordinary mapping or sequence, where
+# the constructor either built something else out of them or refused outright.
+# Checked rather than ignored: a tag that changes what a value is must not stop
+# being read the moment the reader changes.
+COLLECTION_TAGS: Mapping[type, str] = {
+    yaml.MappingNode: "tag:yaml.org,2002:map",
+    yaml.SequenceNode: "tag:yaml.org,2002:seq",
 }
 
 # The closed type vocabulary a Kind.attribute_schema may draw on lives in
@@ -90,8 +105,13 @@ def parse_document_set(
 
 
 def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
-    """Apply the syntax, envelope, referential, and schema layers to one document."""
-    document = _single_mapping(text)
+    """Apply the syntax, envelope, referential, and schema layers to one document.
+
+    The document is read exactly once, as nodes. Envelope values are constructed
+    from those nodes under YAML's own rules; attribute values are not constructed
+    at all until their declared type has been looked up (issue #55).
+    """
+    document, attributes = _document_view(_single_mapping_node(text))
 
     _reject_unsupported_version(document)
     _reject_provider_id(document, ())
@@ -110,7 +130,7 @@ def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> Resource
         # Intent is authored before the resource exists, so it never carries a
         # provider identity. DESIGN section 12.
         provider_id=None,
-        attributes=_validated_attributes(kind, _attribute_nodes(text), kind_schemas),
+        attributes=_validated_attributes(kind, _attribute_nodes(attributes), kind_schemas),
     )
 
 
@@ -135,26 +155,41 @@ def _locate(text: str, exc: InvalidDocument) -> int | None:
 def _key_lines(text: str) -> dict[KeyPath, int]:
     """Map every mapping key in the document to the line it is written on."""
     try:
-        root = yaml.compose(text)
+        # Pinned to the loader `_single_mapping_node` used, not left to default.
+        # Two composers with two resolvers could disagree about the tree they
+        # are describing, and this one exists to describe that one's.
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
         # The text did not survive a second parse either. The caller falls back
         # to naming the file alone, which is still better than nothing.
         return {}
 
     lines: dict[KeyPath, int] = {}
-    _collect_key_lines(root, (), lines)
+    _collect_key_lines(root, (), lines, set())
     return lines
 
 
-def _collect_key_lines(node: object, prefix: KeyPath, lines: dict[KeyPath, int]) -> None:
-    if not isinstance(node, yaml.MappingNode):
+def _collect_key_lines(
+    node: object, prefix: KeyPath, lines: dict[KeyPath, int], visited: set[int]
+) -> None:
+    """Walk the composed tree recording where each key was written.
+
+    `visited` is not an optimisation. A self-referential alias (`&a {k: *a}`)
+    composes to a node graph with a cycle in it, and walking that graph without
+    the guard exhausts the stack -- which this routine did, on the failure path,
+    turning a rejected document into a `RecursionError` out of a barricade whose
+    contract is `InvalidDocument` or nothing. Revisiting a node adds no lines
+    that are not already recorded, so skipping it costs nothing.
+    """
+    if not isinstance(node, yaml.MappingNode) or id(node) in visited:
         return
+    visited.add(id(node))
     for key_node, value_node in node.value:
         if not isinstance(key_node, yaml.ScalarNode):
             continue
         path = (*prefix, str(key_node.value))
         lines[path] = key_node.start_mark.line + 1
-        _collect_key_lines(value_node, path, lines)
+        _collect_key_lines(value_node, path, lines, visited)
 
 
 # --------------------------------------------------------------------------
@@ -162,109 +197,77 @@ def _collect_key_lines(node: object, prefix: KeyPath, lines: dict[KeyPath, int])
 # --------------------------------------------------------------------------
 
 
-def _single_mapping(text: str) -> Mapping[str, object]:
-    """Parseable YAML holding exactly one mapping."""
+def _shape(node: yaml.Node) -> str:
+    """What to call a node in an error message."""
+    return NODE_SHAPES[type(node)]
+
+
+def _single_mapping_node(text: str) -> yaml.MappingNode:
+    """Parseable YAML holding exactly one mapping, composed and not constructed.
+
+    Composing stops at the parse tree. It resolves each scalar's implicit tag
+    but converts nothing, which is the whole point: `2024-13-45` and a 4301-digit
+    integer are scalars here, and only become a `date()` call and an `int()` call
+    if something later asks for them. Loading the document instead ran those
+    conversions over every value in the file -- including values whose declared
+    type is `str`, where the conversion is not merely unwanted but is the defect
+    issue #55 is about. A document was then rejected as "unparseable YAML"
+    because of a value YAML was never entitled to interpret.
+    """
     try:
-        documents = list(yaml.safe_load_all(text))
+        documents = list(yaml.compose_all(text, Loader=yaml.SafeLoader))
     except yaml.YAMLError as exc:
         raise InvalidDocument(f"unparseable YAML: {exc}", line=_yaml_error_line(exc)) from exc
-    except ValueError as exc:
-        # Not every failure inside PyYAML is a `YAMLError`. Its constructor
-        # calls `int()` on a scalar it resolved as an integer, and CPython caps
-        # int-from-string at `sys.get_int_max_str_digits()` -- 4300 by default
-        # since 3.11 -- raising a bare `ValueError` past it.
-        #
-        # This barricade promises `InvalidDocument` or nothing. Without this the
-        # `ValueError` escaped `parse_document_set` entirely, past
-        # `ingest_revision`, and reached the polling task's catch-all for the
-        # unanticipated: the author saw a silently dropped revision rather than
-        # an error naming their file. Predates the node-level parser -- the same
-        # text has escaped here for as long as `safe_load_all` has been the
-        # syntax layer.
-        raise InvalidDocument(f"unparseable YAML: {exc}") from exc
 
     if len(documents) != 1:
         raise InvalidDocument(
             f"expected exactly one document, found {len(documents)}; "
             "one document declares one resource"
         )
-    document = documents[0]
-    if not isinstance(document, dict):
-        raise InvalidDocument(f"document is not a mapping, got {type(document).__name__}")
-    return document
+    root = documents[0]
+    if not isinstance(root, yaml.MappingNode):
+        raise InvalidDocument(f"document is not a mapping, got a {_shape(root)}")
+    return root
 
 
-def _attribute_nodes(text: str) -> Mapping[str, yaml.Node]:
-    """The attributes mapping as YAML nodes rather than as loaded values.
+def _document_view(root: yaml.MappingNode) -> tuple[Mapping[str, object], yaml.Node | None]:
+    """The envelope as values, and the attributes mapping as unconstructed nodes.
 
-    Declared values are read from their nodes because `safe_load` has already
-    thrown away the two things that decide what a scalar means: whether it was
-    quoted, and what its author actually typed. `enabled: null` and
-    `enabled: "null"` are indistinguishable by the time it returns, and so are
-    `port: 1:30` and `port: 90` (issue #55).
+    The split is the boundary this module exists to hold. Everything outside
+    `attributes` is Datum's own envelope, whose meaning YAML has always decided
+    and goes on deciding: `metadata.name: 007` is the integer 7 here, and is
+    then rejected for not being a string. Everything inside `attributes` is the
+    author's declared data, whose type the kind schema decides, so it is handed
+    on as nodes and not touched until the declared type is known.
 
-    This is the only reader of the attributes mapping. `_mapping_field` is not
-    also asked about it, because a key set derived in two places is a key set
-    that can come to disagree with itself.
+    Constructing the root wholesale is what this replaces, and it cannot be
+    narrowed by asking the constructor nicely: constructing a mapping constructs
+    everything under it, `attributes` included.
     """
-    root = yaml.compose(text, Loader=yaml.SafeLoader)
-    # `_single_mapping` parsed this same text first and proved it holds exactly
-    # one document and that the document is a mapping, so composing it again
-    # can neither fail nor yield anything else. The loader is pinned to the same
-    # one it used rather than left to default, so that this is a fact about the
-    # code and not about two loaders happening to share a resolver today.
-    assert isinstance(root, yaml.MappingNode)
-
-    _reject_repeated_key(root, ())
-
-    for key_node, value_node in root.value:
-        if not isinstance(key_node, yaml.ScalarNode) or key_node.value != ATTRIBUTES_KEY:
-            continue
-        if not isinstance(value_node, yaml.MappingNode):
-            raise InvalidDocument(
-                f"{ATTRIBUTES_KEY} must be a mapping, got a "
-                f"{NODE_SHAPES.get(type(value_node), 'scalar')}",
-                path=(ATTRIBUTES_KEY,),
-            )
-        return _named_nodes(value_node)
-
-    raise InvalidDocument(f"{ATTRIBUTES_KEY} must be a mapping, got None", path=(ATTRIBUTES_KEY,))
+    envelope: dict[str, object] = {}
+    attributes: yaml.Node | None = None
+    for name, value_node in _entries(root, ()):
+        if name == ATTRIBUTES_KEY:
+            attributes = value_node
+        else:
+            envelope[name] = _constructed(value_node, (name,), frozenset({id(root)}))
+    return envelope, attributes
 
 
-def _reject_repeated_key(mapping_node: yaml.MappingNode, path: KeyPath) -> None:
-    """A key written twice is refused rather than silently resolved.
+def _entries(mapping_node: yaml.MappingNode, path: KeyPath) -> list[tuple[str, yaml.Node]]:
+    """One mapping's entries by name, with the rules every mapping obeys applied.
 
-    The document is read two ways -- loaded for the envelope, composed for the
-    attributes -- and those two ways resolve a repeated key differently: a dict
-    built from the loader keeps the last occurrence, and a scan of the composed
-    node list reaches the first. So `attributes:` written twice made the two
-    readings disagree about which block was authoritative, with no error either
-    way. The declared plane held values from one block while the document said
-    the other.
-
-    Aligning the two readings on "last wins" would have made both correct today
-    and left them free to drift, which is the trade CLAUDE.md names. Refusing
-    the input removes the question instead: with no repeated key there is no
-    occurrence to choose between, so the two readings cannot disagree whatever
-    either one does next.
-
-    Applied to the two mappings that are read twice: the document root, and
-    `attributes`. That is where a disagreement is possible, and `kind:` written
-    twice at the root was the same trap waiting for the next reader to be added.
-
-    **Not applied to `metadata`, and the limit is worth stating rather than
-    leaving to be discovered.** A repeated `metadata.name` still resolves
-    silently to the last occurrence, because `metadata` is read once -- through
-    the loader only -- so the two readings cannot disagree about it. The second
-    argument for this rule, that which occurrence wins is invisible to whoever
-    reads the file, does apply there and is not acted on. Widening it is a
-    change to how the envelope is read, which this is not.
+    Every mapping in the document comes through here, envelope and attributes
+    alike, so the three rules below are stated once and cannot acquire an
+    exception in the corner of the document nobody re-reads. The keys of a
+    mapping are all checked before any of its values are looked at, so the
+    error an author sees names the structural problem rather than whatever the
+    first broken value happened to be.
     """
+    entries: list[tuple[str, yaml.Node]] = []
     seen: set[str] = set()
-    for key_node, _ in mapping_node.value:
-        # Hashable by the time this runs -- see `_named_nodes`.
-        assert isinstance(key_node, yaml.ScalarNode)
-        name = str(key_node.value)
+    for key_node, value_node in mapping_node.value:
+        name = _key_name(key_node, path)
         if name in seen:
             raise InvalidDocument(
                 f"{_label(path)} states {name!r} more than once; a repeated key is "
@@ -273,37 +276,143 @@ def _reject_repeated_key(mapping_node: yaml.MappingNode, path: KeyPath) -> None:
                 path=(*path, name),
             )
         seen.add(name)
+        entries.append((name, value_node))
+    return entries
 
 
-def _named_nodes(mapping_node: yaml.MappingNode) -> dict[str, yaml.Node]:
-    """One mapping node's entries, keyed by name.
+def _key_name(key_node: yaml.Node, path: KeyPath) -> str:
+    """The name a key states, or a refusal.
 
-    A repeated name is refused above rather than resolved here, so the dict
-    below cannot be silently dropping an entry the author wrote.
+    A complex key (`? [a, b]`) is legal YAML and is refused here as Datum's own
+    rule. It used to be refused by PyYAML's constructor, which needs a hashable
+    key -- so the rejection arrived as "unparseable YAML", blaming the syntax
+    for something that is syntactically fine. Now that nothing constructs the
+    mapping, that accident is gone and the rule has to be written down. Keeping
+    the old wording would have been the more misleading of the two options.
     """
-    _reject_repeated_key(mapping_node, (ATTRIBUTES_KEY,))
+    if not isinstance(key_node, yaml.ScalarNode):
+        raise InvalidDocument(
+            f"{_label(path)} uses a {_shape(key_node)} as a key; a key in an intent "
+            "document is a plain name, not a structure",
+            path=path,
+        )
+    # Unquoted only, for the same reason the declared null is unquoted only:
+    # `"<<"` is an ordinary key to YAML, not a merge, and reading the quoted
+    # form as a merge would apply the quoting rule in one place and ignore it
+    # in the other.
+    if key_node.style is None and key_node.value == MERGE_KEY:
+        raise InvalidDocument(
+            f"{_label(path)} uses the YAML merge key {MERGE_KEY!r}, which intent "
+            "documents may not do; everything a resource declares is written in "
+            "the resource's own document",
+            path=path,
+        )
+    return str(key_node.value)
 
-    named: dict[str, yaml.Node] = {}
-    for key_node, value_node in mapping_node.value:
-        # A non-scalar key cannot arrive here: YAML's own constructor needs a
-        # hashable key, so `_single_mapping` has already rejected `? [a, b]` as
-        # unparseable. Asserted rather than handled, because a rejection written
-        # for it would be a branch no document can reach -- and an unreachable
-        # handler reads as a guarantee that something checks this, when nothing
-        # here does.
-        assert isinstance(key_node, yaml.ScalarNode)
-        # Unquoted only, for the same reason the declared null is unquoted only:
-        # `"<<"` is an ordinary key to YAML, not a merge, and refusing it here
-        # would apply the quoting rule in one place and ignore it in the other.
-        if key_node.style is None and key_node.value == MERGE_KEY:
-            raise InvalidDocument(
-                f"{ATTRIBUTES_KEY} uses the YAML merge key {MERGE_KEY!r}, which intent "
-                "documents may not do; every attribute a resource declares is written "
-                "in the resource's own document",
-                path=(ATTRIBUTES_KEY,),
-            )
-        named[str(key_node.value)] = value_node
-    return named
+
+def _constructed(node: yaml.Node, path: KeyPath, ancestors: frozenset[int]) -> object:
+    """An envelope node as the value YAML says it is.
+
+    Collections are walked here rather than handed to the constructor, so that
+    `_entries` governs every mapping in the envelope too. The scalars underneath
+    are still converted by YAML itself, which is what keeps the envelope's
+    behaviour exactly what it was.
+
+    `ancestors` carries the nodes currently being built, which is what stops a
+    self-referential alias (`&a {k: *a}`) from recursing forever. An alias to a
+    node that is merely *finished* is not a cycle and is built again normally.
+    """
+    if id(node) in ancestors:
+        raise InvalidDocument(
+            f"{_label(path)} contains itself through a YAML alias; an intent document "
+            "is a finite declaration, and a value defined in terms of itself has no "
+            "text an author could have meant",
+            path=path,
+        )
+    within = ancestors | {id(node)}
+
+    if isinstance(node, yaml.ScalarNode):
+        return _scalar_value(node, path)
+
+    _reject_retagged_collection(node, path)
+    if isinstance(node, yaml.MappingNode):
+        return {
+            name: _constructed(value_node, (*path, name), within)
+            for name, value_node in _entries(node, path)
+        }
+    return [_constructed(item, path, within) for item in node.value]
+
+
+def _reject_retagged_collection(node: yaml.Node, path: KeyPath) -> None:
+    """A collection an author has tagged into something else is refused.
+
+    Scalars keep YAML's tag handling, because that is the envelope's behaviour
+    and `!!str 7` genuinely is the string. Collections cannot: they are walked
+    rather than constructed, and a walk cannot honour `!!set` without becoming a
+    second implementation of the constructor. Refusing is the honest third
+    option, and it is narrower than what it replaces only in saying so.
+    """
+    if node.tag != COLLECTION_TAGS[type(node)]:
+        raise InvalidDocument(
+            f"{_label(path)} carries the explicit tag {node.tag!r}; an intent document "
+            f"states a plain {_shape(node)} and lets its kind schema say what the "
+            "values mean",
+            path=path,
+        )
+
+
+def _scalar_value(node: yaml.Node, path: KeyPath) -> object:
+    """One envelope scalar, converted by YAML exactly as it always was.
+
+    A fresh constructor per scalar rather than one shared across the document:
+    the only state it would carry between calls is a cache of constructed nodes,
+    which no scalar needs and which would outlive the document that filled it.
+    """
+    try:
+        return SafeConstructor().construct_object(node, deep=True)
+    except yaml.YAMLError as exc:
+        raise InvalidDocument(f"unparseable YAML: {exc}", line=_yaml_error_line(exc)) from exc
+    except ValueError as exc:
+        # Not every failure inside PyYAML is a `YAMLError`. It calls `int()` on
+        # a scalar it resolved as an integer and `date()` on one it resolved as
+        # a timestamp, and both raise a bare `ValueError` past it -- CPython
+        # caps int-from-string at `sys.get_int_max_str_digits()`, 4300 by
+        # default since 3.11, and `2024-13-45` matches the timestamp pattern
+        # while being no date at all.
+        #
+        # This barricade promises `InvalidDocument` or nothing. Without this the
+        # `ValueError` escaped `parse_document_set` entirely, past
+        # `ingest_revision`, and reached the polling task's catch-all for the
+        # unanticipated: the author saw "intent poll failed unexpectedly" with a
+        # PyYAML traceback, and every later poll failed identically until the
+        # document changed. It predates the node-level reader; what has changed
+        # is how little text can still reach it, since a declared attribute is
+        # no longer converted here at all.
+        raise InvalidDocument(f"unparseable YAML: {exc}", path=path) from exc
+
+
+def _attribute_nodes(node: yaml.Node | None) -> Mapping[str, yaml.Node]:
+    """The attributes mapping as YAML nodes rather than as values.
+
+    Declared values are read from their nodes because construction throws away
+    the two things that decide what a scalar means: whether it was quoted, and
+    what its author actually typed. `enabled: null` and `enabled: "null"` are
+    indistinguishable once constructed, and so are `port: 1:30` and `port: 90`
+    (issue #55).
+
+    This is the only reader of the attributes mapping. `_mapping_field` is not
+    also asked about it, because a key set derived in two places is a key set
+    that can come to disagree with itself.
+    """
+    if node is None:
+        raise InvalidDocument(
+            f"{ATTRIBUTES_KEY} must be a mapping, got None", path=(ATTRIBUTES_KEY,)
+        )
+    if not isinstance(node, yaml.MappingNode):
+        raise InvalidDocument(
+            f"{ATTRIBUTES_KEY} must be a mapping, got a {_shape(node)}", path=(ATTRIBUTES_KEY,)
+        )
+    return dict(_entries(node, (ATTRIBUTES_KEY,)))
 
 
 def _yaml_error_line(exc: yaml.YAMLError) -> int | None:
@@ -451,9 +560,16 @@ def _stated_value(node: yaml.Node, parse: Callable[[str], object]) -> object:
     The first two layers answer identically for every declared type, so a type
     added to `ATTRIBUTE_TYPES` inherits the structural rules rather than
     restating them. Only the third consults the schema, and it receives the
-    scalar text alone: a parser is never handed the node, so it cannot read the
-    implicit resolver's tag even by accident. That is the mechanism by which
-    "the schema decides the type" stays true rather than being a convention
+    scalar text alone rather than the node -- see `ATTRIBUTE_TYPES` for what
+    that signature does and does not buy, which is stated there and not
+    restated here.
+
+    **The signature is the smaller half.** What actually keeps the declared type
+    in charge is that the node reaching this routine has never been constructed:
+    the document is composed, and nothing converts an attribute value until the
+    line above has looked its type up. A parser that could not see the tag was
+    never the hard part -- running YAML's conversion over the value before
+    choosing a parser at all was, and that is what the order here prevents
     (issue #55).
 
     Quoting is load-bearing here, and only here. `null` states a declared null;
@@ -462,7 +578,7 @@ def _stated_value(node: yaml.Node, parse: Callable[[str], object]) -> object:
     review -- and it is unavoidable while both states are expressible at all.
     """
     if not isinstance(node, yaml.ScalarNode):
-        raise UnacceptableLiteral(f"must be a scalar, got a {NODE_SHAPES.get(type(node), 'node')}")
+        raise UnacceptableLiteral(f"must be a scalar, got a {_shape(node)}")
 
     if node.style is not None:
         # Quoted: the author said "this is content", so no keyword is read out

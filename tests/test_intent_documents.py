@@ -376,6 +376,26 @@ def test_key_lines_skips_keys_that_are_not_scalars():
     assert lines == {("apiVersion",): 1}
 
 
+def test_key_lines_descends_into_sequences():
+    # A sequence carries no key, so the path does not grow through one -- but a
+    # mapping inside a sequence has keys, and stopping at the sequence left them
+    # with no line at all. The failure was quiet: the error named the file and
+    # no position, which reads as "there is nowhere to point" rather than as a
+    # gap in the walk. The value walk descends into sequences, and two walks
+    # over one graph disagreeing about where keys live is how the last two
+    # defects in this module started.
+    from datum.intent.documents import _key_lines
+
+    lines = _key_lines("apiVersion: datum.dev/v1\nitems:\n  - name: a\n  - other: b\n")
+
+    assert lines == {
+        ("apiVersion",): 1,
+        ("items",): 2,
+        ("items", "name"): 3,
+        ("items", "other"): 4,
+    }
+
+
 def test_rendered_message_locates_every_error():
     with pytest.raises(InvalidRevision) as caught:
         parse_document_set([("deployments/web.yaml", "- nope\n")], TENANT, SCHEMAS)

@@ -616,7 +616,7 @@ class TestWhatComposingLeavesToDatum:
         assert elapsed < 1.0
 
     @pytest.mark.parametrize("written", ["!!set {a, b}", "!!omap [{a: 1}]"])
-    def test_an_envelope_collection_may_not_be_retagged(self, written):
+    def test_a_nested_envelope_collection_may_not_be_retagged(self, written):
         """A walk reads entries and not tags, so an ignored tag is a silent change.
 
         The constructor built a `set` out of `!!set` and a list of pairs out of
@@ -630,6 +630,43 @@ class TestWhatComposingLeavesToDatum:
         )
 
         assert "carries the explicit tag" in message
+
+    @pytest.mark.parametrize(
+        ("where", "text"),
+        [
+            (
+                "document root",
+                "--- !!python/object/apply:os.system\napiVersion: datum.dev/v1\nkind: K\n"
+                "metadata:\n  name: n\n  scope: s\nattributes:\n  v: x\n",
+            ),
+            (
+                "attributes, misspelt tag",
+                "apiVersion: datum.dev/v1\nkind: K\nmetadata:\n  name: n\n  scope: s\n"
+                "attributes: !something-typoed\n  v: x\n",
+            ),
+            (
+                "attributes, unsafe tag",
+                "apiVersion: datum.dev/v1\nkind: K\nmetadata:\n  name: n\n  scope: s\n"
+                "attributes: !!python/object/apply:os.system\n  v: x\n",
+            ),
+        ],
+    )
+    def test_the_two_structural_mappings_may_not_be_retagged_either(self, where, text):
+        """The regression: the rule reached nested mappings and neither structural one.
+
+        The document root and `attributes` are not values, so the value walk
+        never sees them -- and the tag check was written into the value walk.
+        Both were accepted with their tag ignored: `{where}` parsed silently
+        here while the previous revision refused it, because that revision ran
+        the whole document through the constructor and caught these as a side
+        effect of the eager construction this change exists to remove.
+
+        Verified against `86a32b0` rather than assumed -- all three of these
+        were rejected there and accepted on the branch before this fix. No code
+        execution was ever possible, since nothing constructs the tagged node;
+        what was lost was the refusal.
+        """
+        assert "carries the explicit tag" in envelope(text)
 
     def test_a_tagged_envelope_scalar_is_still_yamls_business(self):
         """Scalars keep tag handling, and the asymmetry is the point.

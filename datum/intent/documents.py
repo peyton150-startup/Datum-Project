@@ -180,8 +180,22 @@ def _collect_key_lines(
     turning a rejected document into a `RecursionError` out of a barricade whose
     contract is `InvalidDocument` or nothing. Revisiting a node adds no lines
     that are not already recorded, so skipping it costs nothing.
+
+    Sequences are descended too. They carry no key of their own, so the path
+    does not grow through one -- but a mapping *inside* a sequence has keys, and
+    stopping here left them with no line, which showed up as an error naming the
+    file and no position. The value walk descends into sequences; two walks over
+    one graph disagreeing about where keys can be is how the last two defects in
+    this file started.
     """
-    if not isinstance(node, yaml.MappingNode) or id(node) in visited:
+    if id(node) in visited:
+        return
+    if isinstance(node, yaml.SequenceNode):
+        visited.add(id(node))
+        for item in node.value:
+            _collect_key_lines(item, prefix, lines, visited)
+        return
+    if not isinstance(node, yaml.MappingNode):
         return
     visited.add(id(node))
     for key_node, value_node in node.value:
@@ -198,8 +212,14 @@ def _collect_key_lines(
 
 
 def _shape(node: yaml.Node) -> str:
-    """What to call a node in an error message."""
-    return NODE_SHAPES[type(node)]
+    """What to call a node in an error message.
+
+    Defaulted rather than indexed. The table is total over the three node kinds
+    a composer produces, so the fallback is unreachable today -- but this runs
+    on the rejection path, and a `KeyError` raised while wording someone's error
+    message would break the same contract the error exists to keep.
+    """
+    return NODE_SHAPES.get(type(node), "node")
 
 
 def _single_mapping_node(text: str) -> yaml.MappingNode:
@@ -263,12 +283,24 @@ def _entries(mapping_node: yaml.MappingNode, path: KeyPath) -> list[tuple[str, y
     """One mapping's entries by name, with the rules every mapping obeys applied.
 
     Every mapping in the document comes through here, envelope and attributes
-    alike, so the three rules below are stated once and cannot acquire an
-    exception in the corner of the document nobody re-reads. The keys of a
-    mapping are all checked before any of its values are looked at, so the
-    error an author sees names the structural problem rather than whatever the
-    first broken value happened to be.
+    alike, so the rules below are stated once and cannot acquire an exception in
+    the corner of the document nobody re-reads. The keys of a mapping are all
+    checked before any of its values are looked at, so the error an author sees
+    names the structural problem rather than whatever the first broken value
+    happened to be.
+
+    **The tag check lives here, and that placement is the point.** It was first
+    written into the value walk alone, which reaches every *nested* mapping and
+    neither of the two that are structural: the document root and `attributes`
+    itself. Both were then accepted with their tag ignored -- `attributes:
+    !something-typoed` and a retagged root parsed silently where the previous
+    revision refused them. One rule reaching two of the three places its subject
+    occurs is the failure family this file keeps meeting, so the rule moved to
+    the routine every mapping already had to pass through rather than gaining a
+    third and fourth call site to forget.
     """
+    _reject_retagged_collection(mapping_node, path)
+
     entries: list[tuple[str, yaml.Node]] = []
     seen: set[str] = set()
     for key_node, value_node in mapping_node.value:
@@ -335,12 +367,23 @@ def _constructed(
 
     Answering only the first is what a composed graph punishes. An alias
     referenced `K` times at each of `N` nested levels reaches the same node
-    `K**N` times, so a 335-byte document rebuilt one scalar 280,000 times and
-    took 1.8 seconds where `safe_load` took 3 milliseconds. That is the
-    "billion laughs" shape, and PyYAML is not vulnerable to it precisely
-    *because* `BaseConstructor.construct_object` caches by node -- so replacing
-    the constructor with a walk and keeping only the cycle half of its guard
-    removed a protection that was never written down here.
+    `K**N` times -- exponential in fan-out *and* depth, not in depth alone.
+    Nothing large is materialised, so this is not quite "billion laughs": the
+    composed graph stays small and the cost is entirely in rebuilding nodes
+    already built. PyYAML is not vulnerable to it precisely *because*
+    `BaseConstructor.construct_object` caches by node, so replacing the
+    constructor with a walk and keeping only the cycle half of its guard removed
+    a protection that was never written down here.
+
+    Scale, with the measurement named so it can be repeated rather than taken on
+    trust: at `K=6`, against `parse_document_set` as it stood before this cache
+    existed, a 335-byte document (`N=7`) took **1.8 s** and each further level
+    multiplied that by six, while `yaml.safe_load` on the identical text stayed
+    at 3 ms. Absolute figures are machine- and version-dependent; the sixfold
+    step per level is the part that matters and the part to re-derive.
+
+    `test_an_alias_fan_out_does_not_take_exponential_time` is the executable
+    version of this paragraph.
 
     `built` is therefore not an optimisation. It is the second half of the rule
     `_collect_key_lines` states in one piece, and it is threaded the same way
@@ -363,15 +406,15 @@ def _constructed(
     value: object
     if isinstance(node, yaml.ScalarNode):
         value = _scalar_value(node, path)
+    elif isinstance(node, yaml.MappingNode):
+        # Tag checked inside `_entries`, with every other mapping in the file.
+        value = {
+            name: _constructed(value_node, (*path, name), within, built)
+            for name, value_node in _entries(node, path)
+        }
     else:
         _reject_retagged_collection(node, path)
-        if isinstance(node, yaml.MappingNode):
-            value = {
-                name: _constructed(value_node, (*path, name), within, built)
-                for name, value_node in _entries(node, path)
-            }
-        else:
-            value = [_constructed(item, path, within, built) for item in node.value]
+        value = [_constructed(item, path, within, built) for item in node.value]
 
     # Cached only on success. A node that raised has no value to hand out, and
     # a second reference to it must reach the same refusal rather than a hole.

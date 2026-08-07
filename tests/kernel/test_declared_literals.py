@@ -434,6 +434,32 @@ class TestOneReadingOfTheDocument:
         assert "states 'kind' more than once" in message
         assert "must be a non-empty string" not in message
 
+    def test_two_keys_differing_only_by_yaml_type_are_one_key_and_are_refused(self):
+        """The narrowing two docstrings denied before anyone constructed it.
+
+        A key is its source text here, so `true:` and `"true":` are one name --
+        where the loader resolved the first to the boolean `True` and kept them
+        apart as two distinct keys. Extra `metadata` keys are ignored, so this
+        document is otherwise valid and did ingest before.
+
+        Pinned because the comment describing this limit was twice written as
+        weaker than it is: first "unobservable", then "cannot change a document
+        that ingests successfully". Both were false and the second was merely
+        harder to disprove. A test is the form of that claim that cannot quietly
+        drift back.
+
+        The rejection is the right outcome -- which value wins is invisible to
+        whoever reads the file -- but it is a narrowing rather than a no-op, and
+        this is where that is recorded.
+        """
+        message = envelope(
+            "apiVersion: datum.dev/v1\nkind: K\n"
+            'metadata:\n  name: n\n  scope: s\n  true: 1\n  "true": 2\n'
+            "attributes:\n  v: x\n"
+        )
+
+        assert "metadata states 'true' more than once" in message
+
     def test_a_repeated_metadata_key_is_refused_now_too(self):
         """The exception the old rationale needed, and the new one does not.
 

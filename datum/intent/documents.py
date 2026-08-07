@@ -365,14 +365,30 @@ def _key_name(key_node: yaml.Node, path: KeyPath) -> str:
 
     **Stated limit: a key is its source text, never its resolved type.** A key
     written `~` or `true` arrives as the string `"~"` or `"true"`, where the
-    loader produced `None` and `True` -- and `true` and `"true"` become the same
-    key here where the loader kept them apart. Not called unobservable, because
-    it is not: the two collapse into one key, which duplicate detection and
-    error wording can both show. What is true is narrower -- **it cannot change
-    a Datum document that ingests successfully**, since every key Datum looks up
-    (`apiVersion`, `kind`, `metadata`, `provider_id`, `name`, `scope`) is a plain
-    string that no YAML keyword collides with. Any document where the difference
-    shows is a document being rejected either way.
+    loader produced `None` and `True` -- so `true` and `"true"` are one key here
+    where the loader kept them apart.
+
+    **This does reject a document that used to be accepted**, and two earlier
+    drafts of this paragraph said otherwise. It claimed "unobservable", which was
+    wrong, and then "cannot change a document that ingests successfully", which
+    was also wrong and merely harder to disprove. The counterexample:
+
+        metadata:
+          name: n
+          scope: s
+          true: 1
+          "true": 2
+
+    Extra `metadata` keys are ignored, so this is otherwise valid, and under the
+    loader it held four distinct keys and ingested. Here the last two are one
+    key written twice, and the document is refused as ambiguous.
+
+    That is the right outcome -- it is the duplicate rule doing exactly what it
+    says, on a document where which value wins is invisible to its author -- but
+    it is a **narrowing, not a no-op**, and the honest guarantee is only this: no
+    key Datum reads (`apiVersion`, `kind`, `metadata`, `provider_id`, `name`,
+    `scope`) collides with a YAML keyword, so nothing is silently read from the
+    wrong place. A rejection is never silent; that is the whole of the claim.
     """
     if not isinstance(key_node, yaml.ScalarNode):
         raise InvalidDocument(

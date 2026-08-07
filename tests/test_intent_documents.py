@@ -386,14 +386,46 @@ def test_key_lines_descends_into_sequences():
     # defects in this module started.
     from datum.intent.documents import _key_lines
 
+    # The position is part of the path. Without it two items reusing a key name
+    # collide and the later one overwrites the earlier one's line -- see
+    # `test_a_defect_in_one_sequence_item_does_not_report_a_later_item`, which
+    # is the consequence this shape exists to prevent.
     lines = _key_lines("apiVersion: datum.dev/v1\nitems:\n  - name: a\n  - other: b\n")
 
     assert lines == {
         ("apiVersion",): 1,
         ("items",): 2,
-        ("items", "name"): 3,
-        ("items", "other"): 4,
+        ("items", "[0]", "name"): 3,
+        ("items", "[1]", "other"): 4,
     }
+
+
+def test_a_defect_in_one_sequence_item_does_not_report_a_later_item():
+    # The failure this excludes is a *confidently wrong* line, which is worse
+    # than the "no line" it replaced. Both walks descended into sequences without
+    # recording which item they were in, so two list items reusing a key name
+    # collided on one path and `lines[path] = ...` kept whichever was visited
+    # last. The duplicate below is on lines 4-5; the reported line was 6, which
+    # is `- b: 9` and is perfectly well-formed.
+    #
+    # Asserting the exact line rather than "not 6": a fix that indexed only one
+    # of the two walks would make them disagree and produce `None`, which would
+    # pass a test that merely refused the wrong answer.
+    text = (
+        "apiVersion: datum.dev/v1\n"  # 1
+        "kind: Deployment\n"  # 2
+        "extra:\n"  # 3
+        "  - b: 1\n"  # 4
+        "    b: 2\n"  # 5
+        "  - b: 9\n"  # 6
+        "metadata:\n  name: web\n  scope: default\n"
+        "attributes:\n  replicas: 3\n"
+    )
+
+    (error,) = errors_from(text)
+
+    assert "more than once" in error.message
+    assert error.line == 5
 
 
 def test_a_defect_inside_an_anchored_mapping_reports_the_anchor_definition():

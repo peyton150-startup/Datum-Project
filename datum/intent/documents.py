@@ -192,12 +192,15 @@ def _collect_key_lines(
     contract is `InvalidDocument` or nothing. Revisiting a node adds no lines
     that are not already recorded, so skipping it costs nothing.
 
-    Sequences are descended too. They carry no key of their own, so the path
-    does not grow through one -- but a mapping *inside* a sequence has keys, and
-    stopping here left them with no line, which showed up as an error naming the
-    file and no position. The value walk descends into sequences; two walks over
-    one graph disagreeing about where keys can be is how the last two defects in
-    this file started.
+    Sequences are descended too, and the path grows by the item's position. A
+    mapping *inside* a sequence has keys, and stopping here left them with no
+    line at all; descending without recording *which* item was worse, because
+    two list items reusing a key name then collided on one path and the last one
+    visited overwrote the line of the one that actually failed. The rejection
+    stayed correct and pointed at a blameless entry.
+
+    So the position is part of the path, in this walk and in the value walk,
+    from the one helper both call.
 
     **Stated limit: one shared node gets one path, and it may not be the path
     the error names.** `visited` is marked on first arrival, so a node reachable
@@ -217,8 +220,8 @@ def _collect_key_lines(
         return
     if isinstance(node, yaml.SequenceNode):
         visited.add(id(node))
-        for item in node.value:
-            _collect_key_lines(item, prefix, lines, visited)
+        for index, item in enumerate(node.value):
+            _collect_key_lines(item, (*prefix, _index_step(index)), lines, visited)
         return
     if not isinstance(node, yaml.MappingNode):
         return
@@ -457,7 +460,10 @@ def _constructed(
         }
     else:
         _reject_retagged_collection(node, path)
-        value = [_constructed(item, path, within, built) for item in node.value]
+        value = [
+            _constructed(item, (*path, _index_step(index)), within, built)
+            for index, item in enumerate(node.value)
+        ]
 
     # Cached only on success. A node that raised has no value to hand out, and
     # a second reference to it must reach the same refusal rather than a hole.
@@ -553,8 +559,30 @@ def _yaml_error_line(exc: yaml.YAMLError) -> int | None:
 # --------------------------------------------------------------------------
 
 
+def _index_step(index: int) -> str:
+    """One sequence position, as a path component.
+
+    **Written once and used by both walks, which is the whole point.** The value
+    walk and the line walk each descend into sequences, and if either omitted the
+    position both would still agree with each other -- they did, and that shared
+    silence is what let two unrelated list items collide on one path. The line
+    recorded for the item that failed was then overwritten by a later, blameless
+    one, and a rejection pointed at a well-formed entry. A degradation to "no
+    line at all" is honest; a confident wrong line is not.
+
+    Bracketed rather than bare so a sequence position cannot be confused with a
+    mapping key that happens to be spelt `0`.
+    """
+    return f"[{index}]"
+
+
 def _label(path: KeyPath) -> str:
-    return ".".join(path) if path else "document"
+    if not path:
+        return "document"
+    rendered = path[0]
+    for step in path[1:]:
+        rendered += step if step.startswith("[") else f".{step}"
+    return rendered
 
 
 def _reject_unsupported_version(document: Mapping[str, object]) -> None:

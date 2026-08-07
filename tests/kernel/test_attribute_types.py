@@ -141,7 +141,7 @@ class TestTheDeclaredBarricadeReadsTheSharedTable:
 
         The bug excluded is `documents.py` keeping its own copy of the table.
         A copy that is identical today passes this, as it must -- what it cannot
-        survive is the copy going stale: add a type to `DECLARED_TYPES` and this
+        survive is the copy going stale: add a type to `ATTRIBUTE_TYPES` and this
         parametrization grows a case that a private table would reject. That is
         the moment the old code failed silently and this one does not.
 

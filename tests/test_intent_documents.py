@@ -492,9 +492,10 @@ def bucket_with(name_prefix_literal: str) -> str:
 def test_a_string_of_the_right_type_that_cannot_be_stored_is_rejected(literal, names):
     """The declared plane checked what a value IS and never what it holds.
 
-    `DECLARED_TYPES["str"]` answers `type(value) is str` and stops there, so
-    a double-quoted YAML escape decoding to a real NUL or an unpaired surrogate
-    passed validation intact. It then raised `DataError` out of projection --
+    The predicate table that preceded `ATTRIBUTE_TYPES` answered `type(value)
+    is str` and stopped there, so a double-quoted YAML escape decoding to a real
+    NUL or an unpaired surrogate passed validation intact. It then raised
+    `DataError` out of projection --
     past `ingest_revision`, whose contract is two domain errors, and into the
     poll task's catch-all for the unanticipated. The author saw a dropped
     revision and an opaque log line rather than the file and field.

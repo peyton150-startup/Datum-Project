@@ -142,23 +142,27 @@ def _states_an_object(present: bool, value: Any) -> bool:
 def _states_a_boolean(present: bool, value: Any) -> bool:
     """True when a plane both mentioned the field and gave it a boolean value.
 
-    `type(value) is bool` rather than isinstance, for the same reason the
-    declared barricade uses it: bool is a subclass of int, so isinstance would
-    read a discovered `1` as `True`. The discovered plane has no type barricade,
-    so this is the only place that distinction gets made -- and a provider
-    reporting `1` where a declaration says `true` is exactly the drift a
-    reconciler exists to surface, not to smooth over.
+    `type(value) is bool` rather than isinstance: bool is a subclass of int, so
+    isinstance would read a discovered `1` as `True`. The discovered plane has
+    no type barricade, so this is the only place that distinction gets made --
+    and a provider reporting `1` where a declaration says `true` is exactly the
+    drift a reconciler exists to surface, not to smooth over.
 
-    **Not routed through `DECLARED_TYPES["bool"]`, deliberately.** The two spell
-    the same Python idiom and answer different questions: that table says what
-    an author may write in an intent document, while this asks what a plane
-    stated, and it runs on the discovered plane, which has no declared barricade
-    and is never going to get one. Binding them would mean widening the declared
-    vocabulary -- issue #53's open half -- silently redefining what the
-    *discovered* side counts as a boolean, which is a worse coupling than the
-    shared idiom is a duplication. `_states_a_list` and `_states_an_object`
-    write their own shape test for the same reason, and have no declared
-    counterpart to route through at all.
+    **Not routed through `ATTRIBUTE_TYPES["bool"]`, and after #55 it could not
+    be.** That parser reads a declared boolean from its *scalar text* via
+    `BOOLEAN_LITERALS`; this asks what type a plane's already-built Python value
+    has. Different inputs, different questions -- the table says what an author
+    may write in an intent document, while this runs on the discovered plane,
+    which has no declared barricade and is never going to get one. Binding them
+    would mean widening the declared vocabulary -- issue #53's open half --
+    silently redefining what the *discovered* side counts as a boolean.
+
+    So the guarantee that a discovered `1` is not a declared `true` is made at
+    two layers by two different mechanisms, as DESIGN section 13 records: this
+    type check on the comparison side, and on the declared side the fact that a
+    boolean can only have come from the parser and therefore cannot be an int.
+    `_states_a_list` and `_states_an_object` write their own shape test for the
+    same reason, and have no declared counterpart to route through at all.
     """
     return _states_a_value(present, value) and type(value) is bool
 

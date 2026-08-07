@@ -60,6 +60,19 @@ Kernel-tier and boundary-tier code needs a reviewer that is **a different model 
 
 Dispatch a subagent pinned to another model with a **blind** prompt: give it the diff, this file, and the DESIGN review checklist, and withhold the author's reasoning entirely — including the PR description, the commit messages, and the issue being fixed. A prompt that explains the fix leads the witness. Ask it to try to break the code rather than to confirm it works; "CI is green" is not evidence of correctness, because whether the right tests exist is part of what is under review.
 
+**Withholding reasoning means closing the routes to it, not just omitting it.** A review on PR #65 lost its standing by reading commit subjects, which on a branch that documents its own fixes are the author's reasoning in another file. Prohibit explicitly, by name: `git log` in every variant, bare `git show <rev>` without a `:path`, `git blame`, `git reflog`, `git shortlog`, `git whatchanged`, `.git/` reads, and every `gh` command. `git show <rev>:<path>` is allowed and useful — it is how the reviewer reads the before-state. Tell it that if a commit message reaches it by any route it must say so prominently rather than continue quietly.
+
+### The scope-and-fit questions every blind review must answer
+
+Defect-hunting is only half of a review. A patch can be correct and still be wrong to merge. Each blind review answers these four explicitly, as named sections, in addition to its findings:
+
+1. **Does the patch solve only one task, and which?** The reviewer states in one sentence what it infers the task to be *from the diff alone* — it is never told, because telling it hands back the PR description this gate exists to withhold. Then: does every hunk serve that? Needing two sentences to name the task is itself the finding.
+2. **Does any changed file have nothing to do with it?** Answered per file, with the justification the reviewer can or cannot construct for each.
+3. **Do the tests exercise the new behavior, or would they pass without it?** Not "is there a test" — name the bug each test excludes, then say whether that fixture could give a different answer under that bug. This is the discriminating-fixture check from the testing bar below, promoted to a required section because it is the project's stated recurring failure mode.
+4. **Does the code match local pattern and local error handling?** Compared against the neighbouring code and the rest of the module, not against general good practice: the same idioms, the same exception types, the same degrade-versus-raise choice, the same audit strings.
+
+An APPROVE that skips these sections is not a verdict and does not open the gate.
+
 **Post the verdict to the PR the moment it arrives, before summarising it in chat.** A review that lives only in the conversation does not survive the session.
 
 **Do not merge before the verdict is posted, and say plainly when a PR is still waiting on one.** The gate is the verdict arriving, not the review having been dispatched. On 2026-08-03 three PRs were merged while their reviews were still running, and one of them put a kernel defect on `main`: a structured value and a string that spelled it began comparing equal, which the review had already caught and reported about ten minutes later. Every one of those merges looked safe — CI was green on all three, and green CI is what the review exists to distrust.

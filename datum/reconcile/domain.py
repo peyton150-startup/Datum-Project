@@ -175,12 +175,19 @@ def _unencodable(attributes: Mapping[str, object]) -> str | None:
     escaped it only because their check runs before this one.
 
     **What makes the difference safe is the walk, not this function.** Every
-    mapping the walk reaches goes through `_inspected_mapping`, which calls
-    `_unusable_key` before yielding any children, and every mapping is reached
-    because lists yield their items and mappings yield their values. So a
-    structure that survives `unstorable_attribute` has string keys at every
-    depth -- exactly the precondition sorting needs, which is why `canonical`
-    can still sort and never raise on anything that got past here.
+    mapping reachable through `_inspected` is checked by `_unusable_key` before
+    its children are yielded, and every mapping is reached because lists yield
+    their items and mappings yield their values. So any value **accepted by
+    `unstorable_attribute`** contains only string mapping keys -- exactly the
+    precondition sorting needs, which is why `canonical` can still sort and
+    never raise on anything that got past here.
+
+    That is an invariant these routines maintain over the value grammar they
+    accept, not a standing property of Python structures. A new container form
+    in `_inspected`, or a traversal that yields a mapping's values without
+    going through `_inspected_mapping`, breaks it -- and breaks it silently
+    here, surfacing later as a `TypeError` from `canonical`'s sort, a long way
+    from the change that caused it.
 
     The three drifts named above are all still caught without the flag: depth
     and cycles are properties of the recursion rather than of key ordering, and

@@ -12,16 +12,16 @@ on its own terms.
 """
 
 import pytest
-import yaml
 
 from datum.intent.documents import parse_document_set
 from datum.intent.errors import InvalidRevision
 from datum.reconcile.attribute_types import (
+    ATTRIBUTE_TYPES,
     DECLARED_TYPE_NAMES,
-    DECLARED_TYPES,
     DISCOVERED_ONLY_FIELD_TYPES,
     FIELD_TYPES,
     VALID_FIELD_TYPES,
+    UnacceptableLiteral,
 )
 from datum.reconcile.schema import FieldConfig, InvalidComparisonMode
 
@@ -92,33 +92,43 @@ class TestEveryFieldTypeIsValidatable:
             )
 
 
-# Sample values for the declared types, chosen by asking the predicates rather
-# than by pairing each name to a value here -- that pairing would be a second
-# encoding of the vocabulary, which is the mistake this module exists to remove.
-# A declared type that no candidate satisfies fails loudly, and that failure is
-# itself the drift signal.
-_CANDIDATE_VALUES = (3, "three", True, 1.5, [1], {"a": 1})
+# Candidate scalar *texts*, offered to the parsers rather than paired with type
+# names here -- that pairing would be a second encoding of the vocabulary, which
+# is the mistake this module exists to remove. A declared type no candidate
+# satisfies fails loudly, and that failure is itself the drift signal.
+#
+# Texts rather than Python values because after issue #55 a declared value is
+# established from what the author wrote, not from what YAML resolved it to.
+_CANDIDATE_TEXTS = ("3", "three", "true", "1.5", "-7")
 
 
-def _witness_for(type_name: str) -> object:
-    predicate = DECLARED_TYPES[type_name]
-    for candidate in _CANDIDATE_VALUES:
-        if predicate(candidate):
-            return candidate
-    pytest.fail(f"no candidate value satisfies the {type_name!r} predicate; add one")
+def _witness_for(type_name: str) -> tuple[str, object]:
+    """The first candidate text this type's parser accepts, and what it yields."""
+    parse = ATTRIBUTE_TYPES[type_name]
+    for candidate in _CANDIDATE_TEXTS:
+        try:
+            return candidate, parse(candidate)
+        except UnacceptableLiteral:
+            continue
+    pytest.fail(f"no candidate text is a valid {type_name!r} literal; add one")
 
 
-def _document(attribute_value: object) -> tuple[str, str]:
+def _document(attribute_text: str) -> tuple[str, str]:
+    """A document with the witness written literally, not dumped from a value.
+
+    `yaml.safe_dump` would quote or re-render the scalar according to its own
+    rules, which is the authority this barricade no longer takes instruction
+    from -- a test that went through it would be asking the wrong question.
+    """
     return (
         "doc.yaml",
-        yaml.safe_dump(
-            {
-                "apiVersion": "datum.dev/v1",
-                "kind": "Deployment",
-                "metadata": {"name": "api", "scope": "default"},
-                "attributes": {"enabled": attribute_value},
-            }
-        ),
+        "apiVersion: datum.dev/v1\n"
+        "kind: Deployment\n"
+        "metadata:\n"
+        "  name: api\n"
+        "  scope: default\n"
+        "attributes:\n"
+        f"  enabled: {attribute_text}\n",
     )
 
 
@@ -131,20 +141,20 @@ class TestTheDeclaredBarricadeReadsTheSharedTable:
 
         The bug excluded is `documents.py` keeping its own copy of the table.
         A copy that is identical today passes this, as it must -- what it cannot
-        survive is the copy going stale: add a type to `DECLARED_TYPES` and this
+        survive is the copy going stale: add a type to `ATTRIBUTE_TYPES` and this
         parametrization grows a case that a private table would reject. That is
         the moment the old code failed silently and this one does not.
 
         Deliberately *not* demonstrated by the `float` case below, which a
         private `int`/`str`/`bool` table would have refused just as readily.
         """
-        witness = _witness_for(type_name)
+        text, expected = _witness_for(type_name)
 
         snapshots = parse_document_set(
-            [_document(witness)], "t", {"Deployment": {"enabled": type_name}}
+            [_document(text)], "t", {"Deployment": {"enabled": type_name}}
         )
 
-        assert snapshots[0].attributes == {"enabled": witness}
+        assert snapshots[0].attributes == {"enabled": expected}
 
     def test_a_type_the_table_does_not_hold_is_refused(self):
         """A guard against an over-broad table, not evidence of single-sourcing.
@@ -171,16 +181,24 @@ class TestTheDeclaredBarricadeReadsTheSharedTable:
 
         assert "float" in str(caught.value)
 
-    def test_each_declared_type_recognises_its_own_values_and_no_others(self):
-        """bool is not an int, which isinstance would have got wrong.
+    def test_the_parsers_do_not_defer_to_python_coercion(self):
+        """`bool("3")` is True, and a parser written that way would take anything.
 
-        The predicates use `type(v) is int` for exactly this: a declaration
-        reading `replicas: true` must not validate as an integer.
+        The bug excluded is a parser implemented as the Python constructor for
+        its type. `int("true")` happens to raise, so an int parser written as
+        `int(text)` looks correct until it meets `1_000`, which Python accepts
+        and this vocabulary does not. `bool(text)` is worse: every non-empty
+        string is True, so `is_public: NO` would be True rather than rejected --
+        the Norway problem with its sign flipped.
+
+        Not a claim about `str`, which accepts any scalar text on purpose.
         """
-        values = {"int": 3, "str": "three", "bool": True}
+        assert ATTRIBUTE_TYPES["str"]("true") == "true"
 
-        for type_name, predicate in DECLARED_TYPES.items():
-            for other_name, value in values.items():
-                assert predicate(value) is (
-                    type_name == other_name
-                ), f"{type_name} predicate disagreed about {value!r}"
+        for text in ("true", "1_000", "007"):
+            with pytest.raises(UnacceptableLiteral):
+                ATTRIBUTE_TYPES["int"](text)
+
+        for text in ("3", "1", "NO", "yes", ""):
+            with pytest.raises(UnacceptableLiteral):
+                ATTRIBUTE_TYPES["bool"](text)

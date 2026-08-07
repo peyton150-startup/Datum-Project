@@ -183,14 +183,20 @@ def test_unknown_attribute_is_rejected():
 
 def test_wrong_attribute_type_is_rejected():
     (error,) = errors_from(VALID.replace("replicas: 3", "replicas: 'three'"))
-    assert "must be int" in error.message
+    assert "decimal integer" in error.message
+    assert "'three'" in error.message
 
 
 def test_boolean_is_not_accepted_as_an_integer():
-    # The trap: bool subclasses int in Python, so an isinstance check would let
-    # "yes replicas" validate as "some number of replicas".
+    # Guards the int parser against the text `true`, which is all this can
+    # demonstrate now. The bug it was originally written for -- bool subclassing
+    # int in Python, so an isinstance check reads "yes replicas" as "some number
+    # of replicas" -- is no longer reachable to be tested for: the parser is
+    # handed scalar text and never a Python bool, so there is no isinstance
+    # check left to get wrong (issue #55).
     (error,) = errors_from(VALID.replace("replicas: 3", "replicas: true"))
-    assert "must be int" in error.message
+    assert "decimal integer" in error.message
+    assert "'true'" in error.message
 
 
 def test_integer_is_not_accepted_as_a_boolean():
@@ -200,7 +206,8 @@ def test_integer_is_not_accepted_as_a_boolean():
         "attributes:\n  name_prefix: img-\n  is_public: 1\n"
     )
     (error,) = errors_from(text)
-    assert "must be bool" in error.message
+    assert "true or false" in error.message
+    assert "'1'" in error.message
 
 
 def test_every_scalar_type_in_the_vocabulary_round_trips():
@@ -369,6 +376,85 @@ def test_key_lines_skips_keys_that_are_not_scalars():
     assert lines == {("apiVersion",): 1}
 
 
+def test_key_lines_descends_into_sequences():
+    # A sequence carries no key, so the path does not grow through one -- but a
+    # mapping inside a sequence has keys, and stopping at the sequence left them
+    # with no line at all. The failure was quiet: the error named the file and
+    # no position, which reads as "there is nowhere to point" rather than as a
+    # gap in the walk. The value walk descends into sequences, and two walks
+    # over one graph disagreeing about where keys live is how the last two
+    # defects in this module started.
+    from datum.intent.documents import _key_lines
+
+    # The position is part of the path. Without it two items reusing a key name
+    # collide and the later one overwrites the earlier one's line -- see
+    # `test_a_defect_in_one_sequence_item_does_not_report_a_later_item`, which
+    # is the consequence this shape exists to prevent.
+    lines = _key_lines("apiVersion: datum.dev/v1\nitems:\n  - name: a\n  - other: b\n")
+
+    assert lines == {
+        ("apiVersion",): 1,
+        ("items",): 2,
+        ("items", "[0]", "name"): 3,
+        ("items", "[1]", "other"): 4,
+    }
+
+
+def test_a_defect_in_one_sequence_item_does_not_report_a_later_item():
+    # The failure this excludes is a *confidently wrong* line, which is worse
+    # than the "no line" it replaced. Both walks descended into sequences without
+    # recording which item they were in, so two list items reusing a key name
+    # collided on one path and `lines[path] = ...` kept whichever was visited
+    # last. The duplicate below is on lines 4-5; the reported line was 6, which
+    # is `- b: 9` and is perfectly well-formed.
+    #
+    # Asserting the exact line rather than "not 6": a fix that indexed only one
+    # of the two walks would make them disagree and produce `None`, which would
+    # pass a test that merely refused the wrong answer.
+    text = (
+        "apiVersion: datum.dev/v1\n"  # 1
+        "kind: Deployment\n"  # 2
+        "extra:\n"  # 3
+        "  - b: 1\n"  # 4
+        "    b: 2\n"  # 5
+        "  - b: 9\n"  # 6
+        "metadata:\n  name: web\n  scope: default\n"
+        "attributes:\n  replicas: 3\n"
+    )
+
+    (error,) = errors_from(text)
+
+    assert "more than once" in error.message
+    assert error.line == 5
+
+
+def test_a_defect_inside_an_anchored_mapping_reports_the_anchor_definition():
+    # The public contract, not the mechanism. A mapping written once under an
+    # anchor and used again through an alias exists at one editable place in the
+    # file, and that is where the author has to fix it -- PyYAML keeps the
+    # anchored node's own mark, so a use site is not available to report even if
+    # it were wanted.
+    #
+    # Asserted as behaviour rather than as agreement between the two walks,
+    # because that agreement does not always hold: an anchor defined inside
+    # `attributes` and aliased into the envelope is reached by the two walks on
+    # different paths, and the error then names the file with no line. That is a
+    # documented degrade, so pinning it as an invariant would pin something
+    # false.
+    text = (
+        "anchor: &a\n"  # 1
+        "  dup: 1\n"  # 2
+        "  dup: 3\n"  # 3
+        "list:\n"  # 4
+        "  - *a\n" + VALID  # 5
+    )
+
+    (error,) = errors_from(text)
+
+    assert "more than once" in error.message
+    assert error.line == 3
+
+
 def test_rendered_message_locates_every_error():
     with pytest.raises(InvalidRevision) as caught:
         parse_document_set([("deployments/web.yaml", "- nope\n")], TENANT, SCHEMAS)
@@ -406,9 +492,10 @@ def bucket_with(name_prefix_literal: str) -> str:
 def test_a_string_of_the_right_type_that_cannot_be_stored_is_rejected(literal, names):
     """The declared plane checked what a value IS and never what it holds.
 
-    `DECLARED_TYPES["str"]` answers `type(value) is str` and stops there, so
-    a double-quoted YAML escape decoding to a real NUL or an unpaired surrogate
-    passed validation intact. It then raised `DataError` out of projection --
+    The predicate table that preceded `ATTRIBUTE_TYPES` answered `type(value)
+    is str` and stopped there, so a double-quoted YAML escape decoding to a real
+    NUL or an unpaired surrogate passed validation intact. It then raised
+    `DataError` out of projection --
     past `ingest_revision`, whose contract is two domain errors, and into the
     poll task's catch-all for the unanticipated. The author saw a dropped
     revision and an opaque log line rather than the file and field.

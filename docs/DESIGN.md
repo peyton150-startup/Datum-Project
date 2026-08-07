@@ -138,9 +138,11 @@ One document declares exactly one resource. Multi-document YAML streams are not 
 
 `attribute_schema` is a flat mapping of attribute name to type name, drawn from a closed table: `int`, `str`, `bool`. Evaluation is a lookup, not an if-chain.
 
-**That table is not written in this document, and not written in the barricade either.** It lives in `datum/reconcile/attribute_types.py` as `DECLARED_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
+**That table is not written in this document, and not written in the barricade either.** It lives in `datum/reconcile/attribute_types.py` as `ATTRIBUTE_TYPES`, beside the comparison field types it has to agree with, and both this barricade and `reconcile/schema.py` read it rather than restating it. The two vocabularies and the rule joining them are §13, *The two attribute-type vocabularies*; the list above is a summary of that table and not a second copy of it, so if the two ever disagree, the module is right.
 
-**Known limit, deliberate:** every key in a kind's `attribute_schema` is required, and unknown keys are rejected. Optionality is not yet expressible. This is the same simplification §24 records for null-vs-absent in the diff engine, and it is held for the same reason: one kind with one required integer field cannot motivate the design. Both are revisited together when phase 3 adds a second kind — that is the point at which this stops being a simplification and becomes a correctness bug.
+**The type names what a value may be; it does not name what YAML would make of the text.** Declared scalars are read from their nodes and parsed by the type's own literal grammar, so `NO` is not a boolean and `1:30` is not an integer. §13, *YAML parses an attribute scalar; the declared type validates it*, holds the grammar, the order the two run in, and the strictnesses that come with them.
+
+**Known limit, deliberate:** every key in a kind's `attribute_schema` is required, and unknown keys are rejected. Optionality is not yet expressible. A required key may still be declared *null*, which is a value state rather than an omission. This is the same simplification §24 records for null-vs-absent in the diff engine, and it is held for the same reason: one kind with one required integer field cannot motivate the design. Both are revisited together when phase 3 adds a second kind — that is the point at which this stops being a simplification and becomes a correctness bug.
 
 ### Validation layers
 
@@ -498,11 +500,60 @@ Issue #53. There are two type vocabularies here, they are different questions, a
 
 They were written in three modules that each looked correct alone, and the relation between them was nobody's job. Two field types (`list`, `object`) could never receive a declared value; one declared type (`bool`) named no field type at all, so a document could say `enabled: true` and no schema could say how to compare it.
 
-**Decided: one encoding, in `datum/reconcile/attribute_types.py`.** `DECLARED_TYPES` and `FIELD_TYPES` sit adjacent; `FIELD_TYPES` maps each field type to the declared type that can feed it, or `None` where none can. `VALID_FIELD_TYPES`, `DECLARED_TYPE_NAMES` and `DISCOVERED_ONLY_FIELD_TYPES` are derived from those two and never restated. `intent/documents.py` and `reconcile/schema.py` read them. **The mistake this makes unavailable:** adding a field type without answering which declared type feeds it — the `None` is a stated answer, not a gap, and `tests/kernel/test_attribute_types.py` fails if the tables stop agreeing in either direction.
+**Decided: one encoding, in `datum/reconcile/attribute_types.py`.** `ATTRIBUTE_TYPES` and `FIELD_TYPES` sit adjacent; `FIELD_TYPES` maps each field type to the declared type that can feed it, or `None` where none can. `VALID_FIELD_TYPES`, `DECLARED_TYPE_NAMES` and `DISCOVERED_ONLY_FIELD_TYPES` are derived from those two and never restated. `intent/documents.py` and `reconcile/schema.py` read them. **The mistake this makes unavailable:** adding a field type without answering which declared type feeds it — the `None` is a stated answer, not a gap, and `tests/kernel/test_attribute_types.py` fails if the tables stop agreeing in either direction.
 
 **Decided: `bool` closes by gaining a comparison, not by losing its declaration.** `boolean` is a field type with one mode, `exact`. Removing `bool` from the declared side was the alternative and is worse: it breaks existing documents to fix a gap that adding forty lines closes.
 
-`type(value) is bool`, not `isinstance`, on both planes. bool subclasses int in Python, and the discovered plane has no type barricade, so a provider reporting `1` where intent says `true` must read as drift rather than as a match.
+A discovered `1` must not read as a declared `true`. bool subclasses int in Python, so `isinstance` would call them the same thing, and the discovered plane has no type barricade to stop one arriving. The guarantee is made twice over and at two different layers, which is deliberate: the comparison side asks `type(value) is bool` in `_states_a_boolean`, and the declared side no longer type-checks at all, because after #55 a declared boolean can only have come from `parse_boolean` and therefore cannot be an int.
+
+### YAML parses an attribute scalar; the declared type validates it (#55)
+
+**Decided.** `safe_load` ran YAML 1.1's implicit resolver over every declared value, so the document's *syntax* decided the type and the schema only checked the result. Two coercions were live: a `bool` field took the country code `NO` as `False`, and an `int` field took `1:30` as `90`, both silently. Two more — `1.10 -> 1.1` and `2026-08-03 -> date` — were caught only because the vocabulary had no `float` or `date` to accept them into, which is protection nobody designed and which #53's widening would remove.
+
+Declared values are now read from their YAML **nodes**, and each type in `ATTRIBUTE_TYPES` owns the parser for its literal. **A parser receives the scalar text alone and never the node**, so it cannot consult the resolver's tag even by accident — that is the mechanism by which this stays true rather than being a convention someone must remember.
+
+**The division of labour, stated exactly, because the first attempt at this overstated it.** YAML necessarily decides token and scalar boundaries, quoting and escaping, block-scalar folding, anchors and aliases, and whether the document parses at all. Datum can only take authority once parsing has produced nodes. So the claim is not that YAML has no say in a declared value — it is that YAML's say ends at the scalar's *content*, and the declared type alone decides what that content means and what it becomes.
+
+**Selection precedes construction, and that ordering is the whole mechanism.** The document is **composed and never loaded**: composing stops at the parse tree and converts nothing. Envelope scalars are then constructed individually, under YAML's own rules; attribute value nodes are not constructed at all until their declared type has been looked up. Reading attributes from nodes while still loading the document for its envelope is not enough, and was the first fix's defect: loading is eager and schema-blind, so it reached inside `attributes` and ran conversions it had no authority over. Where a conversion *raised* — `2024-13-45` is a legal scalar and no calendar date, a 4301-digit integer is over CPython's conversion cap — the whole document was rejected as "unparseable YAML" before any schema was consulted, including for attributes declared `str`. The values that got through were governed by the schema; which documents got that far was not.
+
+**"Lossless" means the scalar's content without YAML type coercion**, not byte-for-byte preservation of the source token. Quotes are removed, escapes decoded and block scalars folded before Datum sees the text. What Datum promises is that it adds no trimming, coercion or normalisation on top, and that no conversion runs which the declared type did not ask for.
+
+**The envelope keeps YAML's semantics, deliberately and not by omission.** `metadata.name: 007` is the integer `7` and is rejected for not being a string; so are `true`, `NO` and `2026-08-03`. Each could be a reasonable name, and accepting them is a policy change about what an identifier may look like — a user-visible one, which must not ride along inside a fix to attribute literals. The envelope is Datum's own structure and YAML has always decided it.
+
+Three layers, in order, the first two answering identically for every type:
+
+| Layer | Question | Answer |
+|---|---|---|
+| Node shape | scalar or collection? | a sequence or mapping is refused before any type is consulted |
+| Value state | null or not? | `node.style is None and node.value == "null"`, never the resolver's tag |
+| Declared type | which literal grammar? | the registered parser, given the text |
+
+**The grammar.** Booleans are exactly lowercase `true` and `false`; quoting is irrelevant, since the schema already said the field is a bool. Integers are `^[+-]?(0|[1-9][0-9]*)$` — `007` is refused rather than read as `7`, because if the padding carries meaning the value is an identifier and belongs in a `str`. Strings are the scalar content YAML produced, with nothing added.
+
+Reserved keywords are lowercase and exact throughout. This resembles YAML 1.2's core schema for booleans and deliberately departs from it for integers, which accept `007`; the schema is the authority in both cases and the resemblance is not the justification.
+
+**Deliberate strictnesses, each a legal YAML idiom refused on purpose.** An implicit empty value (`v:`) is rejected — not because it is a mistake, but because a declared null must be conspicuous when null-versus-absent is load-bearing. `~`, `NULL` and `Null` are *not* nulls; they are ordinary content read by the declared type, because honouring their tags would hand authority back to the resolver. A merge key is refused **anywhere in the document**, because nothing loads the document any more and a composer does not expand merges — leaving it alone would silently change what a merged value means, worst of all under `metadata`, where an author's `name` could vanish and the document be rejected for a field it visibly declares.
+
+**A merge key is whatever YAML's resolver tags as one, not whatever is spelt `<<`.** The rule was first written as "unquoted, and the text is `<<`", which is a hand-rolled restatement of a decision the resolver has already made — and it disagreed with YAML in both directions. `!!str <<` is an author explicitly declaring a string key, which `main` accepts and the spelling test rejected; `!!merge other` is a merge key not spelt `<<`, which the spelling test missed and then reported as the "unknown attribute" the refusal exists to prevent. Asking for the tag subsumes quoting as well, since `"<<"` already resolves to `str`, so the quoting clause is gone rather than kept beside it. Same rule as `unstorable_attribute` and as §13's own subject: **ask the library, do not model it.**
+
+**Stated limit: an envelope key is its source text, never its resolved type.** A key written `~` or `true` arrives as `"~"` or `"true"` where the loader gave `None` and `True`, and `true` and `"true"` collapse to one key here where the loader kept them apart. This cannot change a document that ingests successfully — every key Datum looks up is a plain string no YAML keyword collides with — but it is visible in duplicate detection and error wording, so it is a limit rather than nothing.
+
+**What the constructor used to answer, and Datum now answers itself.** Not constructing the document means not inheriting PyYAML's opinions as a side effect, and each of these would otherwise stop being answered at all with nothing to say so:
+
+| Input | Was refused by | Is refused by |
+|---|---|---|
+| repeated key, any mapping | nothing — the loader kept the last silently | Datum, as ambiguity |
+| complex key (`? [a, b]`) | the constructor needing a hashable key, reported as "unparseable YAML" | Datum, as a shape rule, reported as one |
+| `!!set`, `!!omap`, `!!python/...` on a collection | the constructor | Datum — a walk reads entries, not tags, so an ignored tag is a silent change of value |
+| self-referential alias (`&a {k: *a}`) | nothing — it crashed the barricade with `RecursionError` on the failure path | Datum, as a document error |
+
+A tagged *scalar* in the envelope is still YAML's business: `!!str 7` genuinely is the string, and an unsafe tag is still refused by `SafeConstructor`. Only collections lose the privilege, and only because a walk cannot honour a collection tag without reimplementing the constructor.
+
+**A repeated key is refused as ambiguity, and this replaces a weaker reason.** The rule first arrived because the document was read twice — loaded for the envelope, composed for the attributes — and the two readings resolved a repeated key differently. That argument needed an exception for `metadata`, which only one reader touched and so could not disagree with anyone. With one reading the argument is gone and the rule stands on its own: a repeated key makes the document ambiguous, and silently keeping one of two values hides input the author wrote. That holds for a single reader, holds everywhere, and needs no exception — so `metadata` no longer has one.
+
+**One accepted cost:** quoting becomes semantically load-bearing for `null` alone. `node.value` is `'null'` for `null`, `"null"` and `'null'` alike, so only the style separates a declared null from the three-character string. Unavoidable while both are expressible, and stated as a cost rather than a win.
+
+**Consequence for §10 and 1.5.0:** intent ingestion is now the first producer of present-null in the system. Every layer already modelled it, but nothing had driven a real null through them. Declared *absent* remains unreachable — §10's all-attributes-required limit is untouched, and null and absent are separate states rather than two halves of one feature.
 
 **Deliberately not settled here, and still open on #53:** whether the declared vocabulary widens to reach `float`, `list` and `object`. `DISCOVERED_ONLY_FIELD_TYPES` records today's answer as data so that widening is a visible edit to one literal rather than an archaeology exercise. That question is sequenced behind #55 (YAML coercion) and the null/§10 all-required decision, because both change what a parsed declared value even is.
 

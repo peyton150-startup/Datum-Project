@@ -32,6 +32,14 @@ So the wire-contract test builds its rows directly. That is the honest level
 for it: this is an API serialization contract, not an ingestion test. When
 section 10's limit lifts, the end-to-end version becomes writable and belongs
 with that work.
+
+**Half of that changed with issue #55, and only half.** Declared *null* is now
+reachable through ingestion -- `replicas: null` parses to a present-null rather
+than being refused as "must be int" -- so the end-to-end test above this file's
+row builders is written and passing. Declared *absent* is still unreachable and
+still waiting on section 10's limit, so the two-row wire-contract test below
+stays exactly as it was. Null and absent are separate states, not two halves of
+one feature, and only one of them arrived.
 """
 
 import pytest
@@ -59,6 +67,36 @@ def seeded(intent_repo):
 
 def declared_side(item):
     return item["declared"]
+
+
+def test_a_declared_null_survives_ingestion_to_the_wire(intent_repo):
+    """The end-to-end half this file said it could not write, now that it can.
+
+    Issue #55 made intent the **first producer of present-null in the system**.
+    Every layer already modelled the state -- `PlaneValue`, the check
+    constraint, the comparison functions, `PlaneValueOut` -- but nothing had
+    ever driven a real null through them, and permitting a state is not the same
+    as producing one.
+
+    So this runs the whole path rather than building a row: a git repository
+    holding `replicas: null`, ingested, collected against, reconciled, and read
+    back over HTTP. It fails if any layer between the YAML and the JSON collapses
+    present-null into either absent or a value.
+
+    The distinguishing check is the pair of assertions, not the first one alone.
+    `{"present": True, "value": None}` and `{"present": False, "value": None}`
+    both serialize a `null` value, so asserting the value alone would pass
+    against the very collapse this exists to catch.
+    """
+    ingest_revision(TENANT, intent_repo("fixtures/intent-repo-declared-null"))
+    run_collector(from_recording(FIXTURE), TENANT)
+    run_reconciliation(TENANT)
+
+    item = Client().get("/api/discrepancies?state=open").json()["items"][0]
+
+    assert item["field_name"] == "replicas"
+    assert declared_side(item) == {"present": True, "value": None}
+    assert item["discovered"] == {"present": True, "value": 5}
 
 
 def test_a_present_value_serializes_with_presence_true(seeded):

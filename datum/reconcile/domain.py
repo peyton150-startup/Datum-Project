@@ -160,9 +160,44 @@ def _unencodable(attributes: Mapping[str, object]) -> str | None:
     The cost, stated rather than hidden: for a value of a type JSON cannot
     represent at all, the message names the type but not the path, because the
     encoder does not report one. A path is not worth a hang.
+
+    **This is not `canonical`, and the one flag between them is deliberate
+    (issue #60). Do not deduplicate these two calls.** They answer different
+    questions: this one asks whether the structure can be encoded at all, and
+    `canonical` produces the deterministic form that `PlaneValue` equality is
+    defined over. Only the second job needs sorted keys.
+
+    `sort_keys=True` raises `TypeError` on a mapping whose keys are of mixed
+    types, because sorting `1` against `"b"` is not defined. Asking it here
+    meant a nested `{1: "a", "b": "c"}` was reported as a comparison failure
+    from inside `json.dumps` -- naming neither the attribute nor the key, which
+    is the exact message shape issue #56 existed to remove. Top-level keys
+    escaped it only because their check runs before this one.
+
+    **What makes the difference safe is the walk, not this function.** Every
+    mapping reachable through `_inspected` is checked by `_unusable_key` before
+    its children are yielded, and every mapping is reached because lists yield
+    their items and mappings yield their values. So any value **accepted by
+    `unstorable_attribute`** contains only string mapping keys -- exactly the
+    precondition sorting needs, which is why `canonical` can still sort and
+    never raise on anything that got past here.
+
+    That is an invariant these routines maintain over the value grammar they
+    accept, not a standing property of Python structures. A new container form
+    in `_inspected`, or a traversal that yields a mapping's values without
+    going through `_inspected_mapping`, breaks it -- and breaks it silently
+    here, surfacing later as a `TypeError` from `canonical`'s sort, a long way
+    from the change that caused it.
+
+    The three drifts named above are all still caught without the flag: depth
+    and cycles are properties of the recursion rather than of key ordering, and
+    an oversized int fails its own conversion. What is given up is only the
+    accidental mixed-key rejection, and giving it up is the point -- unsorted,
+    `json.dumps` renders `{1: "a"}` as `{"1": "a"}` without complaint, so this
+    trial stops noticing bad keys entirely and the walk reports them properly.
     """
     try:
-        canonical(attributes)
+        json.dumps(attributes)
     except (TypeError, ValueError, RecursionError) as exc:
         return f"the JSON encoder refused it: {exc}"
     return None

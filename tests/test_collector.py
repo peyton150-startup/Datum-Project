@@ -21,7 +21,7 @@ from datum.discovery.models import CollectorRun, DiscoveredResource
 from datum.discovery.recorded import RecordedSource
 from datum.enums import CollectorRunStatus
 from datum.kinds.models import Kind
-from datum.reconcile.domain import ResourceSnapshot, _inspected
+from datum.reconcile.domain import ResourceSnapshot, _inspected, canonical
 from datum.reconcile.domain import unstorable_attribute as _unstorable_attribute
 
 TENANT = "00000000-0000-0000-0000-000000000001"
@@ -946,6 +946,74 @@ def test_ordinary_keys_are_untouched(attributes):
     above and look correct.
     """
     assert _unstorable_attribute(attributes) is None
+
+
+@pytest.mark.parametrize(
+    ("attributes", "names"),
+    [
+        ({"labels": {1: "a", "b": "c"}}, 1),
+        ({"labels": {"b": "c", 1: "a"}}, 1),
+        ({"spec": {"ports": [{2: "a", "b": "c"}]}}, 2),
+        ({"labels": {True: "a", "b": "c"}}, True),
+    ],
+)
+def test_a_nested_key_of_the_wrong_type_is_named_even_beside_a_string_sibling(attributes, names):
+    """Issue #60: a mixed-type sibling used to hide the key behind the encoder.
+
+    The bug excluded is `sort_keys=True` on the encoder trial. Sorting `1`
+    against `"b"` raises `TypeError`, so the trial refused the structure before
+    the walk could reach the key, and the operator was told `'<' not supported
+    between instances of 'str' and 'int'` -- naming neither the attribute nor
+    the key, which is the message shape issue #56 existed to remove.
+
+    **Every case here needs two keys of different types in one nested mapping,
+    and that is what makes it discriminating.** The pre-existing key cases are
+    all single-key mappings, which sort fine and therefore pass with the bug
+    present. Both orderings are parametrized because a one-ordering test would
+    pass under a fix that only looked at the first key.
+
+    Asserted on the message rather than on rejection alone: under the bug these
+    inputs *are* rejected, just uselessly, so `is not None` would prove nothing.
+    """
+    problem = _unstorable_attribute(attributes)
+
+    assert problem is not None
+    assert "encoder refused" not in problem
+    assert repr(names) in problem
+
+
+def test_a_wrong_type_key_no_longer_masks_a_nul_in_a_sibling_key():
+    """Issue #60's sharper half: the mask hid #56's own fix, not just a message.
+
+    `{1: "a", "x\\0": "c"}` was reported as a type-comparison failure, so the
+    NUL -- the thing #56 was filed about -- was invisible. The record was still
+    refused either way, which is why nothing downstream broke and why no
+    existing test failed.
+
+    This asserts a key problem is reported, not which key wins. Insertion order
+    decides that and it is not a promise worth making.
+    """
+    problem = _unstorable_attribute({"labels": {1: "a", "x" + chr(0): "c"}})
+
+    assert problem is not None
+    assert "encoder refused" not in problem
+    assert "labels has key" in problem
+
+
+def test_canonical_still_sorts_keys():
+    """A guard on the flag that was removed from the *other* call, not this one.
+
+    `canonical` keeps `sort_keys=True` because `PlaneValue` equality is defined
+    over its output and two equal mappings written in different orders must
+    canonicalize identically. Nothing in issue #60 touches that, and this test
+    exists so that a later "the trial does not sort, why does this" tidy-up
+    fails instead of silently making value identity order-dependent.
+
+    Not a demonstration of the #60 bug -- it would pass before and after. It
+    guards against an over-broad fix.
+    """
+    assert canonical({"b": 1, "a": 2}) == canonical({"a": 2, "b": 1})
+    assert canonical({"b": 1, "a": 2}) == '{"a": 2, "b": 1}'
 
 
 def test_the_walks_own_unknown_type_branch_still_answers():

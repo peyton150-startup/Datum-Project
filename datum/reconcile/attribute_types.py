@@ -10,10 +10,18 @@ value at all, and `bool` could be declared but named no comparison type, so
 `Kind.attribute_schema` had no way to say how to compare it.
 
 **The two vocabularies are different questions and both live here.** A declared
-type is what an author writes in an intent document. A field type is what
-`Kind.attribute_schema` names to select a comparison. They are not the same set
-and neither contains the other: `str` carries two field types, and two field
-types carry no declared value at all.
+type is what an author writes in an intent document. A field type is what names
+a comparison. They are not the same set and neither contains the other: `str`
+carries two field types, and two field types carry no declared value at all.
+
+`Kind.attribute_schema` holds **declared** attribute type names, consumed by
+intent ingestion -- `intent/ingest.py` passes that column straight to
+`parse_document_set`, and it is the column's only production consumer today.
+Comparison field types are the separate vocabulary, related to declared types
+through `FIELD_TYPES` below. Nothing joins them at runtime yet, because nothing
+constructs a `FieldConfig` outside `reconcile/schema.py`. Where comparison
+configuration comes from is issue #71's question, to be settled before phase 2H
+wires the comparison functions into the reconciliation path.
 
 **Each declared type owns its literal parser, and that is the whole vocabulary
 (issue #55).** There is no separate name list, predicate table, or branch
@@ -137,8 +145,8 @@ ATTRIBUTE_TYPES: Mapping[str, Callable[[str], object]] = {
     "bool": _parse_boolean,
 }
 
-# What `Kind.attribute_schema` may name, and which declared type can carry a
-# value for it.
+# What a comparison may be named as, and which declared type can carry a value
+# for it. Not what `Kind.attribute_schema` holds -- see the module docstring.
 #
 # `None` means **discovered-only**: the comparison exists and runs, but no intent
 # document can produce a value for its declared side, so the field can only ever

@@ -145,8 +145,8 @@ ATTRIBUTE_TYPES: Mapping[str, Callable[[str], object]] = {
     "bool": _parse_boolean,
 }
 
-# What `Kind.attribute_schema` may name, and which declared type can carry a
-# value for it.
+# What a comparison may be named as, and which declared type can carry a value
+# for it. Not what `Kind.attribute_schema` holds -- see the module docstring.
 #
 # `None` means **discovered-only**: the comparison exists and runs, but no intent
 # document can produce a value for its declared side, so the field can only ever

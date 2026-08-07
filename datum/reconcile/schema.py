@@ -1,8 +1,21 @@
 """Schema validation and loading for field comparison configurations.
 
-This module validates Kind.attribute_schema and provides FieldConfig objects
-to comparison functions. Each field must have an explicit comparison config;
-no defaults are inferred.
+This module validates a **comparison-configuration mapping** and provides
+FieldConfig objects to comparison functions. Each field must have an explicit
+comparison config; no defaults are inferred.
+
+**That mapping is not `Kind.attribute_schema`, despite what this module used to
+say.** The two differ in shape as well as vocabulary: this wants
+`{field: {"type": ..., "comparison": {...}, "logging": ...}}`, while
+`Kind.attribute_schema` holds `{field: "<declared type name>"}` -- literally
+`{"replicas": "int"}` as seeded. Handing one to the other raises
+`SchemaError: definition must be a dict, got str`, before any field type is
+looked at. Measured, not inferred.
+
+Nothing in production constructs a `ComparisonSchema` or a `FieldConfig` today,
+so the two never meet. Where comparison configuration is to come from is issue
+#71, to be settled before phase 2H wires these functions into the reconciliation
+path.
 """
 
 import math
@@ -343,10 +356,14 @@ class FieldConfig:
 
 
 class ComparisonSchema:
-    """Loads and validates Kind.attribute_schema at reconciliation start.
+    """Loads and validates a comparison-configuration mapping.
 
     Provides FieldConfig objects to comparison functions. All fields must have
     explicit comparison configs; no defaults are inferred.
+
+    Not `Kind.attribute_schema`, which holds declared type names in a different
+    shape -- see the module docstring and issue #71. No production caller
+    constructs this yet.
 
     Attributes:
         kind_name: Name of the Kind
@@ -354,11 +371,11 @@ class ComparisonSchema:
     """
 
     def __init__(self, kind_name: str, raw_schema: dict[str, Any]) -> None:
-        """Initialize schema from raw Kind.attribute_schema dict.
+        """Initialize schema from a raw comparison-configuration dict.
 
         Args:
             kind_name: Name of the Kind being configured
-            raw_schema: The raw attribute_schema dict from Kind model
+            raw_schema: `{field: {"type", "comparison", "logging"}}`
 
         Raises:
             SchemaError: If schema is malformed or missing required configs

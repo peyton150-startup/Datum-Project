@@ -29,15 +29,26 @@ PROVIDER_ID_KEY = "provider_id"
 
 ATTRIBUTES_KEY = "attributes"
 
-# YAML's merge key. The document is composed and never loaded, and a composer
+# YAML's merge key, identified the way YAML identifies it: by the tag its own
+# resolver assigns. The document is composed and never loaded, and a composer
 # does not expand merges the way a loader does, so a document using one would
 # see a key literally named `<<` -- silently, and anywhere in the file. Refused
-# by name rather than left to surface as a baffling "unknown attribute", and
-# refused rather than expanded, because expanding it would be a second
-# implementation of a PyYAML feature, and because a value assembled from
-# elsewhere in the file is not what the author is looking at when they read
-# their own declaration.
-MERGE_KEY = "<<"
+# rather than expanded, because expanding it would be a second implementation of
+# a PyYAML feature, and because a value assembled from elsewhere in the file is
+# not what the author is looking at when they read their own declaration.
+#
+# **Asked, not modelled, and it was modelled first.** This started as
+# `style is None and value == "<<"`, which is a hand-rolled restatement of a
+# rule the resolver has already applied -- and it disagreed with YAML in both
+# directions. `!!str <<` is an author explicitly saying "this is a string key",
+# which `main` accepts and the spelling test rejected; `!!merge other` is a
+# merge key that is not spelled `<<`, which the spelling test missed and then
+# reported as the baffling "unknown attribute" the rule exists to prevent.
+#
+# The tag subsumes quoting, so the `style` clause is gone rather than kept
+# beside this: `"<<"` resolves to `str` already, and having both would be two
+# encodings of one question with the resolver as tie-breaker for neither.
+MERGE_TAG = "tag:yaml.org,2002:merge"
 
 # The one scalar text that states a declared null, and only unquoted. `~`,
 # `Null` and `NULL` are ordinary content read by the declared type -- treating
@@ -187,6 +198,20 @@ def _collect_key_lines(
     file and no position. The value walk descends into sequences; two walks over
     one graph disagreeing about where keys can be is how the last two defects in
     this file started.
+
+    **Stated limit: one shared node gets one path, and it may not be the path
+    the error names.** `visited` is marked on first arrival, so a node reachable
+    by two non-cyclic routes records keys under the first only. Where that
+    differs from the route the value walk took -- an anchor defined inside
+    `attributes` and aliased into the envelope, say -- the rejection is still
+    correct and `_locate` falls back to naming the file with no line.
+
+    Deliberate, and the alternative is worse. Recording every route means
+    dropping this set, and this set is what keeps the walk linear: the alias
+    fan-out that cost 1.8 s in the value walk would reappear here, on the
+    failure path, for a document already being rejected. A bounded loss of
+    precision in a diagnostic beats an unbounded cost to produce it, and
+    `_locate` is written to degrade exactly this way.
     """
     if id(node) in visited:
         return
@@ -282,8 +307,16 @@ def _document_view(root: yaml.MappingNode) -> tuple[Mapping[str, object], yaml.N
 def _entries(mapping_node: yaml.MappingNode, path: KeyPath) -> list[tuple[str, yaml.Node]]:
     """One mapping's entries by name, with the rules every mapping obeys applied.
 
-    Every mapping in the document comes through here, envelope and attributes
-    alike, so the rules below are stated once and cannot acquire an exception in
+    **Every mapping the document *retains* comes through here** -- the root,
+    `metadata`, every nested envelope mapping including inside a sequence, one
+    reached through an alias, and `attributes` itself. The two positions that do
+    not reach it are refused before anything reads them: a mapping used as a
+    *key* by `_key_name` above, and a mapping as an *attribute value* by
+    `_stated_value`. That distinction is worth stating rather than claiming
+    "every mapping", because the claim is what has to be audited when the next
+    rule is added here, and an overstated one audits as true.
+
+    So the rules below are stated once and cannot acquire an exception in
     the corner of the document nobody re-reads. The keys of a mapping are all
     checked before any of its values are looked at, so the error an author sees
     names the structural problem rather than whatever the first broken value
@@ -326,6 +359,17 @@ def _key_name(key_node: yaml.Node, path: KeyPath) -> str:
     for something that is syntactically fine. Now that nothing constructs the
     mapping, that accident is gone and the rule has to be written down. Keeping
     the old wording would have been the more misleading of the two options.
+
+    **Stated limit: a key is its source text, never its resolved type.** A key
+    written `~` or `true` arrives as the string `"~"` or `"true"`, where the
+    loader produced `None` and `True` -- and `true` and `"true"` become the same
+    key here where the loader kept them apart. Not called unobservable, because
+    it is not: the two collapse into one key, which duplicate detection and
+    error wording can both show. What is true is narrower -- **it cannot change
+    a Datum document that ingests successfully**, since every key Datum looks up
+    (`apiVersion`, `kind`, `metadata`, `provider_id`, `name`, `scope`) is a plain
+    string that no YAML keyword collides with. Any document where the difference
+    shows is a document being rejected either way.
     """
     if not isinstance(key_node, yaml.ScalarNode):
         raise InvalidDocument(
@@ -333,15 +377,14 @@ def _key_name(key_node: yaml.Node, path: KeyPath) -> str:
             "document is a plain name, not a structure",
             path=path,
         )
-    # Unquoted only, for the same reason the declared null is unquoted only:
-    # `"<<"` is an ordinary key to YAML, not a merge, and reading the quoted
-    # form as a merge would apply the quoting rule in one place and ignore it
-    # in the other.
-    if key_node.style is None and key_node.value == MERGE_KEY:
+    # The resolver has already decided whether this is a merge; asking it is the
+    # whole rule. See `MERGE_TAG` for what the spelling test got wrong in both
+    # directions, and why quoting no longer needs its own clause here.
+    if key_node.tag == MERGE_TAG:
         raise InvalidDocument(
-            f"{_label(path)} uses the YAML merge key {MERGE_KEY!r}, which intent "
-            "documents may not do; everything a resource declares is written in "
-            "the resource's own document",
+            f"{_label(path)} uses the YAML merge key {str(key_node.value)!r}, which "
+            "intent documents may not do; everything a resource declares is written "
+            "in the resource's own document",
             path=path,
         )
     return str(key_node.value)

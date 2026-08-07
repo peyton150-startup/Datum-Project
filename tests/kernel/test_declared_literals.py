@@ -491,6 +491,44 @@ class TestOneReadingOfTheDocument:
 
         assert "merge key" in message
 
+    def test_an_explicitly_string_tagged_merge_spelling_is_an_ordinary_key(self):
+        """`!!str <<` is the author saying "not a merge", and it was being refused.
+
+        A branch-introduced regression against `main`, verified rather than
+        argued: `main` read attributes through `safe_load`, which resolves
+        `!!str <<` to the ordinary key `<<` and accepts the document. The rule
+        here decided a merge by spelling and quote style, so it overrode a tag
+        YAML had already honoured.
+
+        The tag is the criterion now, which subsumes quoting -- `"<<"` resolves
+        to `str` too -- so this and the quoted case below are one rule rather
+        than a rule plus an exception.
+        """
+        [snapshot] = parse_document_set(
+            [("d.yaml", document("attributes:\n  !!str <<: 1\n"))], "t", {"K": {"<<": "int"}}
+        )
+
+        assert snapshot.attributes == {"<<": 1}
+
+    def test_a_merge_tag_is_refused_however_the_key_is_spelt(self):
+        """The other direction of the same mistake, and it produced the exact
+        message the refusal exists to prevent.
+
+        `!!merge` on a key spelt anything but `<<` is a merge key to YAML and
+        was not one to Datum, so it fell through to `unknown=['notliteral']` --
+        the "baffling unknown attribute" `MERGE_TAG`'s comment names. Asserting
+        both directions because a rule keyed on the resolved tag has to agree
+        with YAML when the tag and the spelling disagree, which is the only case
+        that ever distinguished the two implementations.
+        """
+        message = envelope(
+            document("defaults: &d\n  v: 1\nattributes:\n  !!merge notliteral: *d\n"),
+            {"v": "int"},
+        )
+
+        assert "merge key" in message
+        assert "unknown=" not in message
+
     def test_a_merge_key_in_the_envelope_is_refused_by_name_as_well(self):
         """Where the silence would have been worst, and it is the same rule.
 

@@ -396,6 +396,33 @@ def test_key_lines_descends_into_sequences():
     }
 
 
+def test_a_defect_inside_an_anchored_mapping_reports_the_anchor_definition():
+    # The public contract, not the mechanism. A mapping written once under an
+    # anchor and used again through an alias exists at one editable place in the
+    # file, and that is where the author has to fix it -- PyYAML keeps the
+    # anchored node's own mark, so a use site is not available to report even if
+    # it were wanted.
+    #
+    # Asserted as behaviour rather than as agreement between the two walks,
+    # because that agreement does not always hold: an anchor defined inside
+    # `attributes` and aliased into the envelope is reached by the two walks on
+    # different paths, and the error then names the file with no line. That is a
+    # documented degrade, so pinning it as an invariant would pin something
+    # false.
+    text = (
+        "anchor: &a\n"  # 1
+        "  dup: 1\n"  # 2
+        "  dup: 3\n"  # 3
+        "list:\n"  # 4
+        "  - *a\n" + VALID  # 5
+    )
+
+    (error,) = errors_from(text)
+
+    assert "more than once" in error.message
+    assert error.line == 3
+
+
 def test_rendered_message_locates_every_error():
     with pytest.raises(InvalidRevision) as caught:
         parse_document_set([("deployments/web.yaml", "- nope\n")], TENANT, SCHEMAS)

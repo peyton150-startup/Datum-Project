@@ -160,6 +160,29 @@ The referential layer is where the barricade is actually load-bearing. Two docum
 
 **Validation is whole-revision, not fail-fast.** Every document is validated and every error is collected before anything is raised, so one push surfaces every problem at once instead of one problem per push. `InvalidRevision` carries the full list.
 
+#### Nesting deep enough to exhaust the stack, and why no maximum depth is published (issue #66)
+
+A document nested a few hundred levels deep exhausts CPython's stack while being parsed. Before this was closed, that escaped the barricade as a bare `RecursionError` — so `ingest_revision` never saw a domain error, the poll task logged "failed unexpectedly" with a traceback, and **every later poll failed identically and permanently** until the document changed.
+
+`RecursionError` is now translated to `InvalidDocument` at the point the document is read. **The message names no maximum depth, and the absence of that number is a decision rather than unfinished work.**
+
+The reason is that the limit is not a property of the document. Measured against this tree:
+
+| caller frames already on the stack | deepest document accepted |
+|---|---|
+| 0 | 491 |
+| 50 | 466 |
+| 150 | 416 |
+| 300 | 341 |
+
+Roughly two levels lost per caller frame, because PyYAML's parser spends about two per nesting level. Ingestion runs inside Celery, whose stack is far deeper than a test's, so the same file can be read in one context and refused in another. Any number Datum published would be a second encoding of `sys.getrecursionlimit()` minus an unknowable amount — the trap `_parse_integer` avoids by *asking* the interpreter for its digit cap instead of restating it, except that this one cannot be asked, because the answer depends on the caller.
+
+**A depth bound inside Datum's own walk was considered and is impossible, not merely inelegant.** At the moment the stack runs out there is nothing of Datum's running: measured, the failure is 996 PyYAML frames against 3 of Datum's, inside `parser.parse_flow_sequence_entry`, before a node tree exists to walk. Counting depth in Datum's traversal would require pre-scanning the raw text, which is writing a second YAML parser to protect the first.
+
+**A document size cap was also considered and does not close this.** The reproducer is about 2 KB — deep nesting is cheap in bytes, so any cap that admits a real intent document admits this one. A size limit may still be worth having as a resource policy; it is not this defect's fix.
+
+The rejection therefore reports no line. The failure has a shape rather than a position, and inventing a line for it would be a confidently wrong answer of the kind §10's locator exists to avoid.
+
 ### Trigger and idempotency
 
 Ingestion has **one entry point and may have several triggers**. Phase 2 builds polling; a Git webhook is deferred to an expansion (1.7) and, when it arrives, calls the same function rather than duplicating the path.

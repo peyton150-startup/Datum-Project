@@ -400,6 +400,141 @@ def test_key_lines_descends_into_sequences():
     }
 
 
+# --------------------------------------------------------------------------
+# Nesting deep enough to exhaust the stack (issue #66)
+# --------------------------------------------------------------------------
+
+
+def nested(depth: int, body_key: str = "bomb") -> str:
+    """A valid document carrying a `depth`-deep flow sequence."""
+    return (
+        "apiVersion: datum.dev/v1\n"
+        "kind: Deployment\n"
+        "metadata:\n  name: web\n  scope: default\n"
+        f"{body_key}: " + "[" * depth + "]" * depth + "\n"
+        "attributes:\n  replicas: 3\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "because"),
+    [
+        (nested(1000), "the reproducer filed with issue #66, ~2 KB of brackets"),
+        (nested(5000), "far past the limit rather than just over it"),
+        (
+            "apiVersion: datum.dev/v1\nkind: Deployment\n"
+            "metadata:\n  name: web\n  scope: default\n"
+            "attributes:\n  replicas: " + "[" * 1000 + "]" * 1000 + "\n",
+            "deep inside attributes rather than under an unread key",
+        ),
+        (
+            "apiVersion: datum.dev/v1\nkind: Deployment\n"
+            "metadata:\n  name: web\n  scope: default\n"
+            "bomb: " + "{a: " * 800 + "1" + "}" * 800 + "\n"
+            "attributes:\n  replicas: 3\n",
+            "mappings rather than sequences, in case only one shape recurses",
+        ),
+    ],
+)
+def test_nesting_too_deep_to_parse_is_a_document_error_not_a_RecursionError(text, because):
+    """The bug excluded is a bare `RecursionError` escaping the barricade.
+
+    `parse_document_set` promises `InvalidDocument` / `InvalidRevision` or
+    nothing. Under the bug these documents raised `RecursionError` instead, so
+    `ingest_revision` never saw a domain error, the poll task logged "failed
+    unexpectedly" with a traceback, and **every later poll failed identically
+    and permanently** until the document changed.
+
+    `pytest.raises(InvalidRevision)` is what discriminates: `RecursionError` is
+    not a subclass of it, so under the bug these fail rather than pass with a
+    different message. The message assertion alone would not be enough, because
+    there would be no message at all.
+
+    One guard, in `_parse_one`, is the whole fix. A second was written into
+    `_key_lines` on the theory that locating the rejection re-parses the same
+    text and would exhaust the stack again; reverting it changed no test, and
+    the reason is that `_locate` returns before calling `_key_lines` when the
+    error carries no path -- which this one does not.
+    """
+    (error,) = errors_from(text)
+
+    assert "nesting exceeds" in error.message
+
+
+def test_the_too_deep_message_names_no_maximum_depth():
+    """A guard on the decision, not a demonstration of the bug.
+
+    No depth can be honestly published: the limit is the interpreter's recursion
+    budget minus whatever the caller already spent, so the same file is readable
+    from a shallow stack and refused from a deep one. Measured against this
+    tree, the deepest accepted document was 491 levels from a bare call and 341
+    with 300 caller frames already on it.
+
+    So this fails if someone later "improves" the message by putting a number in
+    it, which would be a promise Datum cannot keep. It would pass before and
+    after the #66 fix, and is here to constrain the fix rather than to prove it.
+    """
+    (error,) = errors_from(nested(1000))
+
+    assert not any(character.isdigit() for character in error.message)
+
+
+@pytest.mark.parametrize("depth", [1, 2, 40])
+def test_ordinary_nesting_is_untouched_by_the_depth_guard(depth):
+    """Without this, "reject everything nested" would pass every case above.
+
+    40 levels is comfortably inside the limit. These documents are still
+    rejected -- a sequence is not a valid `int` attribute -- but rejected *for
+    that reason*, and located on the line the sequence is written on, which is
+    what shows the guard did not swallow them.
+
+    Depth 1 is the shallowest thing that is nested at all, and is here because a
+    guard written as `>= 1` would pass a test that only tried 40.
+    """
+    text = (
+        "apiVersion: datum.dev/v1\nkind: Deployment\n"  # 1, 2
+        "metadata:\n  name: web\n  scope: default\n"  # 3, 4, 5
+        "attributes:\n  replicas: " + "[" * depth + "]" * depth + "\n"  # 6, 7
+    )
+
+    (error,) = errors_from(text)
+
+    assert "nesting exceeds" not in error.message
+    assert "must be a scalar" in error.message
+    assert error.line == 7
+
+
+def test_a_deep_document_that_is_valid_apart_from_its_depth_still_parses():
+    """The other side of the boundary: depth alone must not reject.
+
+    A 40-deep sequence in a field declared as an attribute of a kind that has no
+    such attribute would confuse the case above with a schema error. Here the
+    deep structure sits under a key the envelope does not read, so the only
+    thing that could reject this document is the depth guard -- and it must not.
+    """
+    (snapshot,) = parse(nested(40))
+
+    assert snapshot.attributes == {"replicas": 3}
+
+
+def test_a_too_deep_rejection_reports_no_line_rather_than_a_wrong_one():
+    """Why `_key_lines` needs no guard of its own, pinned so it stays true.
+
+    The too-deep rejection carries no path, so `_locate` returns before
+    re-parsing the text -- which is the reason a second `RecursionError` guard
+    in `_key_lines` was unreachable and was removed. If someone later gives this
+    rejection a path, `_key_lines` starts being called on a document that
+    exhausted the parser once already, and this test is what notices.
+
+    `None` is also the honest answer on its own terms: the failure has no line,
+    it has a shape.
+    """
+    (error,) = errors_from(nested(1000))
+
+    assert error.line is None
+    assert error.source == "web.yaml"
+
+
 def test_a_defect_in_one_sequence_item_does_not_report_a_later_item():
     # The failure this excludes is a *confidently wrong* line, which is worse
     # than the "no line" it replaced. Both walks descended into sequences without

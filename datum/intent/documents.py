@@ -56,6 +56,32 @@ MERGE_TAG = "tag:yaml.org,2002:merge"
 # through the one door this barricade closes (issue #55).
 DECLARED_NULL = "null"
 
+# What a document too deeply nested to read is told, and it names no number on
+# purpose (issue #66).
+#
+# **There is no depth Datum could honestly publish, because the limit is not a
+# property of the document.** Measured against this tree: the deepest document
+# accepted was 491 levels from a bare call, 466 with 50 caller frames already on
+# the stack, 416 with 150, and 341 with 300 -- roughly two levels lost per frame,
+# since PyYAML's parser burns about two per level. Ingestion runs inside Celery,
+# whose stack is far deeper than a test's, so the same file can be read in one
+# context and refused in another.
+#
+# A constant here would therefore be a second encoding of `sys.getrecursionlimit()`
+# minus an unknowable amount, which is the trap `_parse_integer` avoided by
+# asking the interpreter for its digit cap instead of restating it. The
+# difference is that a digit cap can be asked for and this cannot: the answer
+# depends on the caller.
+#
+# So the message says what is true -- this document could not be read here --
+# and declines to promise what would be read elsewhere.
+_TOO_DEEPLY_NESTED = (
+    "document nesting exceeds the depth this interpreter can parse; no maximum "
+    "is published because the limit depends on the interpreter's recursion limit "
+    "and on the call stack in use, not on the document alone -- flatten the "
+    "structure rather than tuning to a number"
+)
+
 # What a node is called when one turns up somewhere it does not belong. A
 # lookup rather than a branch: there are exactly three node kinds, and naming
 # them in one table means an error message cannot learn a fourth spelling.
@@ -118,6 +144,32 @@ def parse_document_set(
 def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
     """Apply the syntax, envelope, referential, and schema layers to one document.
 
+    Every step below either parses or walks the untrusted document, and both
+    recurse, so this is where the stack can run out. `RecursionError` is
+    translated here rather than left to escape: the contract is `InvalidDocument`
+    or nothing, and a `RecursionError` reaching `ingest_revision` becomes "intent
+    poll failed unexpectedly" with a traceback, permanently, until the document
+    changes (issue #66).
+
+    **The guard wraps the whole read, because the recursion is not in one place.**
+    `yaml.compose_all` recurses for nesting and the value walk recurses over what
+    it produced. Measured, the parser exhausts the stack first and by a wide
+    margin -- 996 PyYAML frames to 3 of Datum's, dying inside
+    `parser.parse_flow_sequence_entry` before a node tree exists at all. That is
+    also why a depth bound in Datum's own walk was not the fix: at the point the
+    stack runs out there is nothing of Datum's running to do the counting.
+
+    **No depth is named, and that is deliberate.** See `_TOO_DEEPLY_NESTED`.
+    """
+    try:
+        return _read_document(text, tenant_id, kind_schemas)
+    except RecursionError as exc:
+        raise InvalidDocument(_TOO_DEEPLY_NESTED) from exc
+
+
+def _read_document(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
+    """The document's four layers, on a stack the caller has already guarded.
+
     The document is read exactly once, as nodes. Envelope values are constructed
     from those nodes under YAML's own rules; attribute values are not constructed
     at all until their declared type has been looked up (issue #55).
@@ -164,7 +216,17 @@ def _locate(text: str, exc: InvalidDocument) -> int | None:
 
 
 def _key_lines(text: str) -> dict[KeyPath, int]:
-    """Map every mapping key in the document to the line it is written on."""
+    """Map every mapping key in the document to the line it is written on.
+
+    **No `RecursionError` guard here, and that was tested rather than assumed.**
+    The obvious worry is that this re-parses the same text on the failure path,
+    so a document rejected for being too deeply nested would exhaust the stack
+    again while its rejection was being located. It cannot: `_locate` returns
+    before calling this when the error carries no path, and the too-deep
+    rejection carries none. A guard here was written first, and removed once
+    reverting it changed no test -- an unreachable `except` whose comment
+    explains a path that does not exist is worse than no guard at all.
+    """
     try:
         # Pinned to the loader `_single_mapping_node` used, not left to default.
         # Two composers with two resolvers could disagree about the tree they

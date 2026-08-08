@@ -56,6 +56,32 @@ MERGE_TAG = "tag:yaml.org,2002:merge"
 # through the one door this barricade closes (issue #55).
 DECLARED_NULL = "null"
 
+# What a document too deeply nested to read is told, and it names no number on
+# purpose (issue #66).
+#
+# **There is no depth Datum could honestly publish, because the limit is not a
+# property of the document.** Measured against this tree: the deepest document
+# accepted was 491 levels from a bare call, 466 with 50 caller frames already on
+# the stack, 416 with 150, and 341 with 300 -- roughly two levels lost per frame,
+# since PyYAML's parser burns about two per level. Ingestion runs inside Celery,
+# whose stack is far deeper than a test's, so the same file can be read in one
+# context and refused in another.
+#
+# A constant here would therefore be a second encoding of `sys.getrecursionlimit()`
+# minus an unknowable amount, which is the trap `_parse_integer` avoided by
+# asking the interpreter for its digit cap instead of restating it. The
+# difference is that a digit cap can be asked for and this cannot: the answer
+# depends on the caller.
+#
+# So the message says what is true -- this document could not be read here --
+# and declines to promise what would be read elsewhere.
+_TOO_DEEPLY_NESTED = (
+    "document nesting exceeds the depth this interpreter can parse; no maximum "
+    "is published because the limit depends on the interpreter's recursion limit "
+    "and on the call stack in use, not on the document alone -- flatten the "
+    "structure rather than tuning to a number"
+)
+
 # What a node is called when one turns up somewhere it does not belong. A
 # lookup rather than a branch: there are exactly three node kinds, and naming
 # them in one table means an error message cannot learn a fourth spelling.
@@ -102,7 +128,7 @@ def parse_document_set(
 
     for source, text in sources:
         try:
-            parsed.append((source, _parse_one(text, tenant_id, kind_schemas)))
+            parsed.append((source, _read_document(text, tenant_id, kind_schemas)))
         except InvalidDocument as exc:
             errors.append(DocumentError(source=source, line=_locate(text, exc), message=str(exc)))
 
@@ -115,14 +141,50 @@ def parse_document_set(
     return [snapshot for _, snapshot in parsed]
 
 
-def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
-    """Apply the syntax, envelope, referential, and schema layers to one document.
+def _read_document(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
+    """The document's four layers, and the one step where the stack can run out.
 
     The document is read exactly once, as nodes. Envelope values are constructed
     from those nodes under YAML's own rules; attribute values are not constructed
     at all until their declared type has been looked up (issue #55).
+
+    **Why `RecursionError` is translated at all.** A document nested a few
+    hundred levels deep exhausts CPython's stack while being read. Left to
+    escape, it reaches `ingest_revision` as a bare `RecursionError` -- so the
+    barricade's contract of `InvalidDocument` or nothing is broken, the poll task
+    logs "failed unexpectedly" with a traceback, and every later poll fails
+    identically and permanently until the document changes (issue #66).
+
+    **Why the guard covers these two calls and stops.** Composing and
+    constructing are the only steps that recurse over document nesting: PyYAML's
+    composer, and `_constructed`'s walk over the nodes it produced. Everything
+    after them is iterative or O(1) per value -- `_entries` reads one mapping's
+    own pairs without descending, `_stated_value` inspects a single located node,
+    the `ATTRIBUTE_TYPES` parsers do not recurse, and `unstorable_attribute`
+    walks with a deque. So a `RecursionError` from any later step is not a deep
+    document; it is a defect in Datum, and translating it here would report an
+    ordinary flat document to its author as one that needs flattening.
+
+    That is the distinction `reconcile.attribute_types` already draws one module
+    over, where `UnacceptableLiteral` is deliberately narrower than `ValueError`
+    "so that a genuine bug inside a parser is not mistaken for a rejected
+    document". Widening this `try` back over the later layers would take it away
+    again. Adding another recursive document-structure step after this boundary
+    requires reconsidering the guard's placement; it should not be covered merely
+    by widening the `try`.
+
+    **Why the fix is not a depth bound in Datum's own walk.** It cannot be
+    implemented at Datum's current node-walk boundary: measured, the failure is
+    996 PyYAML frames against 3 of Datum's, inside
+    `parser.parse_flow_sequence_entry`, before a node tree exists to walk.
+    Bounding depth would need a pre-scan of the raw text or a different parser.
+
+    **No depth is named, and that is deliberate.** See `_TOO_DEEPLY_NESTED`.
     """
-    document, attributes = _document_view(_single_mapping_node(text))
+    try:
+        document, attributes = _document_view(_single_mapping_node(text))
+    except RecursionError as exc:
+        raise InvalidDocument(_TOO_DEEPLY_NESTED) from exc
 
     _reject_unsupported_version(document)
     _reject_provider_id(document, ())
@@ -164,7 +226,17 @@ def _locate(text: str, exc: InvalidDocument) -> int | None:
 
 
 def _key_lines(text: str) -> dict[KeyPath, int]:
-    """Map every mapping key in the document to the line it is written on."""
+    """Map every mapping key in the document to the line it is written on.
+
+    **No `RecursionError` guard here, and that was tested rather than assumed.**
+    The obvious worry is that this re-parses the same text on the failure path,
+    so a document rejected for being too deeply nested would exhaust the stack
+    again while its rejection was being located. It cannot: `_locate` returns
+    before calling this when the error carries no path, and the too-deep
+    rejection carries none. A guard here was written first, and removed once
+    reverting it changed no test -- an unreachable `except` whose comment
+    explains a path that does not exist is worse than no guard at all.
+    """
     try:
         # Pinned to the loader `_single_mapping_node` used, not left to default.
         # Two composers with two resolvers could disagree about the tree they

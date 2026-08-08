@@ -8,6 +8,7 @@ database and no Git: `parse_document_set` is pure, which is the point.
 import pytest
 import yaml
 
+from datum.intent import documents
 from datum.intent.documents import MAX_IDENTIFIER_LENGTH, parse_document_set
 from datum.intent.errors import InvalidRevision
 
@@ -398,6 +399,179 @@ def test_key_lines_descends_into_sequences():
         ("items", "[0]", "name"): 3,
         ("items", "[1]", "other"): 4,
     }
+
+
+# --------------------------------------------------------------------------
+# Nesting deep enough to exhaust the stack (issue #66)
+# --------------------------------------------------------------------------
+
+
+def nested(depth: int, body_key: str = "bomb") -> str:
+    """A valid document carrying a `depth`-deep flow sequence."""
+    return (
+        "apiVersion: datum.dev/v1\n"
+        "kind: Deployment\n"
+        "metadata:\n  name: web\n  scope: default\n"
+        f"{body_key}: " + "[" * depth + "]" * depth + "\n"
+        "attributes:\n  replicas: 3\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "because"),
+    [
+        (nested(1000), "the reproducer filed with issue #66, ~2 KB of brackets"),
+        (nested(5000), "far past the limit rather than just over it"),
+        (
+            "apiVersion: datum.dev/v1\nkind: Deployment\n"
+            "metadata:\n  name: web\n  scope: default\n"
+            "attributes:\n  replicas: " + "[" * 1000 + "]" * 1000 + "\n",
+            "deep inside attributes rather than under an unread key",
+        ),
+        (
+            "apiVersion: datum.dev/v1\nkind: Deployment\n"
+            "metadata:\n  name: web\n  scope: default\n"
+            "bomb: " + "{a: " * 800 + "1" + "}" * 800 + "\n"
+            "attributes:\n  replicas: 3\n",
+            "mappings rather than sequences, in case only one shape recurses",
+        ),
+    ],
+)
+def test_nesting_too_deep_to_parse_is_a_document_error_not_a_RecursionError(text, because):
+    """The bug excluded is a bare `RecursionError` escaping the barricade.
+
+    `parse_document_set` promises `InvalidDocument` / `InvalidRevision` or
+    nothing. Under the bug these documents raised `RecursionError` instead, so
+    `ingest_revision` never saw a domain error, the poll task logged "failed
+    unexpectedly" with a traceback, and **every later poll failed identically
+    and permanently** until the document changed.
+
+    `pytest.raises(InvalidRevision)` is what discriminates: `RecursionError` is
+    not a subclass of it, so under the bug these fail rather than pass with a
+    different message. The message assertion alone would not be enough, because
+    there would be no message at all.
+
+    One guard is the whole fix, and it wraps exactly the two calls that recurse
+    over document nesting -- the composer and the value walk, inside
+    `_read_document`. The `attributes` case below is the one that shows why the
+    later layers need no guard of their own: its brackets sit under a declared
+    attribute, so it looks like a schema-layer failure and is in fact refused by
+    the composer, before `_validated_attributes` is reached at all.
+    """
+    (error,) = errors_from(text)
+
+    assert "nesting exceeds" in error.message
+
+
+def test_recursion_from_a_later_layer_is_not_translated_into_a_document_error(monkeypatch):
+    """A guard on the *scope* of the `RecursionError` catch, not a bug reproducer.
+
+    The test above pins the positive half of the contract: recursion while
+    composing and constructing an untrusted document becomes `InvalidDocument`.
+    This pins the negative half, which is what decides where the `try` ends.
+    Only the composer and `_constructed` recurse over document nesting; every
+    later layer is iterative or O(1) per value, so a `RecursionError` from one of
+    them is a defect in Datum rather than a deep document, and must escape as
+    one. Translating it would tell the author of an ordinary flat document to
+    flatten its structure.
+
+    **No input can demonstrate this, which is why the failure is injected.**
+    That is a real limitation and not a hidden one: this test cannot fail because
+    of anything a document does, and it proves nothing about any document. It
+    fails if the guard is ever widened back over the later layers -- which is the
+    regression it exists to catch, and which the previous shape of this code had.
+
+    Raised directly rather than by a self-calling function. What the guard
+    selects on is the exception type, so exhausting the stack for real would add
+    fragility near the recursion limit without making the injection any more
+    faithful.
+
+    `pytest.raises(RecursionError)` is the discriminator: under a guard that
+    wraps the whole read, this call raises `InvalidRevision` instead, so the test
+    fails rather than passing with a different message.
+    """
+
+    def defective_later_layer(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RecursionError("simulated defect in the schema layer")
+
+    monkeypatch.setattr(documents, "_validated_attributes", defective_later_layer)
+
+    with pytest.raises(RecursionError):
+        parse(VALID)
+
+
+def test_the_too_deep_message_names_no_maximum_depth():
+    """A guard on the decision, not a demonstration of the bug.
+
+    No depth can be honestly published: the limit is the interpreter's recursion
+    budget minus whatever the caller already spent, so the same file is readable
+    from a shallow stack and refused from a deep one. Measured against this
+    tree, the deepest accepted document was 491 levels from a bare call and 341
+    with 300 caller frames already on it.
+
+    So this fails if someone later "improves" the message by putting a number in
+    it, which would be a promise Datum cannot keep. It would pass before and
+    after the #66 fix, and is here to constrain the fix rather than to prove it.
+    """
+    (error,) = errors_from(nested(1000))
+
+    assert not any(character.isdigit() for character in error.message)
+
+
+@pytest.mark.parametrize("depth", [1, 2, 40])
+def test_ordinary_nesting_is_untouched_by_the_depth_guard(depth):
+    """Without this, "reject everything nested" would pass every case above.
+
+    40 levels is comfortably inside the limit. These documents are still
+    rejected -- a sequence is not a valid `int` attribute -- but rejected *for
+    that reason*, and located on the line the sequence is written on, which is
+    what shows the guard did not swallow them.
+
+    Depth 1 is the shallowest thing that is nested at all, and is here because a
+    guard written as `>= 1` would pass a test that only tried 40.
+    """
+    text = (
+        "apiVersion: datum.dev/v1\nkind: Deployment\n"  # 1, 2
+        "metadata:\n  name: web\n  scope: default\n"  # 3, 4, 5
+        "attributes:\n  replicas: " + "[" * depth + "]" * depth + "\n"  # 6, 7
+    )
+
+    (error,) = errors_from(text)
+
+    assert "nesting exceeds" not in error.message
+    assert "must be a scalar" in error.message
+    assert error.line == 7
+
+
+def test_a_deep_document_that_is_valid_apart_from_its_depth_still_parses():
+    """The other side of the boundary: depth alone must not reject.
+
+    A 40-deep sequence in a field declared as an attribute of a kind that has no
+    such attribute would confuse the case above with a schema error. Here the
+    deep structure sits under a key the envelope does not read, so the only
+    thing that could reject this document is the depth guard -- and it must not.
+    """
+    (snapshot,) = parse(nested(40))
+
+    assert snapshot.attributes == {"replicas": 3}
+
+
+def test_a_too_deep_rejection_reports_no_line_rather_than_a_wrong_one():
+    """Why `_key_lines` needs no guard of its own, pinned so it stays true.
+
+    The too-deep rejection carries no path, so `_locate` returns before
+    re-parsing the text -- which is the reason a second `RecursionError` guard
+    in `_key_lines` was unreachable and was removed. If someone later gives this
+    rejection a path, `_key_lines` starts being called on a document that
+    exhausted the parser once already, and this test is what notices.
+
+    `None` is also the honest answer on its own terms: the failure has no line,
+    it has a shape.
+    """
+    (error,) = errors_from(nested(1000))
+
+    assert error.line is None
+    assert error.source == "web.yaml"
 
 
 def test_a_defect_in_one_sequence_item_does_not_report_a_later_item():

@@ -8,6 +8,7 @@ database and no Git: `parse_document_set` is pure, which is the point.
 import pytest
 import yaml
 
+from datum.intent import documents
 from datum.intent.documents import MAX_IDENTIFIER_LENGTH, parse_document_set
 from datum.intent.errors import InvalidRevision
 
@@ -450,15 +451,53 @@ def test_nesting_too_deep_to_parse_is_a_document_error_not_a_RecursionError(text
     different message. The message assertion alone would not be enough, because
     there would be no message at all.
 
-    One guard, in `_parse_one`, is the whole fix. A second was written into
-    `_key_lines` on the theory that locating the rejection re-parses the same
-    text and would exhaust the stack again; reverting it changed no test, and
-    the reason is that `_locate` returns before calling `_key_lines` when the
-    error carries no path -- which this one does not.
+    One guard is the whole fix, and it wraps exactly the two calls that recurse
+    over document nesting -- the composer and the value walk, inside
+    `_read_document`. The `attributes` case below is the one that shows why the
+    later layers need no guard of their own: its brackets sit under a declared
+    attribute, so it looks like a schema-layer failure and is in fact refused by
+    the composer, before `_validated_attributes` is reached at all.
     """
     (error,) = errors_from(text)
 
     assert "nesting exceeds" in error.message
+
+
+def test_recursion_from_a_later_layer_is_not_translated_into_a_document_error(monkeypatch):
+    """A guard on the *scope* of the `RecursionError` catch, not a bug reproducer.
+
+    The test above pins the positive half of the contract: recursion while
+    composing and constructing an untrusted document becomes `InvalidDocument`.
+    This pins the negative half, which is what decides where the `try` ends.
+    Only the composer and `_constructed` recurse over document nesting; every
+    later layer is iterative or O(1) per value, so a `RecursionError` from one of
+    them is a defect in Datum rather than a deep document, and must escape as
+    one. Translating it would tell the author of an ordinary flat document to
+    flatten its structure.
+
+    **No input can demonstrate this, which is why the failure is injected.**
+    That is a real limitation and not a hidden one: this test cannot fail because
+    of anything a document does, and it proves nothing about any document. It
+    fails if the guard is ever widened back over the later layers -- which is the
+    regression it exists to catch, and which the previous shape of this code had.
+
+    Raised directly rather than by a self-calling function. What the guard
+    selects on is the exception type, so exhausting the stack for real would add
+    fragility near the recursion limit without making the injection any more
+    faithful.
+
+    `pytest.raises(RecursionError)` is the discriminator: under a guard that
+    wraps the whole read, this call raises `InvalidRevision` instead, so the test
+    fails rather than passing with a different message.
+    """
+
+    def defective_later_layer(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RecursionError("simulated defect in the schema layer")
+
+    monkeypatch.setattr(documents, "_validated_attributes", defective_later_layer)
+
+    with pytest.raises(RecursionError):
+        parse(VALID)
 
 
 def test_the_too_deep_message_names_no_maximum_depth():

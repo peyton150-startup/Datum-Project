@@ -77,6 +77,8 @@ The system has a **barricade** (ADR-008). Outside it, all data is untrusted. Ins
 | Provider times out mid-run | Yes | Partial run recorded with a gap |
 | Intent document fails schema validation | Yes | Reject the whole revision, keep the previous one active |
 | Two declared resources claim the same identity | Yes | Reject at intent validation |
+| Intent document nested deeply enough to exhaust the stack while it is composed | Yes | Reject the revision as a document error, with no line and no published maximum depth. §10, issue #66 |
+| Stack exhausted after the document has been composed and constructed | No | Escapes as `RecursionError`. Nothing later recurses over nesting, so this is a bug. §10 |
 | Diff engine receives a match whose two sides have different kinds | No | Assert. This is a bug. |
 | Precedence policy has no rule covering a field | Yes | **Neither silent nor fatal.** The field yields an undecidable-precedence discrepancy and the run completes. Decided 2026-07-30, §23.6 |
 
@@ -164,7 +166,11 @@ The referential layer is where the barricade is actually load-bearing. Two docum
 
 A document nested a few hundred levels deep exhausts CPython's stack while being parsed. Before this was closed, that escaped the barricade as a bare `RecursionError` — so `ingest_revision` never saw a domain error, the poll task logged "failed unexpectedly" with a traceback, and **every later poll failed identically and permanently** until the document changed.
 
-`RecursionError` is now translated to `InvalidDocument` at the point the document is read. **The message names no maximum depth, and the absence of that number is a decision rather than unfinished work.**
+Datum translates `RecursionError` only around composing and constructing the document structure, which are the only two steps that recurse over document nesting: PyYAML's composer, and `_constructed`'s walk over the nodes it produced. Every later step — the envelope checks, the referential layer, the schema layer — is iterative or O(1) per value, so a `RecursionError` from any of them is an internal defect and escapes as one. Adding another recursive document-structure step after this boundary requires reconsidering the guard's placement; it should not be covered merely by widening the `try`.
+
+That boundary is narrower than the first fix drew it. Wrapping the whole read meant a future programming defect that recursively exhausted the stack inside a later layer would also be translated to `InvalidDocument`, potentially misclassifying an internal defect as an input rejection — the same distinction `reconcile.attribute_types` keeps by making `UnacceptableLiteral` narrower than `ValueError`.
+
+**The message names no maximum depth, and the absence of that number is a decision rather than unfinished work.**
 
 The reason is that the limit is not a property of the document. Measured against this tree:
 
@@ -177,7 +183,7 @@ The reason is that the limit is not a property of the document. Measured against
 
 Roughly two levels lost per caller frame, because PyYAML's parser spends about two per nesting level. Ingestion runs inside Celery, whose stack is far deeper than a test's, so the same file can be read in one context and refused in another. Any number Datum published would be a second encoding of `sys.getrecursionlimit()` minus an unknowable amount — the trap `_parse_integer` avoids by *asking* the interpreter for its digit cap instead of restating it, except that this one cannot be asked, because the answer depends on the caller.
 
-**A depth bound inside Datum's own walk was considered and is impossible, not merely inelegant.** At the moment the stack runs out there is nothing of Datum's running: measured, the failure is 996 PyYAML frames against 3 of Datum's, inside `parser.parse_flow_sequence_entry`, before a node tree exists to walk. Counting depth in Datum's traversal would require pre-scanning the raw text, which is writing a second YAML parser to protect the first.
+**A depth bound cannot be implemented at Datum's current node-walk boundary.** At the moment the stack runs out there is nothing of Datum's running to do the counting: measured, the failure is 996 PyYAML frames against 3 of Datum's, inside `parser.parse_flow_sequence_entry`, before a node tree exists to walk. Bounding depth would require a separate pre-scan of the raw text or a different parser — both disproportionate to this defect, and neither is what "add a depth limit" would mean to whoever proposed it.
 
 **A document size cap was also considered and does not close this.** The reproducer is about 2 KB — deep nesting is cheap in bytes, so any cap that admits a real intent document admits this one. A size limit may still be worth having as a resource policy; it is not this defect's fix.
 

@@ -128,7 +128,7 @@ def parse_document_set(
 
     for source, text in sources:
         try:
-            parsed.append((source, _parse_one(text, tenant_id, kind_schemas)))
+            parsed.append((source, _read_document(text, tenant_id, kind_schemas)))
         except InvalidDocument as exc:
             errors.append(DocumentError(source=source, line=_locate(text, exc), message=str(exc)))
 
@@ -141,40 +141,50 @@ def parse_document_set(
     return [snapshot for _, snapshot in parsed]
 
 
-def _parse_one(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
-    """Apply the syntax, envelope, referential, and schema layers to one document.
-
-    Every step below either parses or walks the untrusted document, and both
-    recurse, so this is where the stack can run out. `RecursionError` is
-    translated here rather than left to escape: the contract is `InvalidDocument`
-    or nothing, and a `RecursionError` reaching `ingest_revision` becomes "intent
-    poll failed unexpectedly" with a traceback, permanently, until the document
-    changes (issue #66).
-
-    **The guard wraps the whole read, because the recursion is not in one place.**
-    `yaml.compose_all` recurses for nesting and the value walk recurses over what
-    it produced. Measured, the parser exhausts the stack first and by a wide
-    margin -- 996 PyYAML frames to 3 of Datum's, dying inside
-    `parser.parse_flow_sequence_entry` before a node tree exists at all. That is
-    also why a depth bound in Datum's own walk was not the fix: at the point the
-    stack runs out there is nothing of Datum's running to do the counting.
-
-    **No depth is named, and that is deliberate.** See `_TOO_DEEPLY_NESTED`.
-    """
-    try:
-        return _read_document(text, tenant_id, kind_schemas)
-    except RecursionError as exc:
-        raise InvalidDocument(_TOO_DEEPLY_NESTED) from exc
-
-
 def _read_document(text: str, tenant_id: str, kind_schemas: KindSchemas) -> ResourceSnapshot:
-    """The document's four layers, on a stack the caller has already guarded.
+    """The document's four layers, and the one step where the stack can run out.
 
     The document is read exactly once, as nodes. Envelope values are constructed
     from those nodes under YAML's own rules; attribute values are not constructed
     at all until their declared type has been looked up (issue #55).
+
+    **Why `RecursionError` is translated at all.** A document nested a few
+    hundred levels deep exhausts CPython's stack while being read. Left to
+    escape, it reaches `ingest_revision` as a bare `RecursionError` -- so the
+    barricade's contract of `InvalidDocument` or nothing is broken, the poll task
+    logs "failed unexpectedly" with a traceback, and every later poll fails
+    identically and permanently until the document changes (issue #66).
+
+    **Why the guard covers these two calls and stops.** Composing and
+    constructing are the only steps that recurse over document nesting: PyYAML's
+    composer, and `_constructed`'s walk over the nodes it produced. Everything
+    after them is iterative or O(1) per value -- `_entries` reads one mapping's
+    own pairs without descending, `_stated_value` inspects a single located node,
+    the `ATTRIBUTE_TYPES` parsers do not recurse, and `unstorable_attribute`
+    walks with a deque. So a `RecursionError` from any later step is not a deep
+    document; it is a defect in Datum, and translating it here would report an
+    ordinary flat document to its author as one that needs flattening.
+
+    That is the distinction `reconcile.attribute_types` already draws one module
+    over, where `UnacceptableLiteral` is deliberately narrower than `ValueError`
+    "so that a genuine bug inside a parser is not mistaken for a rejected
+    document". Widening this `try` back over the later layers would take it away
+    again. Adding another recursive document-structure step after this boundary
+    requires reconsidering the guard's placement; it should not be covered merely
+    by widening the `try`.
+
+    **Why the fix is not a depth bound in Datum's own walk.** It cannot be
+    implemented at Datum's current node-walk boundary: measured, the failure is
+    996 PyYAML frames against 3 of Datum's, inside
+    `parser.parse_flow_sequence_entry`, before a node tree exists to walk.
+    Bounding depth would need a pre-scan of the raw text or a different parser.
+
+    **No depth is named, and that is deliberate.** See `_TOO_DEEPLY_NESTED`.
     """
-    document, attributes = _document_view(_single_mapping_node(text))
+    try:
+        document, attributes = _document_view(_single_mapping_node(text))
+    except RecursionError as exc:
+        raise InvalidDocument(_TOO_DEEPLY_NESTED) from exc
 
     _reject_unsupported_version(document)
     _reject_provider_id(document, ())

@@ -79,7 +79,7 @@ The system has a **barricade** (ADR-008). Outside it, all data is untrusted. Ins
 | Two declared resources claim the same identity | Yes | Reject at intent validation |
 | Intent document nested deeply enough to exhaust the stack while it is composed | Yes | Reject the revision as a document error, with no line and no published maximum depth. §10, issue #66 |
 | Stack exhausted after the document has been composed and constructed | No | Escapes as `RecursionError`. Nothing later recurses over nesting, so this is a bug. §10 |
-| Stack exhausted re-parsing a document to locate an already-decided rejection | Yes | Degrade: the rejection keeps its message and loses its line. The location is a diagnostic, and losing it must not cost the error. §10 |
+| Stack exhausted re-parsing a document to locate an already-decided rejection | No document is known to reach it — the re-parse runs from a shallower stack than the parse that already succeeded | Guarded anyway, and degrades: the rejection keeps its message and loses its line. The location is a diagnostic, and losing it must not cost the error. §10 |
 | Diff engine receives a match whose two sides have different kinds | No | Assert. This is a bug. |
 | Precedence policy has no rule covering a field | Yes | **Neither silent nor fatal.** The field yields an undecidable-precedence discrepancy and the run completes. Decided 2026-07-30, §23.6 |
 

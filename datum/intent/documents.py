@@ -228,21 +228,45 @@ def _locate(text: str, exc: InvalidDocument) -> int | None:
 def _key_lines(text: str) -> dict[KeyPath, int]:
     """Map every mapping key in the document to the line it is written on.
 
-    **No `RecursionError` guard here, and that was tested rather than assumed.**
-    The obvious worry is that this re-parses the same text on the failure path,
-    so a document rejected for being too deeply nested would exhaust the stack
-    again while its rejection was being located. It cannot: `_locate` returns
-    before calling this when the error carries no path, and the too-deep
-    rejection carries none. A guard here was written first, and removed once
-    reverting it changed no test -- an unreachable `except` whose comment
-    explains a path that does not exist is worse than no guard at all.
+    **The `RecursionError` guard covers the compose and stops there.** Both
+    halves of this routine can exhaust the stack, and they mean opposite things
+    when they do, so one `except` over both would be one rule where there are
+    two.
+
+    Composing exhausts it because the *document* is deep. That is untrusted
+    input, on the failure path, being re-read purely to improve an error message
+    Datum has already decided on -- so it degrades to the fallback this routine
+    already has, and the caller names the file with no line.
+
+    `_collect_key_lines` exhausts it because *Datum's own walk* is broken. Its
+    `visited` set is what stops a self-referential alias looping forever, and
+    without it this routine did exactly that (DESIGN section 13, and its own
+    docstring). Catching there would turn that regression into a quietly missing
+    line number instead of a defect anyone notices -- an internal fault wearing a
+    degraded diagnostic, which is the confusion section 6's two nesting rows and
+    `_read_document`'s guard exist to keep apart.
+
+    **No document is known to reach this guard, and that is stated rather than
+    left to be discovered.** `_locate` returns before calling this when the error
+    carries no path; the too-deep rejection carries none. An error that *does*
+    carry a path was produced after `_document_view` had already composed the
+    same text successfully, and this second compose runs from a shallower stack,
+    after unwinding out of `_read_document`.
+
+    So this is a contract guard rather than a reachability fix, and it is kept
+    for the reason `_shape` keeps a defaulted lookup it cannot currently miss:
+    this code runs while wording someone's rejection, and a failure raised there
+    breaks the same contract -- `InvalidDocument` or nothing -- that the
+    rejection exists to keep. An earlier guard was removed from this routine for
+    being unreachable; it wrapped the whole body, walk included, and so was the
+    thing this one is careful not to be.
     """
     try:
         # Pinned to the loader `_single_mapping_node` used, not left to default.
         # Two composers with two resolvers could disagree about the tree they
         # are describing, and this one exists to describe that one's.
         root = yaml.compose(text, Loader=yaml.SafeLoader)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         # The text did not survive a second parse either. The caller falls back
         # to naming the file alone, which is still better than nothing.
         return {}

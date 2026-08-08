@@ -79,6 +79,7 @@ The system has a **barricade** (ADR-008). Outside it, all data is untrusted. Ins
 | Two declared resources claim the same identity | Yes | Reject at intent validation |
 | Intent document nested deeply enough to exhaust the stack while it is composed | Yes | Reject the revision as a document error, with no line and no published maximum depth. §10, issue #66 |
 | Stack exhausted after the document has been composed and constructed | No | Escapes as `RecursionError`. Nothing later recurses over nesting, so this is a bug. §10 |
+| Stack exhausted re-parsing a document to locate an already-decided rejection | No document is known to reach it — the re-parse runs from a shallower stack than the parse that already succeeded | Guarded anyway, and degrades: the rejection keeps its message and loses its line. The location is a diagnostic, and losing it must not cost the error. §10 |
 | Diff engine receives a match whose two sides have different kinds | No | Assert. This is a bug. |
 | Precedence policy has no rule covering a field | Yes | **Neither silent nor fatal.** The field yields an undecidable-precedence discrepancy and the run completes. Decided 2026-07-30, §23.6 |
 
@@ -188,6 +189,8 @@ Roughly two levels lost per caller frame, because PyYAML's parser spends about t
 **A document size cap was also considered and does not close this.** The reproducer is about 2 KB — deep nesting is cheap in bytes, so any cap that admits a real intent document admits this one. A size limit may still be worth having as a resource policy; it is not this defect's fix.
 
 The rejection therefore reports no line. The failure has a shape rather than a position, and inventing a line for it would be a confidently wrong answer of the kind §10's locator exists to avoid.
+
+**Locating a rejection may fail; it may not replace the rejection.** The locator re-parses text that has already been parsed once, purely to improve a message Datum has already decided on, so it is guarded against exhausting the stack a second time and degrades to naming the file with no line. The guard covers the re-parse **and deliberately not the key walk that follows it**: composing exhausts the stack because the document is deep, but the walk exhausts it because Datum's own traversal is broken — its `visited` set is what stops a self-referential alias looping forever, and without it the walk did exactly that (§13). One `except` over both would turn that regression into a quietly missing line number instead of a defect anyone notices, which is the same internal-defect-as-input-rejection confusion the rows above exist to keep apart.
 
 ### Trigger and idempotency
 

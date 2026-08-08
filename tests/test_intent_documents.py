@@ -557,13 +557,13 @@ def test_a_deep_document_that_is_valid_apart_from_its_depth_still_parses():
 
 
 def test_a_too_deep_rejection_reports_no_line_rather_than_a_wrong_one():
-    """Why `_key_lines` needs no guard of its own, pinned so it stays true.
+    """Why the too-deep rejection never reaches `_key_lines` at all.
 
-    The too-deep rejection carries no path, so `_locate` returns before
-    re-parsing the text -- which is the reason a second `RecursionError` guard
-    in `_key_lines` was unreachable and was removed. If someone later gives this
-    rejection a path, `_key_lines` starts being called on a document that
-    exhausted the parser once already, and this test is what notices.
+    It carries no path, so `_locate` returns before re-parsing the text. That is
+    what keeps the diagnostic re-parse away from the one document known to
+    exhaust the parser. If someone later gives this rejection a path,
+    `_key_lines` starts being called on a document that has already run the stack
+    out once, and this test is what notices.
 
     `None` is also the honest answer on its own terms: the failure has no line,
     it has a shape.
@@ -572,6 +572,86 @@ def test_a_too_deep_rejection_reports_no_line_rather_than_a_wrong_one():
 
     assert error.line is None
     assert error.source == "web.yaml"
+
+
+# A document rejected with a *path*, which is what sends `_locate` on to
+# `_key_lines`. The too-deep rejection carries none, so it cannot be used to
+# reach the diagnostic re-parse at all.
+LOCATED_BY_PATH = """\
+apiVersion: datum.dev/v1
+kind: Deployment
+metadata:
+  name: web
+  scope: default
+attributes:
+  replicas: not-an-int
+"""
+
+
+def test_a_diagnostic_reparse_that_exhausts_the_stack_costs_the_line_not_the_rejection(monkeypatch):
+    """Locating a rejection may fail; it may not replace the rejection.
+
+    `_key_lines` re-parses text that has already been parsed once, purely to
+    improve a message Datum has already decided on. If that second parse
+    exhausts the stack, the honest degrade is the fallback the routine already
+    has for a second parse that fails -- name the file, drop the line.
+
+    Both halves are asserted against the *unpatched* run rather than against a
+    hardcoded string, so the test cannot pass by the rejection changing into some
+    other rejection that also has no line: the message must be identical and only
+    the line may move.
+
+    The bug excluded is a `RecursionError` escaping `parse_document_set` from the
+    failure path, breaking a contract of `InvalidDocument` or nothing while
+    wording an error that was already correct. Under that bug the second
+    `errors_from` call raises instead of returning, so this fails rather than
+    passing differently.
+
+    Injected rather than provoked by a document: the depth that would exhaust the
+    stack here is the runtime-dependent quantity `_TOO_DEEPLY_NESTED` refuses to
+    publish, so a fixture pinning it would encode the number the design declines
+    to name.
+    """
+
+    def exhausted(*args: object, **kwargs: object) -> object:
+        raise RecursionError("simulated stack exhaustion in the diagnostic re-parse")
+
+    (located,) = errors_from(LOCATED_BY_PATH)
+    assert located.line == 7
+
+    monkeypatch.setattr(documents.yaml, "compose", exhausted)
+    (degraded,) = errors_from(LOCATED_BY_PATH)
+
+    assert degraded.message == located.message
+    assert degraded.line is None
+
+
+def test_recursion_in_datums_own_key_walk_escapes_rather_than_degrading(monkeypatch):
+    """The half of the guard that is about *not* catching, pinned deliberately.
+
+    `_key_lines` composes and then walks, and both can exhaust the stack for
+    opposite reasons. Composing means the document is deep; the walk means Datum
+    is broken -- its `visited` set is what stops a self-referential alias looping
+    forever, and without it this walk did exactly that. So the guard is on the
+    compose alone, and a `RecursionError` from the walk must still escape.
+
+    The bug excluded is a widened guard: one `except` around the whole routine,
+    or around the call in `_locate`, would swallow a `visited` regression into a
+    silently missing line number -- an internal defect wearing a degraded
+    diagnostic. This is the test that fails if someone later widens it, and it is
+    the reason the narrow guard can be trusted to stay narrow.
+
+    Like the test above this injects rather than reproduces, and proves nothing
+    about any document. It is a guard on the scope of an `except`.
+    """
+
+    def defective_walk(*args: object, **kwargs: object) -> None:
+        raise RecursionError("simulated defect in the key walk")
+
+    monkeypatch.setattr(documents, "_collect_key_lines", defective_walk)
+
+    with pytest.raises(RecursionError):
+        parse(LOCATED_BY_PATH)
 
 
 def test_a_defect_in_one_sequence_item_does_not_report_a_later_item():

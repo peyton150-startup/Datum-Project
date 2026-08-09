@@ -72,6 +72,55 @@ COLLECT_SECONDS = int(os.environ.get("DATUM_COLLECT_SECONDS", "300"))
 # here, where a raised exception would be a failure to import Django settings.
 AUDIT_SAMPLE_RATE = int(os.environ.get("DATUM_AUDIT_SAMPLE_RATE", "100"))
 
+# Logging (#83). Whether audit records exist is Datum's decision, not a
+# property of whoever runs it. With no LOGGING dict, root sits at WARNING with
+# no handlers, so `datum.reconcile.audit` INFO records were discarded one step
+# before any handler question arose; what made Datum's other `logger.info` call
+# sites visible in practice was Celery configuring the root logger itself.
+#
+# Both halves of the shape below are load-bearing, and both were measured
+# rather than read off the documentation:
+#
+#   - The level lives on `datum`. Python consults the level of the originating
+#     logger only, never its ancestors', so a worker started at
+#     `--loglevel=warning` still emits `datum.*` INFO records, and one started
+#     at `--loglevel=info` still honours DATUM_LOG_LEVEL=WARNING. Visibility
+#     stops being a property of the runner in both directions.
+#   - The handler lives only on root, and nothing in the `datum` namespace
+#     holds one. A worker clears root's handlers and installs its own, so ours
+#     is replaced rather than joined; a handler on `datum` would survive that
+#     replacement and print every record twice, which is the regression this
+#     issue exists to avoid.
+#
+# The alternative -- a handler on `datum` with `propagate: False` -- also emits
+# once under a worker, and was measured and rejected. pytest attaches its
+# capture handler to root, so severing propagation makes `caplog` blind to
+# every `datum` logger: it fails four existing tests in tests/kernel/
+# test_audit.py, and phase 2H's audit test depends on the same mechanism.
+#
+# Known and accepted, because both repairs are worse: Django installs
+# DEFAULT_LOGGING before this dict, so the `django` logger keeps its own
+# console handler *and* propagates, and its framework messages therefore print
+# twice while DEBUG is on. Naming `django` here to stop that would strip those
+# handlers (dictConfig clears a named logger's handlers) or copy Django's own
+# configuration into this file -- one rule with two encodings. No Datum logger
+# and no third-party logger is affected.
+LOG_LEVEL = os.environ.get("DATUM_LOG_LEVEL", "INFO")
+
+LOGGING = {
+    "version": 1,
+    # Adds a level and a destination and takes nothing away, which is what
+    # leaves every existing logger behaving as it does today.
+    "disable_existing_loggers": False,
+    "formatters": {"datum": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "datum"}},
+    # Root keeps WARNING so third-party libraries are not made verbose by a
+    # decision that is only about Datum's own streams.
+    "root": {"handlers": ["console"], "level": "WARNING"},
+    # No handlers on purpose: the empty list is the rule, not an omission.
+    "loggers": {"datum": {"level": LOG_LEVEL, "handlers": [], "propagate": True}},
+}
+
 CELERY_BROKER_URL = os.environ.get("VALKEY_URL", "redis://localhost:6379/0")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

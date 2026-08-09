@@ -249,6 +249,7 @@ All configuration is environment-driven; see [`.env.example`](.env.example).
 | `DATUM_SECRET_KEY` | dev placeholder | Django secret key |
 | `DATUM_DEBUG` | `1` | Django debug mode |
 | `DATUM_ALLOWED_HOSTS` | `*` | Comma-separated allowed hosts |
+| `DATUM_LOG_LEVEL` | `INFO` | Level for the `datum` logger namespace, including the `datum.reconcile.audit` stream. This is the only dial for Datum's own output — see below. |
 | `POSTGRES_DB` / `_USER` / `_PASSWORD` / `_HOST` / `_PORT` | `datum` / `datum` / `datum` / `localhost` / `5432` | Database connection |
 | `VALKEY_URL` | `redis://localhost:6379/0` | Celery broker |
 | `DATUM_INTENT_REPO_URL` | *(empty)* | Intent repository. **Empty disables polling entirely** — the task logs and does nothing rather than failing every interval. |
@@ -257,6 +258,12 @@ All configuration is environment-driven; see [`.env.example`](.env.example).
 | `DATUM_INTENT_POLL_SECONDS` | `300` | Poll interval. This is the bounded staleness: drift between a push and its revision is at most one interval. |
 
 The intent worktree is a **cache of the remote**, never a source of truth. Sync is clone / fetch / hard reset — nothing pushes, commits, or writes into it, and any local edit is discarded on the next sync.
+
+### Logging
+
+Datum configures the `datum` logger namespace itself, so whether its output exists is its own decision rather than a side effect of the runner. `DATUM_LOG_LEVEL` is the dial, and it decides in both directions: a Celery worker started at `--loglevel=warning` still emits Datum's `INFO` records, and one started at `--loglevel=info` still honours `DATUM_LOG_LEVEL=WARNING`. This matters most for the `datum.reconcile.audit` stream, whose absence is silent rather than merely quiet.
+
+Handlers are attached at the root logger only, and nothing under `datum` holds one. That is deliberate: a Celery worker replaces root's handlers with its own but leaves named loggers alone, so a handler inside the namespace would survive the replacement and print every record twice.
 
 ### The API
 

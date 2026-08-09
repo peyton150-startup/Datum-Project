@@ -722,6 +722,13 @@ These four were deferred as independent questions. They are not independent. Fiv
 
 **Open, still not due:**
 
+Four questions are open in GitHub, which carries their options and their reasoning. Recorded here as the question and what it gates, deliberately not as a second copy of the analysis.
+
+- **#71 — where comparison configuration lives, and how much of it derives from the declared attribute schema.** *Decided 2026-08-08: two separate structures, with `field_type` derived through the canonical mapping rather than persisted twice. The constraints on implementing it are on the issue.* Due before phase 2H wires `FieldConfig` to anything.
+- **#70 — what omitting an optional declared attribute means: not declared, or declared-absent.** Open. Blocks the end-to-end test for declared-absent, which cannot be written while every attribute is required, and the same distinction reappears in phase 2G's audit presence flags.
+- **#69 — whether declared attributes support fractional numerics, and whether `exact` stays a legal mode for them.** Open, and gated behind the two above. No seeded kind exposes a fractional attribute, so nothing forces it yet.
+- **#57 — what `_stored` may conclude from a write it cannot classify, and how that is reported.** Open, and independent of the other three. Becomes reachable when a third collector emits an existing kind.
+
 ## 24. How this design could fail
 
 - The schema-defined kind bet does not hold, and half the kinds need custom columns anyway. Early warning: the second kind requires a migration.

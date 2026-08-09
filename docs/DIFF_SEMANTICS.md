@@ -295,16 +295,22 @@ Each field in `attribute_schema` has two concerns:
 ### Logging Example
 
 ```
-[DIFF] String comparison: field=label, mode=lowercase
-  declared: "MyLabel" (normalized to "mylabel")
-  discovered: "MYLABEL" (normalized to "mylabel")
-  result: NO DISCREPANCY
+[DIFF] string comparison: kind=unknown, field=label, mode=lowercase
+  declared: PlaneValue.of('MyLabel') -> 'mylabel'
+  discovered: PlaneValue.of('MYLABEL') -> 'mylabel'
+  result: MATCH
+  step: Mode: lowercase
+  ...
 
-[DIFF] String comparison: field=name, mode=exact
-  declared: "prod-db"
-  discovered: "PROD-DB"
-  result: DISCREPANCY (case mismatch)
+[DIFF] string comparison: kind=unknown, field=name, mode=exact
+  declared: PlaneValue.of('prod-db') -> 'prod-db'
+  discovered: PlaneValue.of('PROD-DB') -> 'PROD-DB'
+  result: DISCREPANCY
 ```
+
+The agreeing result is spelled `MATCH` rather than `NO DISCREPANCY` so that the
+two words are disjoint: an operator grepping for `DISCREPANCY` must not be
+handed every agreement as well.
 
 ### Test Cases (Adversarial Corpus)
 
@@ -366,16 +372,22 @@ Each field in `attribute_schema` has two concerns:
 ### Logging Example
 
 ```
-[DIFF] Timestamp comparison: field=created_at, mode=semantic_utc, precision=second
-  declared: "2026-07-30T18:00:00Z" (parsed as UTC)
-  discovered: "2026-07-30T10:00:00-08:00" (parsed as -08:00, converted to UTC → 2026-07-30T18:00:00Z)
-  result: NO DISCREPANCY (same second in UTC)
+[DIFF] timestamp comparison: kind=unknown, field=created_at, mode=semantic_utc
+  declared: PlaneValue.of('2026-07-30T18:00:00Z') -> '2026-07-30 18:00:00+00:00'
+  discovered: PlaneValue.of('2026-07-30T10:00:00-08:00') -> '2026-07-30 18:00:00+00:00'
+  result: MATCH
+  step: Precision: second
+  ...
 
-[DIFF] Timestamp comparison: field=created_at, mode=string
-  declared: "2026-07-30T18:00:00Z"
-  discovered: "2026-07-30T10:00:00-08:00"
-  result: DISCREPANCY (string mismatch)
+[DIFF] timestamp comparison: kind=unknown, field=created_at, mode=string
+  declared: PlaneValue.of('2026-07-30T18:00:00Z') -> '2026-07-30T18:00:00Z'
+  discovered: PlaneValue.of('2026-07-30T10:00:00-08:00') -> '2026-07-30T10:00:00-08:00'
+  result: DISCREPANCY
 ```
+
+`kind=unknown` in both examples is not a placeholder for the reader's benefit —
+it is what the log actually says today, because nothing supplies a kind name to
+a comparison yet.
 
 ### Test Cases (Adversarial Corpus)
 

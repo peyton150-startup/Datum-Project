@@ -43,7 +43,15 @@ MINIMUM_SAMPLE_RATE = 1
 # The two words an operator greps for. Spelled once, because a second spelling
 # of either is a line that the search built around the first will not find --
 # the failure the degraded-comparison helpers in `comparison` exist to prevent.
-MATCH_RESULT = "NO DISCREPANCY"
+#
+# **Disjoint, not merely distinct.** The match word was `NO DISCREPANCY`, which
+# spells the other one inside itself, so `grep DISCREPANCY` -- the obvious
+# query, and the one the constant's own name suggests -- returned every
+# agreeing comparison as well. Anchoring the search to `result: DISCREPANCY`
+# did exclude them, but a vocabulary that is only safe when grepped a
+# particular way is the same trap one level down. Neither word may contain the
+# other.
+MATCH_RESULT = "MATCH"
 DISCREPANCY_RESULT = "DISCREPANCY"
 
 
@@ -67,6 +75,13 @@ class AuditLogWriter:
     `region` interleave into writer entry 10, so adding a sampled field changes
     which entries an existing field emits, and iteration order becomes
     observable in the log.
+
+    **One run, one thread.** The counters are a plain read-modify-write, which
+    is safe because a reconciliation run compares its fields in sequence. A
+    writer shared across threads would need a lock; a writer per thread would
+    give each its own sequence, which is not what a rate means. Stated because
+    the docstring above explains why the state is not a module global and would
+    otherwise be read as having considered every alternative.
 
     **The isolation that key buys is not observable yet.** Nothing populates
     `_kind_name`, so every entry arrives with `kind_name` reading `unknown` and

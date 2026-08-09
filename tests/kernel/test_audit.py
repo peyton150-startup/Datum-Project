@@ -218,6 +218,21 @@ class TestTheRenderedLineKeepsWhatTheEntryCarries:
         assert f"result: {MATCH_RESULT}" in match_line
         assert f"result: {DISCREPANCY_RESULT}" in discrepancy_line
 
+    def test_a_match_line_does_not_contain_the_discrepancy_word_at_all(self, caplog):
+        """The bug excluded: a match word that spells the discrepancy word.
+
+        `NO DISCREPANCY` passes the test above and fails this one, because
+        `grep DISCREPANCY` then returns every agreeing comparison too. The
+        assertion is deliberately unanchored -- anchoring it to `result: ` is
+        what made the old spelling look safe.
+        """
+        writer = AuditLogWriter(1)
+
+        with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER):
+            writer.write(entry(result=True), config("debug"))
+
+        assert DISCREPANCY_RESULT not in caplog.messages[0]
+
     def test_the_steps_reach_the_line(self, caplog):
         writer = AuditLogWriter(1)
 

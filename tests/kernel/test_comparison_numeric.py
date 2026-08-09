@@ -499,8 +499,8 @@ class TestNumericAuditLog:
         )
 
         is_equal, log = compare_numeric(declared, discovered, config)
-        assert log.declared_raw == 3
-        assert log.discovered_raw == 3
+        assert log.declared == PlaneValue.of(3)
+        assert log.discovered == PlaneValue.of(3)
 
     def test_audit_log_contains_result(self):
         """Audit log should contain the comparison result."""

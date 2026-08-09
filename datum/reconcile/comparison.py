@@ -52,18 +52,52 @@ def _unusable_parameter_step(mode: Any) -> str:
     return f"Unusable mode parameter: {mode}"
 
 
+# The kind a field belongs to reaches a comparison through its comparison
+# config, under a key nothing populates yet (WBS 1.5.2 phase 2H). Read at seven
+# sites before this was a routine, each spelling the key and the fallback for
+# itself -- seven chances for one of them to spell either differently, on a
+# value the audit log is keyed by.
+KIND_NAME_KEY = "_kind_name"
+UNKNOWN_KIND_NAME = "unknown"
+
+
+def _kind_name_of(field_config: FieldConfig) -> str:
+    """The kind this field belongs to, or `unknown` while nothing supplies one.
+
+    Every entry reads `unknown` today. That is inert for the audit text and not
+    inert for the audit writer, which keys its sampling streams by
+    `(kind_name, field_name)`: until 2H populates the key, two kinds declaring
+    a same-named field share one stream. See `datum.reconcile.audit`.
+    """
+    kind_name: str = field_config.comparison.get(KIND_NAME_KEY, UNKNOWN_KIND_NAME)
+    return kind_name
+
+
 @dataclass(frozen=True)
 class AuditLogEntry:
     """Record of one field comparison decision.
+
+    **Not a database row, whatever the name suggests.** This is an in-memory
+    description of an auditable event; the sink is a logger
+    (`datum.reconcile.audit`), and whether audit events are ever persisted is a
+    separate question nobody has had to answer yet.
+
+    `declared` and `discovered` are `PlaneValue`s rather than the raw values
+    they used to be. Both were plain `Any` and both were `None` for an absent
+    field *and* for an explicit null, with presence surviving only in the
+    transformed field -- so an entry could not answer the one question this
+    project refuses to let anything else collapse. `PlaneValue` already
+    distinguishes absent, null, and valued, and reusing it means presence is
+    not encoded a second time in a pair of booleans that could disagree with it.
 
     Attributes:
         kind_name: Name of the Kind
         field_name: Name of the field being compared
         field_type: Type of field (numeric, string, list, timestamp, object)
         comparison_mode: Mode used for comparison
-        declared_raw: Raw value from declared plane (before transformation)
+        declared: What the declared plane stated, presence included
         declared_transformed: Value after mode-specific transformation
-        discovered_raw: Raw value from discovered plane (before transformation)
+        discovered: What the discovered plane stated, presence included
         discovered_transformed: Value after mode-specific transformation
         result: True if comparison matched, False if discrepancy
         steps: List of descriptive steps taken during comparison
@@ -73,9 +107,9 @@ class AuditLogEntry:
     field_name: str
     field_type: str
     comparison_mode: str
-    declared_raw: Any
+    declared: PlaneValue
     declared_transformed: Any
-    discovered_raw: Any
+    discovered: PlaneValue
     discovered_transformed: Any
     result: bool
     steps: list[str]
@@ -179,8 +213,8 @@ def _plane_statement(present: bool, value: Any) -> str:
 def _unstated_comparison(
     field_config: FieldConfig,
     field_type: str,
-    declared_state: tuple[bool, Any],
-    discovered_state: tuple[bool, Any],
+    declared: PlaneValue,
+    discovered: PlaneValue,
     steps: list[str],
 ) -> tuple[bool, AuditLogEntry]:
     """Compare two planes when at least one did not state a comparable value.
@@ -192,16 +226,16 @@ def _unstated_comparison(
     Args:
         field_config: Configuration the comparison was asked for
         field_type: Type name to record on the audit entry
-        declared_state: (present, value) for the declared plane
-        discovered_state: (present, value) for the discovered plane
+        declared: What the declared plane stated
+        discovered: What the discovered plane stated
         steps: List to append comparison steps to
 
     Returns:
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    declared_statement = _plane_statement(*declared_state)
-    discovered_statement = _plane_statement(*discovered_state)
+    declared_statement = _plane_statement(*_presence_and_value(declared))
+    discovered_statement = _plane_statement(*_presence_and_value(discovered))
 
     steps.append(f"Declared statement: {declared_statement}")
     steps.append(f"Discovered statement: {discovered_statement}")
@@ -214,13 +248,13 @@ def _unstated_comparison(
     return (
         is_equal,
         AuditLogEntry(
-            kind_name=field_config.comparison.get("_kind_name", "unknown"),
+            kind_name=_kind_name_of(field_config),
             field_name=field_config.field_name,
             field_type=field_type,
             comparison_mode=mode,
-            declared_raw=declared_state[1],
+            declared=declared,
             declared_transformed=declared_statement,
-            discovered_raw=discovered_state[1],
+            discovered=discovered,
             discovered_transformed=discovered_statement,
             result=is_equal,
             steps=steps,
@@ -252,7 +286,7 @@ def compare_numeric(
         ValueError: If values cannot be parsed as numbers in tolerance mode
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -261,9 +295,7 @@ def compare_numeric(
     discovered_val = discovered_state[1]
 
     if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
-        return _unstated_comparison(
-            field_config, "numeric", declared_state, discovered_state, steps
-        )
+        return _unstated_comparison(field_config, "numeric", declared, discovered, steps)
 
     # Mode-specific comparison
     if mode == "exact_value":
@@ -291,9 +323,9 @@ def compare_numeric(
             field_name=field_config.field_name,
             field_type="numeric",
             comparison_mode=mode,
-            declared_raw=declared_val,
+            declared=declared,
             declared_transformed=declared_val,
-            discovered_raw=discovered_val,
+            discovered=discovered,
             discovered_transformed=discovered_val,
             result=is_equal,
             steps=steps,
@@ -431,7 +463,7 @@ def compare_string(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -440,7 +472,7 @@ def compare_string(
     discovered_val = discovered_state[1]
 
     if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
-        return _unstated_comparison(field_config, "string", declared_state, discovered_state, steps)
+        return _unstated_comparison(field_config, "string", declared, discovered, steps)
 
     # Convert to string if not already
     declared_str = str(declared_val)
@@ -482,9 +514,9 @@ def compare_string(
             field_name=field_config.field_name,
             field_type="string",
             comparison_mode=mode,
-            declared_raw=declared_val,
+            declared=declared,
             declared_transformed=declared_transformed,
-            discovered_raw=discovered_val,
+            discovered=discovered,
             discovered_transformed=discovered_transformed,
             result=is_equal,
             steps=steps,
@@ -648,7 +680,7 @@ def compare_list(
     from datum.reconcile.domain import canonical
 
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -659,7 +691,7 @@ def compare_list(
     # Absent, null, and not-a-list all land here: none of them is a list this
     # mode can compare, and the statement rule decides all three the same way.
     if not _states_a_list(*declared_state) or not _states_a_list(*discovered_state):
-        return _unstated_comparison(field_config, "list", declared_state, discovered_state, steps)
+        return _unstated_comparison(field_config, "list", declared, discovered, steps)
 
     # Mode-specific comparison
     def list_sort_key(item: Any) -> tuple[int, str]:
@@ -706,9 +738,9 @@ def compare_list(
             field_name=field_config.field_name,
             field_type="list",
             comparison_mode=mode,
-            declared_raw=declared_val,
+            declared=declared,
             declared_transformed=str(declared_val),
-            discovered_raw=discovered_val,
+            discovered=discovered,
             discovered_transformed=str(discovered_val),
             result=is_equal,
             steps=steps,
@@ -922,7 +954,7 @@ def compare_timestamp(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     precision: Any = field_config.comparison.get("precision", "second")
     steps: list[str] = []
 
@@ -932,9 +964,7 @@ def compare_timestamp(
     discovered_val = discovered_state[1]
 
     if not _states_a_value(*declared_state) or not _states_a_value(*discovered_state):
-        return _unstated_comparison(
-            field_config, "timestamp", declared_state, discovered_state, steps
-        )
+        return _unstated_comparison(field_config, "timestamp", declared, discovered, steps)
 
     # Mode-specific comparison
     if mode == "string":
@@ -967,9 +997,9 @@ def compare_timestamp(
             field_name=field_config.field_name,
             field_type="timestamp",
             comparison_mode=mode,
-            declared_raw=declared_val,
+            declared=declared,
             declared_transformed=transformed_declared,
-            discovered_raw=discovered_val,
+            discovered=discovered,
             discovered_transformed=transformed_discovered,
             result=is_equal,
             steps=steps,
@@ -1019,7 +1049,7 @@ def compare_object(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -1031,7 +1061,7 @@ def compare_object(
     if mode == OBJECT_MODE_IGNORE:
         is_equal, declared_transformed, discovered_transformed = _ignored_comparison(steps)
     elif not _states_an_object(*declared_state) or not _states_an_object(*discovered_state):
-        return _unstated_comparison(field_config, "object", declared_state, discovered_state, steps)
+        return _unstated_comparison(field_config, "object", declared, discovered, steps)
     else:
         is_equal, declared_transformed, discovered_transformed = _object_comparison(
             mode, declared_state[1], discovered_state[1], steps
@@ -1044,9 +1074,9 @@ def compare_object(
             field_name=field_config.field_name,
             field_type="object",
             comparison_mode=mode,
-            declared_raw=declared_state[1],
+            declared=declared,
             declared_transformed=declared_transformed,
-            discovered_raw=discovered_state[1],
+            discovered=discovered,
             discovered_transformed=discovered_transformed,
             result=is_equal,
             steps=steps,
@@ -1431,7 +1461,7 @@ def compare_boolean(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = field_config.comparison.get("_kind_name", "unknown")
+    kind_name = _kind_name_of(field_config)
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -1440,9 +1470,7 @@ def compare_boolean(
     discovered_val = discovered_state[1]
 
     if not _states_a_boolean(*declared_state) or not _states_a_boolean(*discovered_state):
-        return _unstated_comparison(
-            field_config, "boolean", declared_state, discovered_state, steps
-        )
+        return _unstated_comparison(field_config, "boolean", declared, discovered, steps)
 
     if mode == "exact":
         # Spelled the way every other mode spells it. The audit log is what an
@@ -1466,9 +1494,9 @@ def compare_boolean(
             field_name=field_config.field_name,
             field_type="boolean",
             comparison_mode=mode,
-            declared_raw=declared_val,
+            declared=declared,
             declared_transformed=declared_val,
-            discovered_raw=discovered_val,
+            discovered=discovered,
             discovered_transformed=discovered_val,
             result=is_equal,
             steps=steps,

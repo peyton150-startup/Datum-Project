@@ -65,6 +65,13 @@ OCI_SOURCE = os.environ.get("DATUM_OCI_SOURCE", "")
 # Bounded staleness for the estate, the discovery-side twin of the poll interval.
 COLLECT_SECONDS = int(os.environ.get("DATUM_COLLECT_SECONDS", "300"))
 
+# One audit line in this many, for fields configured `sampled_audit`. Global on
+# purpose: it is an operator's noise dial, not a property of any field, so it
+# stays out of the comparison configuration that #71 just settled. Must be at
+# least 1, which `AuditLogWriter` enforces where the value is used rather than
+# here, where a raised exception would be a failure to import Django settings.
+AUDIT_SAMPLE_RATE = int(os.environ.get("DATUM_AUDIT_SAMPLE_RATE", "100"))
+
 CELERY_BROKER_URL = os.environ.get("VALKEY_URL", "redis://localhost:6379/0")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

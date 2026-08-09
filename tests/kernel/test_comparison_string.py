@@ -197,9 +197,9 @@ class TestStringLowercase:
         )
 
         is_equal, log = compare_string(declared, discovered, config)
-        assert log.declared_raw == "Hello"
+        assert log.declared == PlaneValue.of("Hello")
         assert log.declared_transformed == "hello"
-        assert log.discovered_raw == "WORLD"
+        assert log.discovered == PlaneValue.of("WORLD")
         assert log.discovered_transformed == "world"
 
 
@@ -511,9 +511,9 @@ class TestStringAuditLog:
         )
 
         is_equal, log = compare_string(declared, discovered, config)
-        assert log.declared_raw == "  Hello  "
+        assert log.declared == PlaneValue.of("  Hello  ")
         assert log.declared_transformed == "hello"
-        assert log.discovered_raw == "  WORLD  "
+        assert log.discovered == PlaneValue.of("  WORLD  ")
         assert log.discovered_transformed == "world"
 
     def test_audit_log_contains_steps(self):

@@ -822,7 +822,7 @@ Two traps already known:
 - `reconcile()` accepts a `schema_map` parameter
 - `_load_comparison_schemas()` added to `datum/reconcile/service.py`
 - `run_reconciliation()` passes the schema through
-- `MissingFieldConfig` handled gracefully: log the error, treat as a discrepancy
+- `MissingFieldConfig` at reconciliation time yields an **undecidable** discrepancy and the batch continues. Not an ordinary discrepancy, which would assert the estate has drifted when it has not; not a fabricated default, which would have Datum making comparison decisions nobody made; and not a raise, which would kill a tenant's whole run for one uncovered field. Decided in #71, on §23.6's blast-radius argument. The raise keeps a home at configuration-validation time, where a human is present
 
 **This is the sharp one.** It replaces `PlaneValue.__eq__` — which gets absence right natively — with the comparison functions, which had to be *fixed* to get it right. Phases 2B–2E had collapsed absence into null by reading their planes with `resolve(on_absent=lambda: None, ...)`; that was latent only because `diff.py` still used `PlaneValue.__eq__`, and 2H is exactly where a latent defect of that shape becomes real.
 
@@ -839,7 +839,7 @@ The rules the corpus must encode are now settled: `version`/`identity` compare *
 
 ## Phase 2J: schema seeders and documentation
 
-- Migration seeding default `Kind.attribute_schema` for existing kinds (Deployment, ComputeInstance)
+- Migration seeding default **comparison configuration** for existing kinds (Deployment, ComputeInstance). Not `Kind.attribute_schema` — that column already holds their declared types, seeded by `0002` and `0003`, and #71 decided it stays declared-schema data with comparison config in its own structure
 - Documentation for configuring schema for a new kind
 - Files: `datum/reconcile/migrations/0004_seed_comparison_schemas.py`, `docs/DIFF_SEMANTICS.md`
 

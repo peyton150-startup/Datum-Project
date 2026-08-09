@@ -64,11 +64,24 @@ Dispatch a subagent pinned to another model with a **blind** prompt: give it the
 
 **Withholding reasoning means closing the routes to it, not just omitting it.** A review on PR #65 lost its standing by reading commit subjects, which on a branch that documents its own fixes are the author's reasoning in another file. Prohibit explicitly, by name: `git log` in every variant, bare `git show <rev>` without a `:path`, `git blame`, `git reflog`, `git shortlog`, `git whatchanged`, `.git/` reads, and every `gh` command. `git show <rev>:<path>` is allowed and useful — it is how the reviewer reads the before-state. Tell it that if a commit message reaches it by any route it must say so prominently rather than continue quietly.
 
+**The phase plan is a route too, and it cannot be closed.** `docs/PROJECT_PLAN.md` is required reading, so a blind reviewer reads it — and once a phase's decisions are recorded there, the reviewer arrives already knowing the intent. On PR #82 the reviewer disclosed this itself: the 2G section pre-specified the sink, the counter key, and the rejection rule, and it said reading them made question 1 "almost too easy, since the diff matches that spec nearly line for line." It was compliant, and it found real defects anyway. This is a weakening, not a failure.
+
+Do not answer it by hiding the section. The plan also carries architectural constraints a reviewer legitimately needs for question 4, and an instruction to read files in a particular order is unverifiable — it produces a claim about reading order rather than evidence of one.
+
+**Run the review in two stages instead, so the ordering is structural.**
+
+- **Stage 1** gives the reviewer the diff and the code, and withholds the task-specific plan or spec section. Its only required output is its answer to question 1: what task the diff appears to solve. Capture that.
+- **Stage 2** hands the same reviewer the plan and design material and asks for the rest of the review — including whether the task it inferred matches the specification it has now read.
+
+The scope answer then literally exists before the reviewer has access to the author's specification, and the gap between the two is itself a finding: a diff whose inferred purpose and written purpose differ is either mis-scoped or mis-specified.
+
+**Stage 1 is not only about hiding the intended solution. It is about hiding the framing.** A plan section does not merely say what to build; it says which conditions count as hazards and which structures are taken as given, and a reviewer who reads that first will challenge the named hazard while leaving the assumption underneath it alone. The 2G section called `_kind_name` a trap — inert scaffolding, always `"unknown"`, do not assume entries carry a kind name — and everyone who read it, author and both reviewers, spent their attention on the consequence it named instead of asking why kind identity was living inside comparison policy at all. **Naming a hazard tells everyone where to look and quietly tells them what not to question.** Stage 1 is where a reviewer still has the standing to ask whether the given should be a given.
+
 ### The scope-and-fit questions every blind review must answer
 
 Defect-hunting is only half of a review. A patch can be correct and still be wrong to merge. Each blind review answers these four explicitly, as named sections, in addition to its findings:
 
-1. **Does the patch solve only one task, and which?** The reviewer states in one sentence what it infers the task to be *from the diff alone* — it is never told, because telling it hands back the PR description this gate exists to withhold. Then: does every hunk serve that? Needing two sentences to name the task is itself the finding.
+1. **Does the patch solve only one task, and which?** The reviewer states in one sentence what it infers the task to be *from the diff alone* — it is never told, because telling it hands back the PR description this gate exists to withhold, and under the two-stage dispatch above it answers this before it can read the specification. Then: does every hunk serve that? Needing two sentences to name the task is itself the finding.
 2. **Does any changed file have nothing to do with it?** Answered per file, with the justification the reviewer can or cannot construct for each.
 3. **Do the tests exercise the new behavior, or would they pass without it?** Not "is there a test" — name the bug each test excludes, then say whether that fixture could give a different answer under that bug. This is the discriminating-fixture check from the testing bar below, promoted to a required section because it is the project's stated recurring failure mode.
 4. **Does the code match local pattern and local error handling?** Compared against the neighbouring code and the rest of the module, not against general good practice: the same idioms, the same exception types, the same degrade-versus-raise choice, the same audit strings.
@@ -81,7 +94,15 @@ An APPROVE that skips these sections is not a verdict and does not open the gate
 
 Reviews here have taken five to thirteen minutes. If that wait is not affordable, merge and say so explicitly, then treat the verdict as a defect report against `main` rather than as advice — but the cheap version is to wait.
 
-**A fix written in response to a review is new code and needs its own review.** The reviewer never saw it. This is where the loop actually terminates: a fix that only tightens comments or adds a test can be merged on the strength of the original verdict, but one that changes how a result is decided starts over.
+**A fix written in response to a review is new code and needs its own review.** The reviewer never saw it. This is where the loop actually terminates, and the cases are exhaustive so that none of them has to be inferred as the complement of another:
+
+- **Comments and additional tests may ride on the verdict.**
+- **A production-code correction may also ride, when the reviewer specified the exact change and explicitly stated that applying that exact correction does not require re-review.** Comments and tests may accompany it. The reviewer owns the finding and knows what it asked for, so it is the one that can say whether it needs to see the result — and the permission has to be given in the verdict, because an author granting it afterwards is inferring the exemption rather than holding it.
+- **Everything else requires a fresh review**: any executable change the reviewer did not ask for, any author-chosen extension of a correction it did ask for, and any change to how a result is decided.
+
+The middle case is the termination mechanism. Without it the loop does not terminate for exactly the changes reviews most often produce — small executable corrections the reviewer requested — and acting on a finding costs a full re-review, which buys fewer findings acted on.
+
+Written this way on 2026-08-09, after the old wording named only the first and third cases and the second was read as exempt by inference. A rendering constant on PR #82 was changed after an APPROVE and nearly merged on it, on the reasoning that rendering is not deciding. That reasoning is sound and the rule did not grant it. **Note what the exemption keys on: not whether the change is executable, but whether the reviewer saw it** — which is the reason the rule states for itself.
 
 **Treat findings as claims to verify, not conclusions.** Blind reviews here have found real defects — a confirmed equality defect, an unguarded parse, a design table that was right for the wrong reason — and have also produced confidently wrong claims about PostgreSQL isolation, and have under-rated a real one (`tolerance(inf)` was reported as harmless degradation when it silently suppresses every discrepancy on the field). Check each finding yourself before acting on it.
 

@@ -75,6 +75,8 @@ Do not answer it by hiding the section. The plan also carries architectural cons
 
 The scope answer then literally exists before the reviewer has access to the author's specification, and the gap between the two is itself a finding: a diff whose inferred purpose and written purpose differ is either mis-scoped or mis-specified.
 
+**Stage 1 is not only about hiding the intended solution. It is about hiding the framing.** A plan section does not merely say what to build; it says which conditions count as hazards and which structures are taken as given, and a reviewer who reads that first will challenge the named hazard while leaving the assumption underneath it alone. The 2G section called `_kind_name` a trap — inert scaffolding, always `"unknown"`, do not assume entries carry a kind name — and everyone who read it, author and both reviewers, spent their attention on the consequence it named instead of asking why kind identity was living inside comparison policy at all. **Naming a hazard tells everyone where to look and quietly tells them what not to question.** Stage 1 is where a reviewer still has the standing to ask whether the given should be a given.
+
 ### The scope-and-fit questions every blind review must answer
 
 Defect-hunting is only half of a review. A patch can be correct and still be wrong to merge. Each blind review answers these four explicitly, as named sections, in addition to its findings:

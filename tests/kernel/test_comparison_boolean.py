@@ -45,8 +45,8 @@ class TestBooleanExact:
         _, log = compare_boolean(PlaneValue.of(True), PlaneValue.of(False), CONFIG)
 
         assert log.field_type == "boolean"
-        assert (log.declared_raw, log.declared_transformed) == (True, True)
-        assert (log.discovered_raw, log.discovered_transformed) == (False, False)
+        assert (log.declared, log.declared_transformed) == (PlaneValue.of(True), True)
+        assert (log.discovered, log.discovered_transformed) == (PlaneValue.of(False), False)
 
     def test_the_steps_spell_the_mode_and_result_the_way_every_other_path_does(self):
         """The bug excluded: this path inventing its own audit wording.

@@ -22,13 +22,19 @@ defect was latent, and would have gone live the moment Phase 2H routed
 `_field_discrepancies` through these functions instead.
 
 These tests are written against all five types together rather than per phase,
-because the rule is one rule. A sixth comparison type added later has to be
-added here to pass.
+because the rule is one rule.
+
+That last sentence used to promise a sixth type would have to be added here to
+pass, and `boolean` then arrived without being added -- its presence rules are
+held by `test_comparison_boolean.py` instead, so nothing here failed. The
+promise is kept only by `ALL_COMPARISONS` at the foot of this file, which does
+enumerate every type, and which a seventh type would have to join.
 """
 
 import pytest
 
 from datum.reconcile.comparison import (
+    compare_boolean,
     compare_list,
     compare_numeric,
     compare_object,
@@ -65,6 +71,10 @@ def timestamp_config():
 
 def object_config():
     return FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy")
+
+
+def boolean_config():
+    return FieldConfig("b", "boolean", {"mode": "exact"}, "discrepancy")
 
 
 # (name, comparison function, config factory, a value of the right type)
@@ -139,20 +149,53 @@ class TestEmptyIsNotAbsentAndNotNull:
         assert compare(PlaneValue.of(empty), PlaneValue.of(empty), make_config())[0] is True
 
 
-class TestTheRawValueStillCollapses:
-    """A boundary of the fix, stated so nobody assumes more than it delivers.
+# Every type, boolean included, because the entry is built at seven sites and a
+# migration that reaches six of them is the failure this section guards.
+ALL_COMPARISONS = [*COMPARISONS, ("boolean", compare_boolean, boolean_config, True)]
 
-    `declared_raw` on the audit entry is the value, and an absent plane has no
-    value to record, so absent and null both land as None there. The statement
-    is what distinguishes them, and the statement is what a reader sees. This
-    test exists so the next person to widen the audit entry knows the raw pair
-    was never the thing carrying presence.
+
+@pytest.mark.parametrize(("name", "compare", "make_config", "value"), ALL_COMPARISONS)
+class TestTheEntryCarriesTheStatementItself:
+    """The audit entry distinguishes absent from null, not just the transform.
+
+    This class used to assert the opposite -- that `declared_raw` was None for
+    both, with only the transformed field telling them apart -- and said so as
+    a stated boundary of the fix. Phase 2G removed the boundary: the entry now
+    holds the `PlaneValue`s, so the distinction survives onto the record rather
+    than only into a rendering of it.
+
+    **The bug each test excludes is a half-migration**: an entry built from
+    `.resolve(on_absent=lambda: None, ...)`, or from a value pulled out of the
+    plane, at any one of the seven construction sites. Under that bug the first
+    test compares None against None and fails, and the second gets a bare value
+    where a PlaneValue was asserted. Both are parametrized over every type
+    because six migrated sites and one missed one is the shape of the mistake.
     """
 
-    def test_raw_is_none_for_both_but_the_statement_is_not(self):
-        _, absent_log = compare_numeric(ABSENT, PlaneValue.of(3), numeric_config())
-        _, null_log = compare_numeric(NULL, PlaneValue.of(3), numeric_config())
+    def test_absent_and_null_are_distinguishable_on_the_entry(
+        self, name, compare, make_config, value
+    ):
+        """Exercises the shared unstated path, where neither side has a value."""
+        _, absent_log = compare(ABSENT, PlaneValue.of(value), make_config())
+        _, null_log = compare(NULL, PlaneValue.of(value), make_config())
 
-        assert absent_log.declared_raw is None
-        assert null_log.declared_raw is None
-        assert absent_log.declared_transformed != null_log.declared_transformed
+        assert (
+            absent_log.declared != null_log.declared
+        ), f"{name}: the entry collapsed absent and null back into one value"
+        assert absent_log.declared == ABSENT
+        assert null_log.declared == NULL
+
+    def test_a_stated_value_reaches_the_entry_as_a_plane_value(
+        self, name, compare, make_config, value
+    ):
+        """Exercises each comparison function's own construction site.
+
+        The test above cannot: absence routes every type through
+        `_unstated_comparison`, so it would pass with all six of the per-type
+        sites left un-migrated.
+        """
+        stated = PlaneValue.of(value)
+        _, log = compare(stated, stated, make_config())
+
+        assert log.declared == stated, f"{name}: declared did not reach the entry as stated"
+        assert log.discovered == stated, f"{name}: discovered did not reach the entry as stated"

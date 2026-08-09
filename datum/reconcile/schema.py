@@ -73,8 +73,16 @@ class InvalidModeParameter(SchemaError):
 # field type at all.
 
 
-# Valid logging levels (3 tiers)
-VALID_LOGGING_LEVELS = {"debug", "discrepancy", "sampled_audit"}
+# The three logging levels, named rather than spelled, because `audit` branches
+# on all three and the two modules would otherwise hold one vocabulary twice.
+# The set is built from the names for the same reason: a fourth level cannot be
+# added to the vocabulary without appearing here, where `audit`'s table is
+# checked against it.
+LOGGING_DEBUG = "debug"
+LOGGING_DISCREPANCY = "discrepancy"
+LOGGING_SAMPLED_AUDIT = "sampled_audit"
+
+VALID_LOGGING_LEVELS = {LOGGING_DEBUG, LOGGING_DISCREPANCY, LOGGING_SAMPLED_AUDIT}
 
 
 # --- Parameterised modes -----------------------------------------------------

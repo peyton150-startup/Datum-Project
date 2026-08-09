@@ -51,11 +51,46 @@ Every comparison decision is logged with a configurable level:
 
 Each log entry includes:
 - Field name and type
-- Declared value (raw + transformed if applicable)
-- Discovered value (raw + transformed if applicable)
+- Declared value, as the plane stated it, plus the transformed form if applicable
+- Discovered value, as the plane stated it, plus the transformed form if applicable
 - Comparison rule applied
 - Intermediate steps (normalization, type conversion, precision check, etc.)
 - Final result (match, discrepancy, or error)
+
+**A plane's value is recorded as its statement, not as the value it resolves
+to.** An absent field and an explicit null both resolve to nothing, so an entry
+holding the resolved value alone reports `None` for two different claims — the
+collapse the Null / Missing / Empty table exists to prevent, one layer out from
+the comparison. The entry holds the `PlaneValue`, and the log line spells it
+accordingly: `PlaneValue.absent()` and `PlaneValue.of(None)` never read alike.
+
+### Where entries go, and how sampling counts
+
+The sink is the `datum.reconcile.audit` logger. **Audit entries are not
+persisted**; `AuditLogEntry` describes an auditable event and nothing writes it
+to a table. Whether audit events should be queryable independently of the
+logging system is an open question with its own retention and volume answers to
+give, and no requirement has asked for it yet.
+
+A comparison always produces an entry. Only the writer decides whether it is
+emitted, so what gets logged can never change what gets compared.
+
+`sampled_audit` counts **per field**, not per run. `DATUM_AUDIT_SAMPLE_RATE` is
+global — one operator-facing noise dial rather than a per-field setting — but
+each `(kind, field)` keeps its own position in the sequence, and only
+`sampled_audit` entries advance it. A single shared counter would make one
+field's emitted entries depend on which other fields exist, and would make
+iteration order observable in the log.
+
+Rate N emits the Nth eligible entry, then the 2Nth; entry 1 is a sample only at
+N=1. **N below 1 is refused when the writer is constructed**, rather than
+clamped: a negative rate emits nothing forever, which is `sampled_audit`
+meaning "never" under a name that says the opposite.
+
+Per-kind isolation is not yet observable — nothing supplies a kind name to a
+comparison, so every entry reads `unknown` and two kinds sharing a field name
+share a counter. WBS 1.5.2 phase 2H supplies the name and carries the
+acceptance test for it.
 
 ---
 

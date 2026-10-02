@@ -91,7 +91,7 @@ CORPUS = [
 
 @pytest.mark.parametrize("field_type,comparison,left,right,agrees", CORPUS)
 def test_production_presence_and_value_corpus(field_type, comparison, left, right, agrees):
-    """150 dispatcher-to-diff cases; an invalid boolean never affirms agreement."""
+    """150 reconciliation cases; an invalid boolean never affirms agreement."""
     d = ResourceSnapshot("Corpus", "t", "s", "r", None, {} if left is ABSENT else {"f": left})
     x = ResourceSnapshot("Corpus", "t", "s", "r", "id", {} if right is ABSENT else {"f": right})
     configured = ComparisonSchema(
@@ -126,3 +126,62 @@ def test_identity_mismatch_is_an_internal_bug():
     y, _ = pair("OtherKind")
     with pytest.raises(AssertionError, match="matched kinds"):
         reconcile(MatchResult((MatchedPair(d, y, "natural_key", "high"),), (), ()), {})
+
+
+@pytest.mark.parametrize("mode,key", [("version", "version"), ("identity", "id")])
+@pytest.mark.parametrize(
+    "left,right,agrees",
+    [
+        (ABSENT, ABSENT, True),
+        (ABSENT, None, False),
+        ({}, {}, True),
+        ({}, None, False),
+        (None, "None", False),
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}, True),
+        ({"a": 1}, '{"a": 1}', False),
+        ([1, 2], [2, 1], False),
+    ],
+)
+def test_keyed_object_statement_semantics_survive_dispatch(mode, key, left, right, agrees):
+    """Integration guard for the existing keyed-mode corpus, not a new rule."""
+    d = ResourceSnapshot("K", "t", "s", "r", None, {"f": {} if left is ABSENT else {key: left}})
+    x = ResourceSnapshot("K", "t", "s", "r", "id", {"f": {} if right is ABSENT else {key: right}})
+    configured = ComparisonSchema(
+        "K", {"f": {"type": "object", "comparison": {"mode": mode}, "logging": "debug"}}
+    )
+    assert (
+        bool(reconcile(match_resources([d], [x]), {"K": configured}).field_discrepancies)
+        is not agrees
+    )
+
+
+@pytest.mark.parametrize(
+    "field_type,comparison,left,right,agrees",
+    [
+        ("numeric", {"mode": "exact_value"}, None, None, True),
+        ("numeric", {"mode": "exact_value"}, ABSENT, None, False),
+        ("numeric", {"mode": "exact_value"}, None, ABSENT, False),
+        ("numeric", {"mode": "exact_value"}, ABSENT, ABSENT, True),
+        ("string", {"mode": "exact"}, "", None, False),
+        ("string", {"mode": "exact"}, "", ABSENT, False),
+        ("list", {"mode": "ordered", "element_comparison": "exact"}, [], None, False),
+        ("list", {"mode": "ordered", "element_comparison": "exact"}, [], [], True),
+        ("list", {"mode": "ordered", "element_comparison": "exact"}, [], ABSENT, False),
+        ("object", {"mode": "opaque"}, {}, None, False),
+        ("object", {"mode": "opaque"}, {}, {}, True),
+        ("object", {"mode": "opaque"}, {}, ABSENT, False),
+        (
+            "list",
+            {"mode": "unordered_multiset", "element_comparison": "exact"},
+            [None, 1],
+            [1],
+            False,
+        ),
+        ("list", {"mode": "set", "element_comparison": "exact"}, [None, 1], [1], False),
+    ],
+)
+def test_fourteen_specification_null_missing_empty_cases(
+    field_type, comparison, left, right, agrees
+):
+    """The specification's numbered corpus runs through production diff."""
+    test_production_presence_and_value_corpus(field_type, comparison, left, right, agrees)

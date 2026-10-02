@@ -101,7 +101,11 @@ def _reconcile_once(tenant_id: str) -> None:
 def _load_comparison_schemas(kind_names: set[str]) -> dict[str, ComparisonSchema]:
     schemas = {}
     for kind in Kind.objects.filter(name__in=kind_names):
-        field_types = resolve_declared_field_types(kind)
+        try:
+            field_types = resolve_declared_field_types(kind)
+        except SchemaError:
+            logger.warning("unusable declared schema: kind=%s", kind.name)
+            continue
         try:
             policy = resolve_comparison_policy(kind)
         except SchemaError:

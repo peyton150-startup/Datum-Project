@@ -16,6 +16,8 @@ from datum.reconcile.schema import ComparisonSchema, FieldConfig, SchemaError
 
 def resolve_declared_field_types(kind: Kind) -> dict[str, tuple[str, ...]]:
     """Current governing schema; future provenance resolution belongs here."""
+    if not isinstance(kind.attribute_schema, dict):
+        raise SchemaError(f"Kind {kind.name}: declared schema must be a dict")
     return {
         name: tuple(
             field_type for field_type, declared in FIELD_TYPES.items() if declared == type_name

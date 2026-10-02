@@ -1,4 +1,4 @@
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from datum.reconcile.audit import AuditLogWriter
@@ -8,12 +8,13 @@ from datum.reconcile.matcher import match_resources
 from datum.reconcile.schema import ComparisonSchema
 
 
+@settings(deadline=None)
 @given(
     st.dictionaries(st.sampled_from(["a", "b", "c"]), st.integers(-10, 10)),
     st.dictionaries(st.sampled_from(["a", "b", "c"]), st.integers(-10, 10)),
 )
 def test_configured_diff_is_deterministic_across_field_order_and_audit_rates(left, right):
-    """Sampling must not decide drift, and insertion order must not decide either."""
+    """Sampling and insertion order cannot decide drift; logging I/O is not timed."""
     schemas = {
         "K": ComparisonSchema(
             "K",

@@ -321,14 +321,14 @@ The persisted shapes and validated write path are documented above.
 ### Logging Example
 
 ```
-[DIFF] string comparison: kind=unknown, field=label, mode=lowercase
+[DIFF] string comparison: kind=ExampleResource, field=label, mode=lowercase
   declared: PlaneValue.of('MyLabel') -> 'mylabel'
   discovered: PlaneValue.of('MYLABEL') -> 'mylabel'
   result: MATCH
   step: Mode: lowercase
   ...
 
-[DIFF] string comparison: kind=unknown, field=name, mode=exact
+[DIFF] string comparison: kind=ExampleResource, field=name, mode=exact
   declared: PlaneValue.of('prod-db') -> 'prod-db'
   discovered: PlaneValue.of('PROD-DB') -> 'PROD-DB'
   result: DISCREPANCY
@@ -398,22 +398,21 @@ handed every agreement as well.
 ### Logging Example
 
 ```
-[DIFF] timestamp comparison: kind=unknown, field=created_at, mode=semantic_utc
+[DIFF] timestamp comparison: kind=ExampleResource, field=created_at, mode=semantic_utc
   declared: PlaneValue.of('2026-07-30T18:00:00Z') -> '2026-07-30 18:00:00+00:00'
   discovered: PlaneValue.of('2026-07-30T10:00:00-08:00') -> '2026-07-30 18:00:00+00:00'
   result: MATCH
   step: Precision: second
   ...
 
-[DIFF] timestamp comparison: kind=unknown, field=created_at, mode=string
+[DIFF] timestamp comparison: kind=ExampleResource, field=created_at, mode=string
   declared: PlaneValue.of('2026-07-30T18:00:00Z') -> '2026-07-30T18:00:00Z'
   discovered: PlaneValue.of('2026-07-30T10:00:00-08:00') -> '2026-07-30T10:00:00-08:00'
   result: DISCREPANCY
 ```
 
-`kind=unknown` in both examples is not a placeholder for the reader's benefit —
-it is what the log actually says today, because nothing supplies a kind name to
-a comparison yet.
+`ExampleResource` is an illustrative kind name. Actual audit entries carry the
+kind identity supplied by `ComparisonSchema` through `FieldConfig.kind_name`.
 
 ### Test Cases (Adversarial Corpus)
 
@@ -689,9 +688,9 @@ are worse answers than a discrepancy.
 | 11 | `{}` | `{}` | object | **match** | Both sides empty object |
 | 12 | `{}` | `missing` | object | **discrepancy** | Empty object ≠ field absence |
 | 13 | `[null, 1]` | `[1]` | list(multiset) | **discrepancy** | Count differs (null counts) |
-| 14 | `[null, 1]` | `[1]` | list(set) | **no discrepancy** | Set removes null (?) — **decide** |
+| 14 | `[null, 1]` | `[1]` | list(set) | discrepancy | Null remains a distinct set element |
 
-**Open question on nulls in lists:** Should null elements be treated as distinct values (count in multiset) or as "absent" (removed by set semantics)? Recommendation: null counts as a value in multisets, removed by set semantics.
+**Nulls in lists, decided on 2026-10-02:** Null is a value in both multiset and set comparison. Set semantics remove duplicate elements, including duplicate nulls, but never remove null itself. `[null, 1]` therefore differs from `[1]` in both modes.
 
 ---
 

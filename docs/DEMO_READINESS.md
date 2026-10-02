@@ -66,12 +66,38 @@ line-changing docstring edits during a run invalidate source-line attribution.
 Public deployment, authentication/roles, tenant isolation, TLS, backups and
 restore testing still require their own deployment scope. Passing this
 reconciliation checkpoint alone does not establish readiness for public hosting.
-The user's subsequent deployment handoff chooses Vercel for `web/` and Railway
-for the Django API, one worker with Beat and Valkey. The user then selected
-Supabase PostgreSQL for the database, replacing the handoff's Railway PostgreSQL.
+The user's subsequent deployment handoff chooses Vercel for `web/`. The user
+then selected Supabase PostgreSQL for the database and their own Ubuntu server
+for the Django API, one worker with Beat and Valkey, replacing the handoff's
+Railway backend and database services.
 Preserve that runtime; use recorded discovery for the first private portfolio demo. Protect
 both the frontend and the backend, and verify a scheduled task plus visible drift
 on the hosted application before claiming deployment complete.
+
+### Deployment checkpoint (2026-10-02)
+
+- Created [datum-demo](https://supabase.com/dashboard/project/ptmctjexmsggnzojqmpx)
+  in the `peyton150-startup` organization through the Supabase connector.
+- Project reference: `ptmctjexmsggnzojqmpx`; region: `us-east-1`.
+- Supabase quoted $0/month, and the user explicitly approved that quoted cost.
+- Project status is `ACTIVE_HEALTHY`. A connector SQL query verified PostgreSQL
+  17.11 and a working database connection.
+- Django is not connected yet, and Datum's migrations have not been applied to
+  Supabase. The connector does not expose the admin database password. No
+  application login, private schema, or local credential file has been created.
+- Resume by creating a dedicated Django database login and private schema,
+  storing its generated credentials outside Git, configuring encrypted database
+  connections, and running Django's migration executor against Supabase. Verify
+  the applied migration history and seeded comparison policies through the ORM.
+- The user is preparing the Ubuntu server. Its hostname/IP and SSH username are
+  still needed for backend deployment. Keep passwords and private keys out of
+  chat; never put database credentials in Vercel's browser environment.
+- Reconciliation CI passed on commit `cf71e81`:
+  [run 37065394458](https://github.com/peyton150-startup/Datum-Project/actions/runs/37065394458).
+
+The user requested a committed and pushed stopping point before connection work
+continued. This checkpoint records completed infrastructure and pending work;
+it does not claim a deployed application or completed hosted migrations.
 
 ## Acceptance walk for WBS 1.5.2
 

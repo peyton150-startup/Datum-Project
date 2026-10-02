@@ -324,7 +324,7 @@ class FieldConfig:
 
             precision = self.comparison["precision"]
             valid_precisions = {"day", "hour", "minute", "second"}
-            if precision not in valid_precisions:
+            if not isinstance(precision, str) or precision not in valid_precisions:
                 raise InvalidModeParameter(
                     f"Field {self.field_name}: invalid precision {precision!r}. "
                     f"Valid precisions: {', '.join(sorted(valid_precisions))}"

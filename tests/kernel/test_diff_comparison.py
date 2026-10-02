@@ -38,7 +38,10 @@ def test_missing_policy_is_undecidable_even_when_values_agree():
 
 def test_cross_kind_sampling_isolation_in_real_comparisons(caplog):
     declared, discovered = zip(
-        pair("Deployment", "a"), pair("ComputeInstance", "a"), pair("Deployment", "b"), strict=False
+        pair("Deployment", "a"),
+        pair("ComputeInstance", "a"),
+        pair("Deployment", "b", declared=7, discovered=9),
+        strict=False,
     )
     schemas = {
         kind: schema(kind, logging="sampled_audit") for kind in ("Deployment", "ComputeInstance")
@@ -47,6 +50,9 @@ def test_cross_kind_sampling_isolation_in_real_comparisons(caplog):
     records = [r.message for r in caplog.records if r.name == "datum.reconcile.audit"]
     assert len(records) == 1
     assert "kind=Deployment" in records[0]
+    # Sorting groups ComputeInstance first. A field-only counter emits the
+    # first Deployment (3), while independent counters emit its second (7).
+    assert "declared: PlaneValue.of(7)" in records[0]
 
 
 @pytest.mark.parametrize("kind", ["", None, 3])

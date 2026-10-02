@@ -150,49 +150,21 @@ derived `type` for each field.
 
 ## Architecture: Field Definition vs Comparison Config
 
-Each field in `attribute_schema` has two concerns:
+The declared attribute schema defines what an author may write. Operator policy
+independently defines how reconciliation compares the field and audits its
+verdict. Their sources of truth, lifecycles, and reasons to change differ.
+
+The compiled ComparisonSchema joins those two resolutions for one run:
 
 ```python
-{
-  "replicas": {
-    # FIELD DEFINITION: What is this field?
-    "type": "integer",
-
-    # COMPARISON CONFIG: How is it compared?
-    "comparison": {
-      "mode": "exact",           # exact value vs exact string representation
-      "precision": None,         # For numeric: tolerance window (null = exact)
-      "logging": "discrepancy"   # debug, discrepancy, sampled
-    }
-  },
-
-  "env_vars": {
-    # FIELD DEFINITION
-    "type": "list",
-
-    # COMPARISON CONFIG
-    "comparison": {
-      "list_mode": "unordered_multiset",  # ordered, unordered_multiset, set
-      "element_comparison": "exact",
-      "logging": "discrepancy"
-    }
-  },
-
-  "metadata": {
-    # FIELD DEFINITION
-    "type": "object",
-
-    # COMPARISON CONFIG
-    "comparison": {
-      "mode": "opaque",          # opaque, hash, version, identity, recurse
-      "logging": "discrepancy"
-    }
-  }
-}
+{"replicas": {"type": "numeric", "comparison": {"mode": "exact_value"},
+              "logging": "discrepancy"}}
 ```
 
----
+This compiled shape is not stored in Kind.attribute_schema or ComparisonPolicy.
+The persisted shapes and validated write path are documented above.
 
+---
 ## 1. Lists: Three Comparison Modes
 
 **Decision:** Three distinct modes (ordered, unordered multiset, set) configured per field.
@@ -200,7 +172,7 @@ Each field in `attribute_schema` has two concerns:
 ### List Modes
 
 - **`ordered`** — Exact order required: `[1, 2, 3]` ≠ `[3, 2, 1]`, elements must match position-by-position
-- **`unordered_multiset`** (default for list type) — Order ignored, duplicates preserved: `[1, 1, 2]` == `[1, 2, 1]`, but not equal to `[1, 2]`
+- **`unordered_multiset`** — Order ignored, duplicates preserved: `[1, 1, 2]` == `[1, 2, 1]`, but not equal to `[1, 2]`
 - **`set`** — Order ignored, duplicates removed before comparison: `[1, 1, 2]` == `[2, 1]` (both become `{1, 2}`)
 
 ### Implementation
@@ -729,7 +701,7 @@ are worse answers than a discrepancy.
 - **Null/missing/empty are not equivalent.** Each must be handled distinctly and explicitly. The PlaneValue type carries presence, not just value.
 - **Key order never matters for objects.** When recursing into objects, iterate keys in sorted order for determinism, but the comparison is always order-independent.
 - **Logging is mandatory.** Every comparison decision must be logged at the configured level, so operators understand discrepancies and can tune configurations.
-- **Defaults are conservative.** Default to exact comparison (ordered lists, exact_value numbers, exact strings, string timestamps, full recursion) so nothing is silently normalized away.
+- **Policy is explicit.** No comparison mode is inferred for an uncovered field; seeded numeric and string policies use exact comparison.
 - **Determinism as invariant.** Tests must prove:
   1. Identical inputs produce identical discrepancies
   2. Input order does not affect discrepancies

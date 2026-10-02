@@ -113,3 +113,20 @@ def test_string_declaration_can_select_timestamp_policy_without_persisted_type()
     configure_comparison_policy(kind, configured)
     schema = _load_comparison_schemas({kind.name})[kind.name]
     assert schema.get_field_config("observed_at").field_type == "timestamp"
+
+
+@pytest.mark.parametrize("precision", [[], {}, None, 1])
+def test_malformed_timestamp_precision_is_rejected_without_batch_failure(precision):
+    kind = Kind.objects.create(name="Clock", attribute_schema={"observed_at": "str"})
+    configured = {
+        "observed_at": {
+            "comparison": {"mode": "semantic_utc", "precision": precision},
+            "logging": "debug",
+        }
+    }
+    with pytest.raises(SchemaError):
+        configure_comparison_policy(kind, configured)
+    assert not ComparisonPolicy.objects.filter(kind=kind).exists()
+    # A manual/imported bad policy must also remain a field-level problem.
+    ComparisonPolicy.objects.create(kind=kind, fields=configured)
+    assert _load_comparison_schemas({kind.name, "Deployment"}).keys() == {"Deployment"}

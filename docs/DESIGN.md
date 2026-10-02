@@ -528,7 +528,7 @@ This section's own corpus, in the sense §12 has one, is part of 1.5.2's specifi
 Issue #53. There are two type vocabularies here, they are different questions, and **neither is a subset of the other**:
 
 - **Declared types** — what an author may write in an intent document, and what §10's `attribute_schema` names: `int`, `str`, `bool`.
-- **Field types** — what `Kind.attribute_schema` names to select a comparison: `numeric`, `string`, `timestamp`, `boolean`, `list`, `object`.
+- **Field types** — what the compiled comparison schema names to select a comparison: `numeric`, `string`, `timestamp`, `boolean`, `list`, `object`. Production derives these from the separately resolved declared schema and explicit operator policy.
 
 They were written in three modules that each looked correct alone, and the relation between them was nobody's job. Two field types (`list`, `object`) could never receive a declared value; one declared type (`bool`) named no field type at all, so a document could say `enabled: true` and no schema could say how to compare it.
 

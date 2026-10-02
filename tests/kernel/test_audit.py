@@ -5,14 +5,9 @@ matter here are about that state: which counter an entry advances, which
 entries advance one at all, and what a rate below 1 does before it can silently
 turn logging off.
 
-**One thing this file deliberately does not test: per-kind sampling isolation.**
-Nothing populates `_kind_name`, so every entry reaches the writer with
-`kind_name` reading `unknown`, and a test asserting that two kinds keep
-separate streams would pass against a writer that keyed on nothing but the
-field name. It would demonstrate the opposite of what its name claimed. That
-test belongs to phase 2H, which supplies the real kind name. What *is*
-testable now -- that two different fields keep separate streams -- is tested
-below, and is the same mechanism seen through the dimension that varies.
+These unit tests vary independently constructed audit entries to test writer
+rendering and emission. Production kind identity and cross-kind sampling are
+covered by test_diff_comparison.py.
 """
 
 import logging
@@ -34,7 +29,7 @@ AUDIT_LOGGER = "datum.reconcile.audit"
 
 
 def config(level):
-    return FieldConfig("replicas", "numeric", {"mode": "exact_value"}, level)
+    return FieldConfig("TestKind", "replicas", "numeric", {"mode": "exact_value"}, level)
 
 
 def entry(field_name="replicas", kind_name="unknown", result=True):

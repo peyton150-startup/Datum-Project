@@ -12,6 +12,14 @@ from datum.enums import (
     Plane,
 )
 from datum.graph.models import DeclaredResource
+from datum.kinds.models import Kind
+
+
+class ComparisonPolicy(models.Model):
+    """Operator policy, separately owned from the kind's declared schema."""
+
+    kind = models.OneToOneField(Kind, on_delete=models.CASCADE)
+    fields = models.JSONField(default=dict)
 
 
 class Match(models.Model):
@@ -92,7 +100,7 @@ class Match(models.Model):
 
 class Discrepancy(models.Model):
     tenant_id = models.UUIDField()
-    discrepancy_type = models.CharField(max_length=24, choices=DiscrepancyType.choices)
+    discrepancy_type = models.CharField(max_length=32, choices=DiscrepancyType.choices)
     kind_name = models.CharField(max_length=128)
     scope = models.CharField(max_length=253)
     name = models.CharField(max_length=253)
@@ -105,7 +113,7 @@ class Discrepancy(models.Model):
     discovered_present = models.BooleanField(null=True)
     discovered_value = models.JSONField(null=True, blank=True)
     authoritative_plane = models.CharField(
-        max_length=12, choices=Plane.choices, default=Plane.DECLARED
+        max_length=12, choices=Plane.choices, default=Plane.DECLARED, null=True
     )
     state = models.CharField(
         max_length=12, choices=DiscrepancyState.choices, default=DiscrepancyState.OPEN

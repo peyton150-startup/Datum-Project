@@ -47,6 +47,7 @@ class TestTimestampOffsetConversion:
 
     def config(self):
         return FieldConfig(
+            "TestKind",
             "created_at",
             "timestamp",
             {"mode": "semantic_utc", "precision": "second"},
@@ -88,6 +89,7 @@ class TestListElementMismatch:
 
     def multiset_config(self):
         return FieldConfig(
+            "TestKind",
             "tags",
             "list",
             {"mode": "unordered_multiset", "element_comparison": {"mode": "exact_value"}},
@@ -96,6 +98,7 @@ class TestListElementMismatch:
 
     def set_config(self):
         return FieldConfig(
+            "TestKind",
             "tags",
             "list",
             {"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -150,7 +153,8 @@ class TestAnUnknownModeIsNeverAMatch:
 
     def test_numeric(self):
         config = past_validation(
-            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), "roughly"
+            FieldConfig("TestKind", "n", "numeric", {"mode": "exact_value"}, "discrepancy"),
+            "roughly",
         )
         is_equal, log = compare_numeric(PlaneValue.of(3), PlaneValue.of(3), config)
         assert is_equal is False
@@ -158,7 +162,7 @@ class TestAnUnknownModeIsNeverAMatch:
 
     def test_string(self):
         config = past_validation(
-            FieldConfig("s", "string", {"mode": "exact"}, "discrepancy"), "soundex"
+            FieldConfig("TestKind", "s", "string", {"mode": "exact"}, "discrepancy"), "soundex"
         )
         is_equal, log = compare_string(PlaneValue.of("a"), PlaneValue.of("a"), config)
         assert is_equal is False
@@ -167,6 +171,7 @@ class TestAnUnknownModeIsNeverAMatch:
     def test_list(self):
         config = past_validation(
             FieldConfig(
+                "TestKind",
                 "l",
                 "list",
                 {"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -180,7 +185,7 @@ class TestAnUnknownModeIsNeverAMatch:
 
     def test_timestamp(self):
         config = past_validation(
-            FieldConfig("t", "timestamp", {"mode": "string"}, "discrepancy"), "fuzzy"
+            FieldConfig("TestKind", "t", "timestamp", {"mode": "string"}, "discrepancy"), "fuzzy"
         )
         is_equal, log = compare_timestamp(
             PlaneValue.of("2026-07-30"), PlaneValue.of("2026-07-30"), config
@@ -190,7 +195,7 @@ class TestAnUnknownModeIsNeverAMatch:
 
     def test_object(self):
         config = past_validation(
-            FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy"), "sortof"
+            FieldConfig("TestKind", "o", "object", {"mode": "opaque"}, "discrepancy"), "sortof"
         )
         is_equal, log = compare_object(PlaneValue.of({"a": 1}), PlaneValue.of({"a": 1}), config)
         assert is_equal is False
@@ -213,11 +218,13 @@ class TestAModeParameterThatStatesNothingUsableIsNeverAMatch:
 
     def numeric(self, mode: str) -> FieldConfig:
         return past_validation(
-            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
+            FieldConfig("TestKind", "n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
         )
 
     def object_(self, mode: str) -> FieldConfig:
-        return past_validation(FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy"), mode)
+        return past_validation(
+            FieldConfig("TestKind", "o", "object", {"mode": "opaque"}, "discrepancy"), mode
+        )
 
     @pytest.mark.parametrize(
         "mode",
@@ -331,11 +338,13 @@ class TestBothDegradePathsReportOneConditionOneWay:
 
     def numeric(self, mode: str) -> FieldConfig:
         return past_validation(
-            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
+            FieldConfig("TestKind", "n", "numeric", {"mode": "exact_value"}, "discrepancy"), mode
         )
 
     def object_(self, mode: str) -> FieldConfig:
-        return past_validation(FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy"), mode)
+        return past_validation(
+            FieldConfig("TestKind", "o", "object", {"mode": "opaque"}, "discrepancy"), mode
+        )
 
     def test_a_recognised_name_with_an_unusable_parameter_reads_alike(self):
         _, numeric_log = compare_numeric(
@@ -377,23 +386,24 @@ class TestAnUnclosedModeIsNotSilentlyTruncated:
 
     def test_the_barricade_rejects_an_unclosed_tolerance(self):
         with pytest.raises(InvalidModeParameter):
-            FieldConfig("n", "numeric", {"mode": "tolerance(15"}, "discrepancy")
+            FieldConfig("TestKind", "n", "numeric", {"mode": "tolerance(15"}, "discrepancy")
 
     def test_the_barricade_rejects_an_unclosed_recurse(self):
         with pytest.raises(InvalidModeParameter):
-            FieldConfig("o", "object", {"mode": "recurse(15"}, "discrepancy")
+            FieldConfig("TestKind", "o", "object", {"mode": "recurse(15"}, "discrepancy")
 
     def test_an_unclosed_tolerance_does_not_compare_as_one_point_zero(self):
         """10 against 11 is inside a tolerance of 1.0 and outside of nothing."""
         config = past_validation(
-            FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy"), "tolerance(15"
+            FieldConfig("TestKind", "n", "numeric", {"mode": "exact_value"}, "discrepancy"),
+            "tolerance(15",
         )
         is_equal, _ = compare_numeric(PlaneValue.of(10), PlaneValue.of(11), config)
         assert is_equal is False
 
     def test_the_whole_parameter_is_read_when_the_mode_is_closed(self):
         """The mirror: `tolerance(15)` really does mean 15, not 1."""
-        config = FieldConfig("n", "numeric", {"mode": "tolerance(15)"}, "discrepancy")
+        config = FieldConfig("TestKind", "n", "numeric", {"mode": "tolerance(15)"}, "discrepancy")
         is_equal, _ = compare_numeric(PlaneValue.of(10), PlaneValue.of(20), config)
         assert is_equal is True
 
@@ -428,5 +438,5 @@ class TestEveryValidFieldTypeHasAValidator:
             "in schema.py needs a row for it too"
         )
         for field_type, comparison in minimal_config.items():
-            config = FieldConfig("f", field_type, comparison, "discrepancy")
+            config = FieldConfig("TestKind", "f", field_type, comparison, "discrepancy")
             assert config.field_type == field_type

@@ -17,6 +17,7 @@ class TestListOrdered:
         declared = PlaneValue.of([1, 2, 3])
         discovered = PlaneValue.of([1, 2, 3])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -31,6 +32,7 @@ class TestListOrdered:
         declared = PlaneValue.of([1, 2, 3])
         discovered = PlaneValue.of([3, 2, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -45,6 +47,7 @@ class TestListOrdered:
         declared = PlaneValue.of([])
         discovered = PlaneValue.of([])
         config = FieldConfig(
+            "TestKind",
             field_name="items",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -59,6 +62,7 @@ class TestListOrdered:
         declared = PlaneValue.of([1, 2, 3])
         discovered = PlaneValue.of([1, 2])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -73,6 +77,7 @@ class TestListOrdered:
         declared = PlaneValue.of(["a", "b", "c"])
         discovered = PlaneValue.of(["a", "b", "c"])
         config = FieldConfig(
+            "TestKind",
             field_name="tags",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -91,6 +96,7 @@ class TestListMultiset:
         declared = PlaneValue.of([1, 2, 3])
         discovered = PlaneValue.of([3, 2, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={
@@ -108,6 +114,7 @@ class TestListMultiset:
         declared = PlaneValue.of([1, 1, 2])
         discovered = PlaneValue.of([1, 2])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={
@@ -125,6 +132,7 @@ class TestListMultiset:
         declared = PlaneValue.of([1, 1, 2])
         discovered = PlaneValue.of([2, 1, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={
@@ -142,6 +150,7 @@ class TestListMultiset:
         declared = PlaneValue.of([])
         discovered = PlaneValue.of([])
         config = FieldConfig(
+            "TestKind",
             field_name="items",
             field_type="list",
             comparison={
@@ -163,6 +172,7 @@ class TestListSet:
         declared = PlaneValue.of([1, 1, 2, 3, 3])
         discovered = PlaneValue.of([3, 2, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -177,6 +187,7 @@ class TestListSet:
         declared = PlaneValue.of([1, 1, 1])
         discovered = PlaneValue.of([1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -191,6 +202,7 @@ class TestListSet:
         declared = PlaneValue.of([1, 2])
         discovered = PlaneValue.of([1, 3])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -205,6 +217,7 @@ class TestListSet:
         declared = PlaneValue.of([])
         discovered = PlaneValue.of([])
         config = FieldConfig(
+            "TestKind",
             field_name="items",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -223,6 +236,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_list",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -237,6 +251,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_list",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -251,6 +266,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of([1, 2])
         config = FieldConfig(
+            "TestKind",
             field_name="optional_list",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -265,6 +281,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.of([1, 2])
         config = FieldConfig(
+            "TestKind",
             field_name="optional_list",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -279,6 +296,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.of("not a list")
         discovered = PlaneValue.of([1, 2])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -293,6 +311,7 @@ class TestListNullAndAbsent:
         declared = PlaneValue.of([1, 2])
         discovered = PlaneValue.of({"a": 1})
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -311,6 +330,7 @@ class TestListNested:
         declared = PlaneValue.of([[1, 2], [3, 4]])
         discovered = PlaneValue.of([[1, 2], [3, 4]])
         config = FieldConfig(
+            "TestKind",
             field_name="matrix",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -325,6 +345,7 @@ class TestListNested:
         declared = PlaneValue.of([[1, 2], [3, 4]])
         discovered = PlaneValue.of([[3, 4], [1, 2]])
         config = FieldConfig(
+            "TestKind",
             field_name="matrix",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -339,6 +360,7 @@ class TestListNested:
         declared = PlaneValue.of([[1, 2], [3, 4]])
         discovered = PlaneValue.of([[3, 4], [1, 2]])
         config = FieldConfig(
+            "TestKind",
             field_name="matrix",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -353,6 +375,7 @@ class TestListNested:
         declared = PlaneValue.of([1, "two", 3.0, [4]])
         discovered = PlaneValue.of([1, "two", 3.0, [4]])
         config = FieldConfig(
+            "TestKind",
             field_name="mixed",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -367,6 +390,7 @@ class TestListNested:
         declared = PlaneValue.of([{"a": 1}, {"b": 2}])
         discovered = PlaneValue.of([{"b": 2}, {"a": 1}])
         config = FieldConfig(
+            "TestKind",
             field_name="configs",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -385,6 +409,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([42])
         discovered = PlaneValue.of([42])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -399,6 +424,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([1, 1, 1, 1, 1])
         discovered = PlaneValue.of([1, 1, 1, 1, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={
@@ -416,6 +442,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([None, None, None])
         discovered = PlaneValue.of([None, None, None])
         config = FieldConfig(
+            "TestKind",
             field_name="values",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -430,6 +457,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([1, None, 1, None])
         discovered = PlaneValue.of([None, 1])
         config = FieldConfig(
+            "TestKind",
             field_name="values",
             field_type="list",
             comparison={"mode": "set", "element_comparison": {"mode": "exact_value"}},
@@ -444,6 +472,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([1, 2, 3])
         discovered = PlaneValue.of(["1", "2", "3"])
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -459,6 +488,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of(long_list)
         discovered = PlaneValue.of(long_list)
         config = FieldConfig(
+            "TestKind",
             field_name="ids",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -473,6 +503,7 @@ class TestListAdversarialCases:
         declared = PlaneValue.of([1, 2.0, 3])
         discovered = PlaneValue.of([1.0, 2, 3.0])
         config = FieldConfig(
+            "TestKind",
             field_name="values",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": {"mode": "exact_value"}},

@@ -62,3 +62,16 @@ test("pressing r resolves the focused discrepancy and it leaves the queue", asyn
   await userEvent.keyboard("r");
   await waitFor(() => expect(screen.queryByText("replicas")).toBeNull());
 });
+
+test("an undecidable field explains the missing policy without claiming authority", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
+    json: () => Promise.resolve({ count: 1, items: [{
+      ...disc, discrepancy_type: "missing_comparison_policy", authoritative_plane: null,
+    }] }),
+  })));
+  render(<ReviewQueue />);
+  await waitFor(() => screen.getByText(/Comparison policy needed/));
+  expect(screen.queryByTestId("authoritative-badge")).toBeNull();
+  expect(screen.getByTestId("declared-value").textContent).toBe("3");
+  expect(screen.getByTestId("discovered-value").textContent).toBe("5");
+});

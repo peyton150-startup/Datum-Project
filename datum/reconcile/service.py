@@ -13,7 +13,9 @@ from datum.enums import (
 )
 from datum.graph.models import DeclaredResource
 from datum.intent.models import IntentRevision
+from datum.kinds.models import Kind
 from datum.locks import locked_run
+from datum.reconcile.audit import audit_log_writer
 from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import (
     DiscrepancySet,
@@ -24,6 +26,12 @@ from datum.reconcile.domain import (
 )
 from datum.reconcile.matcher import match_resources
 from datum.reconcile.models import Discrepancy, Match
+from datum.reconcile.policy import (
+    comparison_schema,
+    resolve_comparison_policy,
+    resolve_declared_field_types,
+)
+from datum.reconcile.schema import ComparisonSchema, SchemaError
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +86,8 @@ def _reconcile_once(tenant_id: str) -> None:
 
     decisions = _stored_decisions(tenant_id)
     match_result = match_resources(declared, discovered, decisions)
-    discrepancy_set = reconcile(match_result)
+    schema_map = _load_comparison_schemas({pair.declared.kind for pair in match_result.pairs})
+    discrepancy_set = reconcile(match_result, schema_map, audit_log_writer())
 
     _reset(tenant_id)
     # Before writing, not after. A decision whose anchor vanished frees that
@@ -87,6 +96,38 @@ def _reconcile_once(tenant_id: str) -> None:
     _invalidate_unanchored(tenant_id, declared, discovered)
     _write_matches(tenant_id, match_result, declared_rows, discovered_rows)
     _write_discrepancies(tenant_id, discrepancy_set)
+
+
+def _load_comparison_schemas(kind_names: set[str]) -> dict[str, ComparisonSchema]:
+    schemas = {}
+    for kind in Kind.objects.filter(name__in=kind_names):
+        field_types = resolve_declared_field_types(kind)
+        try:
+            policy = resolve_comparison_policy(kind)
+        except SchemaError:
+            logger.warning("unusable comparison policy: kind=%s", kind.name)
+            continue
+        if not policy:
+            continue
+        # Validate independently so one stale/unusable field cannot discard the
+        # policy for the rest of a tenant's estate. Missing fields remain absent
+        # from the schema and the kernel reports them as undecidable.
+        raw = {}
+        for name, definition in policy.items():
+            try:
+                field_schema = comparison_schema(kind.name, field_types, {name: definition})
+            except SchemaError:
+                logger.warning("unusable comparison policy: kind=%s field=%s", kind.name, name)
+                continue
+            config = field_schema.get_field_config(name)
+            raw[name] = {
+                "type": config.field_type,
+                "comparison": config.comparison,
+                "logging": config.logging,
+            }
+        if raw:
+            schemas[kind.name] = ComparisonSchema(kind.name, raw)
+    return schemas
 
 
 def _present_discovered(tenant_id: str) -> list[DiscoveredResource]:
@@ -243,7 +284,7 @@ def _write_discrepancies(tenant_id: str, discrepancy_set: DiscrepancySet) -> Non
         discovered_present, discovered_value = fd.discovered.as_columns()
         Discrepancy.objects.create(
             tenant_id=tenant_id,
-            discrepancy_type=DiscrepancyType.FIELD,
+            discrepancy_type=fd.discrepancy_type,
             kind_name=kind,
             scope=scope,
             name=name,
@@ -252,7 +293,9 @@ def _write_discrepancies(tenant_id: str, discrepancy_set: DiscrepancySet) -> Non
             declared_value=declared_value,
             discovered_present=discovered_present,
             discovered_value=discovered_value,
-            authoritative_plane=Plane.DECLARED,
+            authoritative_plane=(
+                Plane.DECLARED if fd.discrepancy_type == DiscrepancyType.FIELD else None
+            ),
         )
     for orphan in discrepancy_set.orphans:
         kind, _tenant, scope, name = orphan.natural_key

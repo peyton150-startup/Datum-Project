@@ -87,10 +87,64 @@ N=1. **N below 1 is refused when the writer is constructed**, rather than
 clamped: a negative rate emits nothing forever, which is `sampled_audit`
 meaning "never" under a name that says the opposite.
 
-Per-kind isolation is not yet observable — nothing supplies a kind name to a
-comparison, so every entry reads `unknown` and two kinds sharing a field name
-share a counter. WBS 1.5.2 phase 2H supplies the name and carries the
-acceptance test for it.
+Kind identity flows from `ComparisonSchema.kind_name` through
+`FieldConfig.kind_name` into each audit entry. A writer belongs to one
+reconciliation run; same-named fields in different kinds keep independent
+sampling streams. `unknown` remains a legal kind name, without special meaning.
+
+### Supported comparison configuration (Phase 2H–2J)
+
+`Kind.attribute_schema` remains the declared-type mapping, for example
+`{"replicas": "int"}`. `ComparisonPolicy.fields` is separately persisted,
+keyed by its kind, and contains only explicit comparison and logging policy:
+
+```python
+{"replicas": {"comparison": {"mode": "tolerance(2)"}, "logging": "discrepancy"}}
+```
+
+Use the supported validation function from `python manage.py shell`:
+
+```python
+from datum.kinds.models import Kind
+from datum.reconcile.policy import configure_comparison_policy
+
+kind = Kind.objects.get(name="Deployment")
+configure_comparison_policy(kind, {
+    "replicas": {"comparison": {"mode": "tolerance(2)"}, "logging": "discrepancy"}
+})
+```
+
+For a new kind, define its declared attributes first, then supply policy for
+every attribute through that same function. It validates completeness before
+saving, rejects persisted `type` metadata and requires explicit logging.
+Avoid direct ORM writes to `ComparisonPolicy`: those bypass validation.
+
+Field types derive through `FIELD_TYPES`: `int` selects numeric and `bool`
+selects boolean. For `str`, the explicit mode selects string or timestamp
+semantics through the existing type validators. List and object comparison
+functions remain available to the kernel corpus, but the current declared
+vocabulary has no list/object type; this integration does not add one.
+
+Migration `0004_seed_comparison_schemas` seeds Deployment replicas and
+ComputeInstance ocpus with `exact_value`, and ComputeInstance shape with
+`exact`; all use `discrepancy` logging. It leaves declared schemas untouched
+and preserves an existing policy when run again.
+
+The service resolves the governing declared schema and the active operator
+policy in two named steps. Both currently use the current Kind row; historical
+schema provenance is deferred to issue #70.
+
+If a field is uncovered or its policy becomes unusable, reconciliation retains
+both plane statements and emits a `missing_comparison_policy` discrepancy with
+no authoritative plane. Other fields continue. Even equal-looking values do
+not establish agreement without policy. The review queue therefore holds both
+observed drift and conditions that prevent deciding drift; this reason is part
+of discrepancy identity. No policy or logging defaults are invented at runtime.
+
+The examples in the remaining design sections illustrate comparison semantics.
+The persisted operator-policy shape and executable configuration entry point
+are the ones above; the compiled `ComparisonSchema` additionally carries its
+derived `type` for each field.
 
 ---
 

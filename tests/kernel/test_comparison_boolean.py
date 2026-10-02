@@ -11,6 +11,7 @@ from datum.reconcile.domain import PlaneValue
 from datum.reconcile.schema import FieldConfig
 
 CONFIG = FieldConfig(
+    "TestKind",
     field_name="enabled",
     field_type="boolean",
     comparison={"mode": "exact"},
@@ -142,6 +143,7 @@ class TestUnknownMode:
         construction; this covers the branch for a config built another way.
         """
         config = FieldConfig(
+            "TestKind",
             field_name="enabled",
             field_type="boolean",
             comparison={"mode": "exact"},

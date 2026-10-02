@@ -21,6 +21,7 @@ from datum.reconcile.schema import FieldConfig
 
 def config(mode: str, field_name: str = "metadata") -> FieldConfig:
     return FieldConfig(
+        "TestKind",
         field_name=field_name,
         field_type="object",
         comparison={"mode": mode},

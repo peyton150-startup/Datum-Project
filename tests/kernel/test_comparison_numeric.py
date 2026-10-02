@@ -17,6 +17,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu_count",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -33,6 +34,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(3.14)
         discovered = PlaneValue.of(3.14)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu_request",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -48,6 +50,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3.0)
         config = FieldConfig(
+            "TestKind",
             field_name="memory",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -63,6 +66,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(4)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu_count",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -78,6 +82,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(-5)
         discovered = PlaneValue.of(-5)
         config = FieldConfig(
+            "TestKind",
             field_name="offset",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -92,6 +97,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(0)
         discovered = PlaneValue.of(0)
         config = FieldConfig(
+            "TestKind",
             field_name="count",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -106,6 +112,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(0)
         discovered = PlaneValue.of(-0.0)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -120,6 +127,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(9999999999)
         discovered = PlaneValue.of(9999999999)
         config = FieldConfig(
+            "TestKind",
             field_name="size",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -134,6 +142,7 @@ class TestNumericExactValue:
         declared = PlaneValue.of(1.5e3)  # 1500.0 (float)
         discovered = PlaneValue.of(1500)  # 1500 (int)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -152,6 +161,7 @@ class TestNumericExactString:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3)
         config = FieldConfig(
+            "TestKind",
             field_name="version",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -166,6 +176,7 @@ class TestNumericExactString:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3.0)
         config = FieldConfig(
+            "TestKind",
             field_name="version",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -181,6 +192,7 @@ class TestNumericExactString:
         declared = PlaneValue.of(3.14)
         discovered = PlaneValue.of(3.14)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -197,6 +209,7 @@ class TestNumericExactString:
         declared = PlaneValue.of(3.1)
         discovered = PlaneValue.of(3.1)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -211,6 +224,7 @@ class TestNumericExactString:
         declared = PlaneValue.of(-5)
         discovered = PlaneValue.of(-5)
         config = FieldConfig(
+            "TestKind",
             field_name="offset",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -229,6 +243,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.01)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "tolerance(0.02)"},
@@ -244,6 +259,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.01)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -258,6 +274,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.02)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -272,6 +289,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(2.99)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -286,6 +304,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.0)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0)"},
@@ -300,6 +319,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.00001)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0)"},
@@ -314,6 +334,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(10.0)
         discovered = PlaneValue.of(15.0)
         config = FieldConfig(
+            "TestKind",
             field_name="memory",
             field_type="numeric",
             comparison={"mode": "tolerance(10)"},
@@ -328,6 +349,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(100)
         discovered = PlaneValue.of(105)
         config = FieldConfig(
+            "TestKind",
             field_name="count",
             field_type="numeric",
             comparison={"mode": "tolerance(5)"},
@@ -342,6 +364,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3.01)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0.02)"},
@@ -356,6 +379,7 @@ class TestNumericTolerance:
         declared = PlaneValue.of(-5.0)
         discovered = PlaneValue.of(-4.99)
         config = FieldConfig(
+            "TestKind",
             field_name="offset",
             field_type="numeric",
             comparison={"mode": "tolerance(0.02)"},
@@ -374,6 +398,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -388,6 +413,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -402,6 +428,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.of(5)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -416,6 +443,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.of(5)
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -430,6 +458,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(5)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -444,6 +473,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.of(5)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -458,6 +488,7 @@ class TestNumericNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(5)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(1)"},
@@ -476,6 +507,7 @@ class TestNumericAuditLog:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3)
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -492,6 +524,7 @@ class TestNumericAuditLog:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -507,6 +540,7 @@ class TestNumericAuditLog:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(4)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -522,6 +556,7 @@ class TestNumericAuditLog:
         declared = PlaneValue.of(3.0)
         discovered = PlaneValue.of(3.01)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -537,6 +572,7 @@ class TestNumericAuditLog:
         declared = PlaneValue.of(3)
         discovered = PlaneValue.of(3.0)
         config = FieldConfig(
+            "TestKind",
             field_name="version",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -556,6 +592,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(0.00001)
         discovered = PlaneValue.of(0.00001)
         config = FieldConfig(
+            "TestKind",
             field_name="epsilon",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -570,6 +607,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(float("inf"))
         discovered = PlaneValue.of(float("inf"))
         config = FieldConfig(
+            "TestKind",
             field_name="limit",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -584,6 +622,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(0.001)
         discovered = PlaneValue.of(0.0011)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0.00011)"},
@@ -598,6 +637,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(-0.005)
         discovered = PlaneValue.of(0.005)
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -613,6 +653,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(0.1 + 0.2)
         discovered = PlaneValue.of(0.3)
         config = FieldConfig(
+            "TestKind",
             field_name="sum",
             field_type="numeric",
             comparison={"mode": "tolerance(0.0001)"},
@@ -628,6 +669,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of("three")
         discovered = PlaneValue.of("three")
         config = FieldConfig(
+            "TestKind",
             field_name="value",
             field_type="numeric",
             comparison={"mode": "tolerance(1)"},
@@ -643,6 +685,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(True)
         discovered = PlaneValue.of(1)
         config = FieldConfig(
+            "TestKind",
             field_name="enabled",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -659,6 +702,7 @@ class TestNumericAdversarialCases:
         declared = PlaneValue.of(max_int)
         discovered = PlaneValue.of(max_int)
         config = FieldConfig(
+            "TestKind",
             field_name="big",
             field_type="numeric",
             comparison={"mode": "exact_value"},

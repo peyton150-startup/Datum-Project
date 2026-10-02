@@ -5,6 +5,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
+from datum.enums import DiscrepancyType
+
 NaturalKey = tuple[str, str, str, str]  # (kind, tenant_id, scope, name)
 
 T = TypeVar("T")
@@ -419,6 +421,7 @@ class FieldDiscrepancy:
     field_name: str
     declared: PlaneValue
     discovered: PlaneValue
+    discrepancy_type: str = DiscrepancyType.FIELD.value
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ class TestStringExact:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -32,6 +33,7 @@ class TestStringExact:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.of("world")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -46,6 +48,7 @@ class TestStringExact:
         declared = PlaneValue.of("Hello")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -60,6 +63,7 @@ class TestStringExact:
         declared = PlaneValue.of("")
         discovered = PlaneValue.of("")
         config = FieldConfig(
+            "TestKind",
             field_name="optional",
             field_type="string",
             comparison={"mode": "exact"},
@@ -74,6 +78,7 @@ class TestStringExact:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.of("hello ")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -88,6 +93,7 @@ class TestStringExact:
         declared = PlaneValue.of("hello  world")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -102,6 +108,7 @@ class TestStringExact:
         declared = PlaneValue.of("café")
         discovered = PlaneValue.of("café")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -116,6 +123,7 @@ class TestStringExact:
         declared = PlaneValue.of("123")
         discovered = PlaneValue.of("123")
         config = FieldConfig(
+            "TestKind",
             field_name="id",
             field_type="string",
             comparison={"mode": "exact"},
@@ -134,6 +142,7 @@ class TestStringLowercase:
         declared = PlaneValue.of("Hello")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -148,6 +157,7 @@ class TestStringLowercase:
         declared = PlaneValue.of("HELLO")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -162,6 +172,7 @@ class TestStringLowercase:
         declared = PlaneValue.of("HeLLo WoRLd")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -176,6 +187,7 @@ class TestStringLowercase:
         declared = PlaneValue.of("hello ")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -190,6 +202,7 @@ class TestStringLowercase:
         declared = PlaneValue.of("Hello")
         discovered = PlaneValue.of("WORLD")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -211,6 +224,7 @@ class TestStringTrim:
         declared = PlaneValue.of("  hello")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -225,6 +239,7 @@ class TestStringTrim:
         declared = PlaneValue.of("hello  ")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -239,6 +254,7 @@ class TestStringTrim:
         declared = PlaneValue.of("  hello  ")
         discovered = PlaneValue.of("  hello  ")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -253,6 +269,7 @@ class TestStringTrim:
         declared = PlaneValue.of("  hello  world  ")
         discovered = PlaneValue.of("hello  world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -267,6 +284,7 @@ class TestStringTrim:
         declared = PlaneValue.of("  Hello  ")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -281,6 +299,7 @@ class TestStringTrim:
         declared = PlaneValue.of("   ")
         discovered = PlaneValue.of("")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -299,6 +318,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("HELLO")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -313,6 +333,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("  hello  world  ")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -327,6 +348,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("hello    world")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -341,6 +363,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("hello\nworld")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -355,6 +378,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("hello\tworld")
         discovered = PlaneValue.of("hello world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -369,6 +393,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("  Hello  \n  World  \t!")
         discovered = PlaneValue.of("hello world !")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -383,6 +408,7 @@ class TestStringNormalize:
         declared = PlaneValue.of("   \n\t  ")
         discovered = PlaneValue.of("")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -401,6 +427,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -415,6 +442,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -429,6 +457,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="optional_text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -443,6 +472,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -457,6 +487,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="optional_text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -471,6 +502,7 @@ class TestStringNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -489,6 +521,7 @@ class TestStringAuditLog:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.of("hello")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -504,6 +537,7 @@ class TestStringAuditLog:
         declared = PlaneValue.of("  Hello  ")
         discovered = PlaneValue.of("  WORLD  ")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -521,6 +555,7 @@ class TestStringAuditLog:
         declared = PlaneValue.of("hello")
         discovered = PlaneValue.of("world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -540,6 +575,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("")
         discovered = PlaneValue.of("   ")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -554,6 +590,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("")
         discovered = PlaneValue.of("   ")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "trim"},
@@ -568,6 +605,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("café")  # Single char é
         discovered = PlaneValue.of("cafe")
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -583,6 +621,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of(long_text)
         discovered = PlaneValue.of(long_text)
         config = FieldConfig(
+            "TestKind",
             field_name="description",
             field_type="string",
             comparison={"mode": "exact"},
@@ -597,6 +636,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of(123)
         discovered = PlaneValue.of("123")
         config = FieldConfig(
+            "TestKind",
             field_name="id",
             field_type="string",
             comparison={"mode": "exact"},
@@ -611,6 +651,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of(True)
         discovered = PlaneValue.of("True")
         config = FieldConfig(
+            "TestKind",
             field_name="flag",
             field_type="string",
             comparison={"mode": "exact"},
@@ -625,6 +666,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("001")
         discovered = PlaneValue.of("1")
         config = FieldConfig(
+            "TestKind",
             field_name="code",
             field_type="string",
             comparison={"mode": "exact"},
@@ -639,6 +681,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("hello!@#$%^&*()")
         discovered = PlaneValue.of("hello!@#$%^&*()")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "exact"},
@@ -653,6 +696,7 @@ class TestStringAdversarialCases:
         declared = PlaneValue.of("  hello  !  world  ")
         discovered = PlaneValue.of("hello ! world")
         config = FieldConfig(
+            "TestKind",
             field_name="text",
             field_type="string",
             comparison={"mode": "normalize"},

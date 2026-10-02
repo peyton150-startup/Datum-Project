@@ -2,9 +2,9 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from datum.enums import DiscrepancyType
-from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import PlaneValue, ResourceSnapshot, canonical
 from datum.reconcile.matcher import match_resources
+from tests.reconcile_fixtures import reconcile
 
 T = "t1"
 

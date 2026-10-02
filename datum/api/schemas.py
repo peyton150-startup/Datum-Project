@@ -32,7 +32,7 @@ class DiscrepancyOut(Schema):
     field_name: str | None
     declared: PlaneValueOut
     discovered: PlaneValueOut
-    authoritative_plane: str
+    authoritative_plane: str | None
     state: str
 
 

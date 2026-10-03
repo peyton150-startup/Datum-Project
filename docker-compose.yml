@@ -9,7 +9,7 @@ services:
       POSTGRES_DB: datum
       POSTGRES_USER: datum
       POSTGRES_PASSWORD: datum
-    ports: ["5544:5432"]          # 5544 host-side to dodge a native Postgres collision
+    ports: ["127.0.0.1:5544:5432"]          # 5544 host-side to dodge a native Postgres collision
     volumes: ["postgres-data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U datum"]
@@ -20,7 +20,7 @@ services:
   valkey:
     image: valkey/valkey:8
     restart: unless-stopped
-    ports: ["6399:6379"]
+    ports: ["127.0.0.1:6399:6379"]
     volumes: ["valkey-data:/data"]
 
   app:
@@ -29,10 +29,13 @@ services:
     environment:
       POSTGRES_HOST: postgres
       VALKEY_URL: redis://valkey:6379/0
+      DATUM_DEBUG: ${DATUM_DEBUG:-0}
+      DATUM_SECRET_KEY: ${DATUM_SECRET_KEY}
+      DATUM_ALLOWED_HOSTS: ${DATUM_ALLOWED_HOSTS}
     depends_on:
       postgres: {condition: service_healthy}
       valkey: {condition: service_started}
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8001:8000"]
     volumes: [".:/app"]
 
   worker:
@@ -42,6 +45,9 @@ services:
     environment:
       POSTGRES_HOST: postgres
       VALKEY_URL: redis://valkey:6379/0
+      DATUM_DEBUG: ${DATUM_DEBUG:-0}
+      DATUM_SECRET_KEY: ${DATUM_SECRET_KEY}
+      DATUM_ALLOWED_HOSTS: ${DATUM_ALLOWED_HOSTS}
       # Intent repository. Unset means "not configured": the poll task logs and
       # does nothing rather than failing every interval.
       DATUM_INTENT_REPO_URL: ${DATUM_INTENT_REPO_URL:-}
@@ -56,14 +62,19 @@ services:
       valkey: {condition: service_started}
     volumes: [".:/app"]
 
+
   caddy:
     image: caddy:2
     restart: unless-stopped
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on: [app]
 
 volumes:
   postgres-data:
   valkey-data:
+  caddy-data:
+  caddy-config:

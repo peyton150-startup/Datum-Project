@@ -20,6 +20,7 @@ dependencies = [
     # which is the failure this line removes: a direct import held up by
     # somebody else's requirement moves or disappears without notice.
     "python-dateutil==2.*",
+    "gunicorn==23.*",
 ]
 
 [project.optional-dependencies]

@@ -22,6 +22,17 @@ INSTALLED_APPS = [
 MIDDLEWARE = ["django.middleware.common.CommonMiddleware"]
 ROOT_URLCONF = "datum.urls"
 
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [],
+        },
+    },
+]
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",

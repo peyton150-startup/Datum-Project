@@ -8,16 +8,17 @@ reconciliation runtime and use recorded discovery for the first protected demo.
 
 - Ubuntu host: `129.213.153.25`; SSH user: `ubuntu`. The saved local SSH entry
   `trellis` connects successfully using the user's existing key.
-- Docker and Compose are installed. An existing Datum API and worker are
-  running from `/home/ubuntu/datum/Datum-Project` against local PostgreSQL.
-  Its API responds on `127.0.0.1:8001`.
+- Docker and Compose are installed. The Datum API and worker now run source
+  from `/home/ubuntu/datum/Datum-Project-demo-stage` against Supabase. Ubuntu's
+  one-off probe and the running API both verified certificate-checked TLS.
 - The server checkout advanced to main at `7b941ec` while deployment was in
   progress. Its production Dockerfile, Gunicorn dependency, WSGI entry point
   and template settings are preserved in this branch. The existing server
   checkout and its Compose configuration remain the rollback deployment.
 - The existing Caddy gateway serves HTTP on port 80 without an authentication
-  directive. A protected frontend and backend gateway are still required before
-  claiming this demo is deployed under the agreed access model.
+  directive. The user approved a shared demo login for the website and API,
+  with Ubuntu SSH access unchanged. That gateway is being prepared; access
+  protection remains incomplete until its deployed checks pass.
 - Supabase project [datum-demo](https://supabase.com/dashboard/project/ptmctjexmsggnzojqmpx)
   is healthy in `peyton150-startup`, region `us-east-1`, PostgreSQL 17.11.
   Project creation was approved at the connector's quoted $0/month.
@@ -36,8 +37,9 @@ reconciliation runtime and use recorded discovery for the first protected demo.
 - `web/vercel.json` contains the user's requested `/api/:path*` rewrite to this
   backend's `/api/:path*`. Vercel project `datum-demo` is deployed at
   [datum-demo-seven.vercel.app](https://datum-demo-seven.vercel.app).
-  The production build succeeded; the homepage and rewritten discrepancy API
-  return HTTP 200. The browser renders the review queue, currently empty.
+  The production build succeeded; the homepage, Django Ninja documentation
+  at `/api/docs`, and rewritten discrepancy API return HTTP 200. The browser
+  renders `Deployment default/web` with declared replicas 3 and discovered 5.
   Frontend lint, production build and all six UI tests passed locally.
 - Backed up the Ubuntu deployment files, uncommitted changes and local database
   under `/home/ubuntu/datum/deployment-backup-20261003` before the runtime switch.
@@ -68,21 +70,29 @@ changing the ORM. Preserve encryption and certificate verification.
 
 ## Runtime and frontend work remaining
 
-1. Switch the API and worker to the staged source and Supabase using
-   `deploy/compose.supabase.yml`. It overlays the existing server Compose file;
+1. Maintain the API and worker with `deploy/compose.supabase.yml`.
+   It overlays the existing server Compose file;
    pass both the existing `.env` and the private Supabase connection environment,
    and set `DATUM_APP_SOURCE` to the staged source path. Keep the original
    checkout and local database for rollback.
-2. Verify protected API/frontend access, a scheduled task and visible recorded
-   drift on the hosted application.
+2. Deploy and verify the approved shared demo login on both frontend and API.
 
 The worker overlay uses recorded discovery and a read-only mount of a local
 sample intent repository. Collection and intent polling are scheduled by the
 existing Beat configuration. Reconciliation is currently an explicit operation;
 no new automatic reconciliation schedule is introduced by this deployment.
 
-Supabase migrations are complete. The server's running containers still use
-local PostgreSQL; the Supabase runtime switch is not complete yet.
+Supabase migrations and the runtime switch are complete. The worker ingested
+sample intent commit `a178fa6` and collected one recorded Deployment without
+errors. Beat then dispatched both tasks on its five-minute schedule: intent
+polling succeeded and collection run 2 reported success with no gap. Explicit
+reconciliation produced the replicas discrepancy, verified through the ORM
+and the hosted React queue. No live estate was read or changed.
+
+Local gates after preserving the production entry point: 1,162 backend tests
+passed (two live tests skipped), four acceptance smoke tests passed, all five
+backend gates passed with 100% gated branch coverage. Template settings and
+WSGI are deployment scaffolding; reconciliation behavior is unchanged.
 
 Connection references:
 [Supabase endpoints](https://supabase.com/docs/guides/database/connecting-to-postgres),

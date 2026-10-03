@@ -24,6 +24,9 @@ services:
       DATUM_INTENT_REPO_BRANCH: main
       DATUM_K8S_MODE: recorded
       DATUM_K8S_SOURCE: /app/fixtures/k8s/deployments.json
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /demo-intent/.git
     volumes:
       - ${DATUM_APP_SOURCE:?Staged source path required}:/app
       - /home/ubuntu/datum/.supabase/ca.crt:/app/.env.supabase-ca.crt:ro

@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://instance-20260305-1808.chinchilla-kanyu.ts.net/api/:path*"
+    }
+  ]
+}

@@ -12,6 +12,9 @@ htmlcov
 node_modules
 dist
 .env
+.env.*
+*.pem
+*.key
 .claude
 .claude-flow
 .swarm

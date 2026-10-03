@@ -12,10 +12,8 @@ say.** The two differ in shape as well as vocabulary: this wants
 `SchemaError: definition must be a dict, got str`, before any field type is
 looked at. Measured, not inferred.
 
-Nothing in production constructs a `ComparisonSchema` or a `FieldConfig` today,
-so the two never meet. Where comparison configuration is to come from is issue
-#71, to be settled before phase 2H wires these functions into the reconciliation
-path.
+Production loads operator policy separately from the declared schema, derives
+field types, and constructs ComparisonSchema at the reconciliation boundary.
 """
 
 import math
@@ -211,12 +209,14 @@ class FieldConfig:
     """Immutable configuration for how a field is compared.
 
     Attributes:
+        kind_name: Identity supplied by the governing comparison schema
         field_name: Name of the field
         field_type: Type of the field (list, numeric, string, timestamp, object)
         comparison: Dict containing mode and mode-specific parameters
         logging: Logging level (debug, discrepancy, sampled_audit)
     """
 
+    kind_name: str
     field_name: str
     field_type: str
     comparison: dict[str, Any]
@@ -324,7 +324,7 @@ class FieldConfig:
 
             precision = self.comparison["precision"]
             valid_precisions = {"day", "hour", "minute", "second"}
-            if precision not in valid_precisions:
+            if not isinstance(precision, str) or precision not in valid_precisions:
                 raise InvalidModeParameter(
                     f"Field {self.field_name}: invalid precision {precision!r}. "
                     f"Valid precisions: {', '.join(sorted(valid_precisions))}"
@@ -370,8 +370,7 @@ class ComparisonSchema:
     explicit comparison configs; no defaults are inferred.
 
     Not `Kind.attribute_schema`, which holds declared type names in a different
-    shape -- see the module docstring and issue #71. No production caller
-    constructs this yet.
+    shape -- see the module docstring and issue #71.
 
     Attributes:
         kind_name: Name of the Kind
@@ -388,6 +387,8 @@ class ComparisonSchema:
         Raises:
             SchemaError: If schema is malformed or missing required configs
         """
+        if not isinstance(kind_name, str) or not kind_name:
+            raise SchemaError("comparison kind name must be a non-empty string")
         self.kind_name = kind_name
         self.fields: dict[str, FieldConfig] = {}
         self._validate_and_parse(raw_schema)
@@ -440,6 +441,7 @@ class ComparisonSchema:
             # Create and validate FieldConfig
             try:
                 config = FieldConfig(
+                    kind_name=self.kind_name,
                     field_name=field_name,
                     field_type=field_type,
                     comparison=comparison_config,

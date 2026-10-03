@@ -19,6 +19,7 @@ export enum DiscrepancyState {
 
 export enum DiscrepancyType {
   FIELD = "field",
+  MISSING_COMPARISON_POLICY = "missing_comparison_policy",
   DECLARED_MISSING = "declared_missing",
   DISCOVERED_UNDECLARED = "discovered_undeclared",
 }

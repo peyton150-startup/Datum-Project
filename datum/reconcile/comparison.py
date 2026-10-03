@@ -1,7 +1,7 @@
 """Field comparison functions using schema-aware, type-specific logic.
 
 This module implements comparison handlers for each field type defined in
-Kind.attribute_schema. Each function:
+the compiled comparison schema. Each function:
 
 1. Takes declared and discovered PlaneValue objects
 2. Applies mode-specific transformation/comparison logic
@@ -50,27 +50,6 @@ def _unknown_mode_step(mode: Any) -> str:
 def _unusable_parameter_step(mode: Any) -> str:
     """Audit text for a recognised mode name whose parameter states nothing usable."""
     return f"Unusable mode parameter: {mode}"
-
-
-# The kind a field belongs to reaches a comparison through its comparison
-# config, under a key nothing populates yet (WBS 1.5.2 phase 2H). Read at seven
-# sites before this was a routine, each spelling the key and the fallback for
-# itself -- seven chances for one of them to spell either differently, on a
-# value the audit log is keyed by.
-KIND_NAME_KEY = "_kind_name"
-UNKNOWN_KIND_NAME = "unknown"
-
-
-def _kind_name_of(field_config: FieldConfig) -> str:
-    """The kind this field belongs to, or `unknown` while nothing supplies one.
-
-    Every entry reads `unknown` today. That is inert for the audit text and not
-    inert for the audit writer, which keys its sampling streams by
-    `(kind_name, field_name)`: until 2H populates the key, two kinds declaring
-    a same-named field share one stream. See `datum.reconcile.audit`.
-    """
-    kind_name: str = field_config.comparison.get(KIND_NAME_KEY, UNKNOWN_KIND_NAME)
-    return kind_name
 
 
 @dataclass(frozen=True)
@@ -248,7 +227,7 @@ def _unstated_comparison(
     return (
         is_equal,
         AuditLogEntry(
-            kind_name=_kind_name_of(field_config),
+            kind_name=field_config.kind_name,
             field_name=field_config.field_name,
             field_type=field_type,
             comparison_mode=mode,
@@ -286,7 +265,7 @@ def compare_numeric(
         ValueError: If values cannot be parsed as numbers in tolerance mode
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -463,7 +442,7 @@ def compare_string(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -680,7 +659,7 @@ def compare_list(
     from datum.reconcile.domain import canonical
 
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -954,7 +933,7 @@ def compare_timestamp(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     precision: Any = field_config.comparison.get("precision", "second")
     steps: list[str] = []
 
@@ -1049,7 +1028,7 @@ def compare_object(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -1428,6 +1407,15 @@ OBJECT_MODE_HANDLERS: dict[str, Callable[[Any, Any, list[str]], tuple[bool, str,
 }
 
 
+def compare_field(
+    declared: PlaneValue,
+    discovered: PlaneValue,
+    field_config: FieldConfig,
+) -> tuple[bool, AuditLogEntry]:
+    """Dispatch a validated field configuration to its comparison function."""
+    return FIELD_COMPARISONS[field_config.field_type](declared, discovered, field_config)
+
+
 # --- Boolean -----------------------------------------------------------------
 
 
@@ -1461,7 +1449,7 @@ def compare_boolean(
         (is_equal, audit_log_entry) tuple
     """
     mode: Any = field_config.comparison.get("mode")
-    kind_name = _kind_name_of(field_config)
+    kind_name = field_config.kind_name
     steps: list[str] = []
 
     declared_state = _presence_and_value(declared)
@@ -1502,3 +1490,15 @@ def compare_boolean(
             steps=steps,
         ),
     )
+
+
+FIELD_COMPARISONS: dict[
+    str, Callable[[PlaneValue, PlaneValue, FieldConfig], tuple[bool, AuditLogEntry]]
+] = {
+    "numeric": compare_numeric,
+    "string": compare_string,
+    "list": compare_list,
+    "timestamp": compare_timestamp,
+    "object": compare_object,
+    "boolean": compare_boolean,
+}

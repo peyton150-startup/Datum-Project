@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Discrepancy, PlaneValue, fetchOpenDiscrepancies, resolveDiscrepancy } from "./api";
+import { DiscrepancyType } from "./enums";
 
 /** Render a plane's statement so the three cases stay three cases.
  *
@@ -50,12 +51,15 @@ export function ReviewQueue() {
               {d.kind_name} · {d.scope}/{d.name} ·{" "}
               <span data-testid="field-name">{d.field_name}</span>
             </div>
+            {d.discrepancy_type === DiscrepancyType.MISSING_COMPARISON_POLICY && (
+              <p className="mb-2">Comparison policy needed — drift cannot be determined.</p>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="rounded bg-blue-50 p-3">
-                <span data-testid="authoritative-badge"
+                {d.authoritative_plane && <span data-testid="authoritative-badge"
                       className="mb-1 inline-block rounded bg-blue-600 px-2 text-xs text-white">
                   {d.authoritative_plane} — authoritative
-                </span>
+                </span>}
                 <div>declared: <b data-testid="declared-value">{planeText(d.declared)}</b></div>
               </div>
               <div className="rounded bg-gray-50 p-3">

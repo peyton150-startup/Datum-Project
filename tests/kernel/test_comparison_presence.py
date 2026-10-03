@@ -49,15 +49,16 @@ NULL = PlaneValue.of(None)
 
 
 def numeric_config():
-    return FieldConfig("n", "numeric", {"mode": "exact_value"}, "discrepancy")
+    return FieldConfig("TestKind", "n", "numeric", {"mode": "exact_value"}, "discrepancy")
 
 
 def string_config():
-    return FieldConfig("s", "string", {"mode": "exact"}, "discrepancy")
+    return FieldConfig("TestKind", "s", "string", {"mode": "exact"}, "discrepancy")
 
 
 def list_config():
     return FieldConfig(
+        "TestKind",
         "l",
         "list",
         {"mode": "ordered", "element_comparison": {"mode": "exact_value"}},
@@ -66,15 +67,15 @@ def list_config():
 
 
 def timestamp_config():
-    return FieldConfig("t", "timestamp", {"mode": "string"}, "discrepancy")
+    return FieldConfig("TestKind", "t", "timestamp", {"mode": "string"}, "discrepancy")
 
 
 def object_config():
-    return FieldConfig("o", "object", {"mode": "opaque"}, "discrepancy")
+    return FieldConfig("TestKind", "o", "object", {"mode": "opaque"}, "discrepancy")
 
 
 def boolean_config():
-    return FieldConfig("b", "boolean", {"mode": "exact"}, "discrepancy")
+    return FieldConfig("TestKind", "b", "boolean", {"mode": "exact"}, "discrepancy")
 
 
 # (name, comparison function, config factory, a value of the right type)

@@ -18,6 +18,7 @@ class TestTimestampString:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -32,6 +33,7 @@ class TestTimestampString:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00+00:00")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -46,6 +48,7 @@ class TestTimestampString:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00.000Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -60,6 +63,7 @@ class TestTimestampString:
         declared = PlaneValue.of("")
         discovered = PlaneValue.of("")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -78,6 +82,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00+00:00")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -92,6 +97,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")  # 6 PM UTC
         discovered = PlaneValue.of("2026-07-30T10:00:00-08:00")  # 6 PM UTC (PST)
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -106,6 +112,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T00:00:00Z")
         discovered = PlaneValue.of("2026-07-30T23:59:59Z")
         config = FieldConfig(
+            "TestKind",
             field_name="date",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "day"},
@@ -120,6 +127,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T18:00:00Z")
         discovered = PlaneValue.of("2026-07-30T18:59:59Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "hour"},
@@ -134,6 +142,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T18:30:00Z")
         discovered = PlaneValue.of("2026-07-30T18:30:59Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "minute"},
@@ -148,6 +157,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T18:30:45.000Z")
         discovered = PlaneValue.of("2026-07-30T18:30:45.999Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -162,6 +172,7 @@ class TestTimestampSemanticUTC:
         declared = PlaneValue.of("2026-07-30T00:00:00Z")
         discovered = PlaneValue.of("2026-07-31T00:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="date",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "day"},
@@ -180,6 +191,7 @@ class TestTimestampNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.absent()
         config = FieldConfig(
+            "TestKind",
             field_name="optional_timestamp",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -194,6 +206,7 @@ class TestTimestampNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of(None)
         config = FieldConfig(
+            "TestKind",
             field_name="optional_timestamp",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -208,6 +221,7 @@ class TestTimestampNullAndAbsent:
         declared = PlaneValue.of(None)
         discovered = PlaneValue.of("2026-07-30T18:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -222,6 +236,7 @@ class TestTimestampNullAndAbsent:
         declared = PlaneValue.absent()
         discovered = PlaneValue.of("2026-07-30T18:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -240,6 +255,7 @@ class TestTimestampInvalidFormat:
         declared = PlaneValue.of("not a timestamp")
         discovered = PlaneValue.of("2026-07-30T18:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -255,6 +271,7 @@ class TestTimestampInvalidFormat:
         declared = PlaneValue.of("not a timestamp at all")
         discovered = PlaneValue.of("2026-07-30T18:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "day"},
@@ -274,6 +291,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-07-30T00:00:00Z")
         discovered = PlaneValue.of("2026-07-30T00:00:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -288,6 +306,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-12-31T23:59:59Z")
         discovered = PlaneValue.of("2026-12-31T23:59:59Z")
         config = FieldConfig(
+            "TestKind",
             field_name="end_of_year",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -302,6 +321,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-06-30T23:59:60Z")
         discovered = PlaneValue.of("2026-06-30T23:59:60Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -317,6 +337,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-07-30T18:00:00.123Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00.456Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -332,6 +353,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-07-30T18:00:00.123456Z")
         discovered = PlaneValue.of("2026-07-30T18:00:00.123456Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -346,6 +368,7 @@ class TestTimestampEdgeCases:
         declared = PlaneValue.of("2026-07-30T18:00:00+05:30")
         discovered = PlaneValue.of("2026-07-30T12:30:00Z")
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},

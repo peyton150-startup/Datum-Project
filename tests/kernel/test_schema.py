@@ -24,6 +24,7 @@ class TestFieldConfigValidation:
     def test_valid_numeric_exact_value(self):
         """FieldConfig accepts valid numeric exact_value mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="replicas",
             field_type="numeric",
             comparison={"mode": "exact_value"},
@@ -36,6 +37,7 @@ class TestFieldConfigValidation:
     def test_valid_numeric_exact_string(self):
         """FieldConfig accepts valid numeric exact_string mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="version",
             field_type="numeric",
             comparison={"mode": "exact_string"},
@@ -46,6 +48,7 @@ class TestFieldConfigValidation:
     def test_valid_numeric_tolerance(self):
         """FieldConfig accepts valid numeric tolerance mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="cpu",
             field_type="numeric",
             comparison={"mode": "tolerance(0.01)"},
@@ -56,6 +59,7 @@ class TestFieldConfigValidation:
     def test_valid_string_exact(self):
         """FieldConfig accepts valid string exact mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="name",
             field_type="string",
             comparison={"mode": "exact"},
@@ -66,6 +70,7 @@ class TestFieldConfigValidation:
     def test_valid_string_lowercase(self):
         """FieldConfig accepts valid string lowercase mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="label",
             field_type="string",
             comparison={"mode": "lowercase"},
@@ -76,6 +81,7 @@ class TestFieldConfigValidation:
     def test_valid_string_trim(self):
         """FieldConfig accepts valid string trim mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="description",
             field_type="string",
             comparison={"mode": "trim"},
@@ -86,6 +92,7 @@ class TestFieldConfigValidation:
     def test_valid_string_normalize(self):
         """FieldConfig accepts valid string normalize mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="tag",
             field_type="string",
             comparison={"mode": "normalize"},
@@ -96,6 +103,7 @@ class TestFieldConfigValidation:
     def test_valid_list_ordered(self):
         """FieldConfig accepts valid list ordered mode with element_comparison."""
         config = FieldConfig(
+            "TestKind",
             field_name="ports",
             field_type="list",
             comparison={"mode": "ordered", "element_comparison": "exact"},
@@ -106,6 +114,7 @@ class TestFieldConfigValidation:
     def test_valid_list_unordered_multiset(self):
         """FieldConfig accepts valid list unordered_multiset mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="env_vars",
             field_type="list",
             comparison={"mode": "unordered_multiset", "element_comparison": "exact"},
@@ -116,6 +125,7 @@ class TestFieldConfigValidation:
     def test_valid_list_set(self):
         """FieldConfig accepts valid list set mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="labels",
             field_type="list",
             comparison={"mode": "set", "element_comparison": "exact"},
@@ -126,6 +136,7 @@ class TestFieldConfigValidation:
     def test_valid_timestamp_string(self):
         """FieldConfig accepts valid timestamp string mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="created_at",
             field_type="timestamp",
             comparison={"mode": "string"},
@@ -136,6 +147,7 @@ class TestFieldConfigValidation:
     def test_valid_timestamp_semantic_utc(self):
         """FieldConfig accepts valid timestamp semantic_utc mode with precision."""
         config = FieldConfig(
+            "TestKind",
             field_name="updated_at",
             field_type="timestamp",
             comparison={"mode": "semantic_utc", "precision": "second"},
@@ -146,6 +158,7 @@ class TestFieldConfigValidation:
     def test_valid_timestamp_semantic_resource_tz(self):
         """FieldConfig accepts valid timestamp semantic_resource_tz mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="scheduled_at",
             field_type="timestamp",
             comparison={"mode": "semantic_resource_tz", "precision": "minute"},
@@ -156,6 +169,7 @@ class TestFieldConfigValidation:
     def test_valid_object_opaque(self):
         """FieldConfig accepts valid object opaque mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="metadata",
             field_type="object",
             comparison={"mode": "opaque"},
@@ -166,6 +180,7 @@ class TestFieldConfigValidation:
     def test_valid_object_version(self):
         """FieldConfig accepts valid object version mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="provider_tags",
             field_type="object",
             comparison={"mode": "version"},
@@ -176,6 +191,7 @@ class TestFieldConfigValidation:
     def test_valid_object_identity(self):
         """FieldConfig accepts valid object identity mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="owner",
             field_type="object",
             comparison={"mode": "identity"},
@@ -186,6 +202,7 @@ class TestFieldConfigValidation:
     def test_valid_object_ignore(self):
         """FieldConfig accepts valid object ignore mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="internal_state",
             field_type="object",
             comparison={"mode": "ignore"},
@@ -196,6 +213,7 @@ class TestFieldConfigValidation:
     def test_valid_object_recurse_zero(self):
         """FieldConfig accepts valid object recurse(0) mode."""
         config = FieldConfig(
+            "TestKind",
             field_name="config",
             field_type="object",
             comparison={"mode": "recurse(0)"},
@@ -206,6 +224,7 @@ class TestFieldConfigValidation:
     def test_valid_object_recurse_negative_one(self):
         """FieldConfig accepts valid object recurse(-1) mode (full recursion)."""
         config = FieldConfig(
+            "TestKind",
             field_name="spec",
             field_type="object",
             comparison={"mode": "recurse(-1)"},
@@ -216,6 +235,7 @@ class TestFieldConfigValidation:
     def test_valid_logging_debug(self):
         """FieldConfig accepts debug logging level."""
         config = FieldConfig(
+            "TestKind",
             field_name="field",
             field_type="string",
             comparison={"mode": "exact"},
@@ -226,6 +246,7 @@ class TestFieldConfigValidation:
     def test_valid_logging_sampled_audit(self):
         """FieldConfig accepts sampled_audit logging level."""
         config = FieldConfig(
+            "TestKind",
             field_name="field",
             field_type="string",
             comparison={"mode": "exact"},
@@ -237,6 +258,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects unknown field type."""
         with pytest.raises(InvalidFieldType, match="unknown type"):
             FieldConfig(
+                "TestKind",
                 field_name="field",
                 field_type="unknown_type",
                 comparison={"mode": "exact"},
@@ -247,6 +269,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid logging level."""
         with pytest.raises(InvalidLoggingLevel, match="invalid logging level"):
             FieldConfig(
+                "TestKind",
                 field_name="field",
                 field_type="string",
                 comparison={"mode": "exact"},
@@ -257,6 +280,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid numeric mode."""
         with pytest.raises(InvalidComparisonMode, match="invalid numeric mode"):
             FieldConfig(
+                "TestKind",
                 field_name="replicas",
                 field_type="numeric",
                 comparison={"mode": "invalid_mode"},
@@ -267,6 +291,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid string mode."""
         with pytest.raises(InvalidComparisonMode, match="invalid string mode"):
             FieldConfig(
+                "TestKind",
                 field_name="name",
                 field_type="string",
                 comparison={"mode": "invalid_mode"},
@@ -277,6 +302,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid list mode."""
         with pytest.raises(InvalidComparisonMode, match="invalid list mode"):
             FieldConfig(
+                "TestKind",
                 field_name="items",
                 field_type="list",
                 comparison={"mode": "invalid_mode", "element_comparison": "exact"},
@@ -287,6 +313,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid timestamp mode."""
         with pytest.raises(InvalidComparisonMode, match="invalid timestamp mode"):
             FieldConfig(
+                "TestKind",
                 field_name="created_at",
                 field_type="timestamp",
                 comparison={"mode": "invalid_mode"},
@@ -297,6 +324,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid object mode."""
         with pytest.raises(InvalidComparisonMode, match="invalid object mode"):
             FieldConfig(
+                "TestKind",
                 field_name="metadata",
                 field_type="object",
                 comparison={"mode": "invalid_mode"},
@@ -307,6 +335,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects list mode without element_comparison."""
         with pytest.raises(InvalidComparisonMode, match="element_comparison.*required"):
             FieldConfig(
+                "TestKind",
                 field_name="items",
                 field_type="list",
                 comparison={"mode": "ordered"},
@@ -317,6 +346,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects semantic_utc without precision."""
         with pytest.raises(InvalidComparisonMode, match="precision.*required"):
             FieldConfig(
+                "TestKind",
                 field_name="created_at",
                 field_type="timestamp",
                 comparison={"mode": "semantic_utc"},
@@ -327,6 +357,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects semantic_resource_tz without precision."""
         with pytest.raises(InvalidComparisonMode, match="precision.*required"):
             FieldConfig(
+                "TestKind",
                 field_name="scheduled_at",
                 field_type="timestamp",
                 comparison={"mode": "semantic_resource_tz"},
@@ -337,6 +368,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid precision."""
         with pytest.raises(InvalidModeParameter, match="invalid precision"):
             FieldConfig(
+                "TestKind",
                 field_name="created_at",
                 field_type="timestamp",
                 comparison={"mode": "semantic_utc", "precision": "invalid"},
@@ -352,6 +384,7 @@ class TestFieldConfigValidation:
         """
         with pytest.raises(InvalidModeParameter, match="non-negative"):
             FieldConfig(
+                "TestKind",
                 field_name="cpu",
                 field_type="numeric",
                 comparison={"mode": "tolerance(-0.01)"},
@@ -362,6 +395,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid tolerance format."""
         with pytest.raises(InvalidModeParameter, match="tolerance"):
             FieldConfig(
+                "TestKind",
                 field_name="cpu",
                 field_type="numeric",
                 comparison={"mode": "tolerance(invalid)"},
@@ -376,6 +410,7 @@ class TestFieldConfigValidation:
         """
         with pytest.raises(InvalidModeParameter, match=r"integer >= -1"):
             FieldConfig(
+                "TestKind",
                 field_name="spec",
                 field_type="object",
                 comparison={"mode": "recurse(-2)"},
@@ -386,6 +421,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects invalid recurse format."""
         with pytest.raises(InvalidModeParameter, match="recurse"):
             FieldConfig(
+                "TestKind",
                 field_name="spec",
                 field_type="object",
                 comparison={"mode": "recurse(invalid)"},
@@ -396,6 +432,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects comparison config without mode."""
         with pytest.raises(InvalidComparisonMode, match="mode.*required"):
             FieldConfig(
+                "TestKind",
                 field_name="field",
                 field_type="string",
                 comparison={"other_key": "value"},
@@ -406,6 +443,7 @@ class TestFieldConfigValidation:
         """FieldConfig rejects empty comparison config."""
         with pytest.raises(InvalidComparisonMode, match="empty"):
             FieldConfig(
+                "TestKind",
                 field_name="field",
                 field_type="string",
                 comparison={},
@@ -609,7 +647,7 @@ class TestAToleranceIsAFiniteNumber:
     """
 
     def config(self, mode: str) -> FieldConfig:
-        return FieldConfig("replicas", "numeric", {"mode": mode}, "discrepancy")
+        return FieldConfig("TestKind", "replicas", "numeric", {"mode": mode}, "discrepancy")
 
     @pytest.mark.parametrize(
         "mode",
@@ -644,7 +682,7 @@ class TestAToleranceIsAFiniteNumber:
         because the two words do not parse as integers.
         """
         with pytest.raises(InvalidModeParameter):
-            FieldConfig("spec", "object", {"mode": mode}, "discrepancy")
+            FieldConfig("TestKind", "spec", "object", {"mode": mode}, "discrepancy")
 
     @pytest.mark.parametrize("digits", [308, 309, 310, 400])
     def test_an_enormous_depth_is_absurd_rather_than_fatal(self, digits):
@@ -666,5 +704,8 @@ class TestAToleranceIsAFiniteNumber:
         """
         mode = "recurse(" + "9" * digits + ")"
         assert (
-            FieldConfig("spec", "object", {"mode": mode}, "discrepancy").comparison["mode"] == mode
+            FieldConfig("TestKind", "spec", "object", {"mode": mode}, "discrepancy").comparison[
+                "mode"
+            ]
+            == mode
         )

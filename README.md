@@ -62,15 +62,18 @@ The schema was derived from first principles; NetBox source was deliberately not
 
 ## Current status
 
-**Phase 2 complete.** The end-to-end vertical slice is built and green; Phase 3 (Discovery) has not started.
+Phases 0–3 are complete. Phase 4 reconciliation work is in progress. Use
+`docs/PROJECT_PLAN.md` for scope and GitHub PRs/issues for current work status.
+This branch integrates configured comparison into the existing end-to-end path;
+it is a deployment-readiness checkpoint pending the kernel review gate.
 
 | | State |
 |---|---|
 | **Phase 0** — repo, Compose stack, CI, pre-commit, test harness | ✅ complete |
 | **Phase 1** — resource graph, minimal collector, matcher, diff engine, read-only API, review queue | ✅ complete |
 | **Phase 2** — intent document format, validator, Git polling, immutable revisions, projection, line-level errors | ✅ complete |
-| **Phase 3** — collector framework, Kubernetes and Oracle Cloud collectors, partial-failure semantics | ⬜ not started |
-| **Phase 4** — matching with confidence, precedence policy, discrepancy lifecycle, review queue and resource explorer UI | ⬜ not started |
+| **Phase 3** — collector framework, Kubernetes and Oracle Cloud collectors, partial-failure semantics | ✅ complete |
+| **Phase 4** — matching with confidence, precedence policy, discrepancy lifecycle, review queue and resource explorer UI | In progress |
 | **Phase 5** — auth, roles, tenant isolation, deploy, TLS, backups, public demo | ⬜ not started |
 
 **What actually runs today**, end to end, as an automated acceptance test:
@@ -85,7 +88,13 @@ The schema was derived from first principles; NetBox source was deliberately not
 
 Plus the negative checks: a malformed document is rejected and the previous revision stays active; a Deployment discovered but not declared yields one `discovered_undeclared` orphan; declared but not discovered yields one `declared_missing` orphan.
 
-**Deliberately not built yet:** a second kind, a second collector, precedence policy, discrepancy suppression/acknowledgement, change history beyond the lifecycle, multi-tenancy enforcement, and authentication. The schema carries `tenant_id` from the first migration and every query is written tenant-scoped, but isolation is not yet enforced.
+Deployment and ComputeInstance kinds and Kubernetes and OCI collectors exist.
+OCI uses recorded payloads; Kubernetes also has a live read path. Still deferred:
+precedence policy, discrepancy suppression/acknowledgement, change history beyond
+the current lifecycle, multi-tenancy enforcement, and authentication. The schema
+carries `tenant_id` from the first migration and queries are tenant-scoped, but
+database isolation is not yet enforced. Comparison configuration instructions
+are in `docs/DIFF_SEMANTICS.md`.
 
 ---
 

@@ -85,6 +85,7 @@ class TestEveryFieldTypeIsValidatable:
         """
         with pytest.raises(InvalidComparisonMode):
             FieldConfig(
+                "TestKind",
                 field_name="whatever",
                 field_type=field_type,
                 comparison={"mode": "no-such-mode"},

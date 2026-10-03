@@ -26,9 +26,9 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from datum.reconcile.diff import reconcile
 from datum.reconcile.domain import PlaneValue, ResourceSnapshot
 from datum.reconcile.matcher import match_resources
+from tests.reconcile_fixtures import reconcile
 
 T = "t1"
 

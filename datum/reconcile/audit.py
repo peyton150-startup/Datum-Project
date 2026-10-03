@@ -83,14 +83,9 @@ class AuditLogWriter:
     the docstring above explains why the state is not a module global and would
     otherwise be read as having considered every alternative.
 
-    **The isolation that key buys is not observable yet.** Nothing populates
-    `_kind_name`, so every entry arrives with `kind_name` reading `unknown` and
-    two kinds declaring a same-named field share one stream. The key is still
-    `(kind_name, field_name)`: that is the identity wanted once phase 2H wires
-    real kinds through, and 2H turns the isolation on by supplying the name and
-    changing nothing here. **No test in this phase may claim to demonstrate
-    per-kind independence** -- it would pass against a writer that had none.
-    That test belongs to 2H.
+    Kind identity comes from the compiled FieldConfig. Integration tests in
+    test_diff_comparison.py exercise independent streams for same-named fields
+    in different kinds.
     """
 
     def __init__(self, sample_rate: int) -> None:

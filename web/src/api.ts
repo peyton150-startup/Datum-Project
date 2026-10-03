@@ -18,7 +18,7 @@ export interface Discrepancy {
   field_name: string | null;
   declared: PlaneValue;
   discovered: PlaneValue;
-  authoritative_plane: string;
+  authoritative_plane: string | null;
   state: string;
 }
 

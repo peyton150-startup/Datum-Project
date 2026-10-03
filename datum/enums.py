@@ -33,6 +33,7 @@ HUMAN_MATCH_STATES = (MatchState.CONFIRMED, MatchState.REJECTED)
 
 class DiscrepancyType(TextChoices):
     FIELD = "field"
+    MISSING_COMPARISON_POLICY = "missing_comparison_policy"
     DECLARED_MISSING = "declared_missing"
     DISCOVERED_UNDECLARED = "discovered_undeclared"
 

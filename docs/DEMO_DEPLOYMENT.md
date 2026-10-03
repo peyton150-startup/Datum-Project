@@ -11,9 +11,10 @@ reconciliation runtime and use recorded discovery for the first protected demo.
 - Docker and Compose are installed. An existing Datum API and worker are
   running from `/home/ubuntu/datum/Datum-Project` against local PostgreSQL.
   Its API responds on `127.0.0.1:8001`.
-- The server checkout is on main at `3d1d737`, with uncommitted changes to
-  Dockerfile, settings, Compose and dependencies, plus an untracked WSGI file.
-  These changes have been inspected but not overwritten or committed.
+- The server checkout advanced to main at `7b941ec` while deployment was in
+  progress. Its production Dockerfile, Gunicorn dependency, WSGI entry point
+  and template settings are preserved in this branch. The existing server
+  checkout and its Compose configuration remain the rollback deployment.
 - The existing Caddy gateway serves HTTP on port 80 without an authentication
   directive. A protected frontend and backend gateway are still required before
   claiming this demo is deployed under the agreed access model.
@@ -25,15 +26,19 @@ reconciliation runtime and use recorded discovery for the first protected demo.
   uses that schema as its database-specific search path.
 - `anon` and `authenticated` cannot use the `datum` schema. Supabase's security
   advisor returned no findings after provisioning.
-- Generated credentials are in the local Git-ignored `.env.supabase`. They
-  have not been sent to the Ubuntu server. `.dockerignore` now also excludes
+- Generated credentials are in the local Git-ignored `.env.supabase` and the
+  server's private `/home/ubuntu/datum/.supabase/connection.env` (mode 600).
+  The CA certificate is alongside it. `.dockerignore` now also excludes
   `.env.*`, PEM files and key files from image build contexts.
 - Backend URL:
   `https://instance-20260305-1808.chinchilla-kanyu.ts.net`. Tailscale Funnel is
   enabled and proxies this URL to `127.0.0.1:8001` on the Ubuntu server.
 - `web/vercel.json` contains the user's requested `/api/:path*` rewrite to this
-  backend's `/api/:path*`. Frontend deployment to Vercel is authorized and in
-  progress; no successful deployment URL has been verified yet.
+  backend's `/api/:path*`. Vercel project `datum-demo` is deployed at
+  [datum-demo-seven.vercel.app](https://datum-demo-seven.vercel.app).
+  The production build succeeded; the homepage and rewritten discrepancy API
+  return HTTP 200. The browser renders the review queue, currently empty.
+  Frontend lint, production build and all six UI tests passed locally.
 - Backed up the Ubuntu deployment files, uncommitted changes and local database
   under `/home/ubuntu/datum/deployment-backup-20261003` before the runtime switch.
 
@@ -63,12 +68,18 @@ changing the ORM. Preserve encryption and certificate verification.
 
 ## Runtime and frontend work remaining
 
-1. Reconcile the server's existing deployment edits with the current code before
-   switching the API and worker to Supabase. Preserve the current local database
-   and deployment files until the new runtime is verified.
-2. Finish frontend checks and deploy `web/` to Vercel with the requested rewrite.
-3. Verify protected API/frontend access, a scheduled task and visible recorded
+1. Switch the API and worker to the staged source and Supabase using
+   `deploy/compose.supabase.yml`. It overlays the existing server Compose file;
+   pass both the existing `.env` and the private Supabase connection environment,
+   and set `DATUM_APP_SOURCE` to the staged source path. Keep the original
+   checkout and local database for rollback.
+2. Verify protected API/frontend access, a scheduled task and visible recorded
    drift on the hosted application.
+
+The worker overlay uses recorded discovery and a read-only mount of a local
+sample intent repository. Collection and intent polling are scheduled by the
+existing Beat configuration. Reconciliation is currently an explicit operation;
+no new automatic reconciliation schedule is introduced by this deployment.
 
 Supabase migrations are complete. The server's running containers still use
 local PostgreSQL; the Supabase runtime switch is not complete yet.

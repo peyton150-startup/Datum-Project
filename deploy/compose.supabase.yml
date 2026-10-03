@@ -1,0 +1,30 @@
+# Overlay the existing Ubuntu Compose deployment; its ports and gateway stay
+# under that deployment's control. Load the private connection file with
+# `docker compose --env-file .env --env-file /home/ubuntu/datum/.supabase/connection.env`.
+services:
+  app:
+    environment: &supabase_environment
+      POSTGRES_DB: ${POSTGRES_DB:?Supabase database required}
+      POSTGRES_USER: ${POSTGRES_USER:?Supabase login required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Supabase password required}
+      POSTGRES_HOST: ${POSTGRES_HOST:?Supabase session pooler required}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /app/.env.supabase-ca.crt
+      PGCONNECT_TIMEOUT: "10"
+      PGAPPNAME: datum-demo
+    volumes:
+      - ${DATUM_APP_SOURCE:?Staged source path required}:/app
+      - /home/ubuntu/datum/.supabase/ca.crt:/app/.env.supabase-ca.crt:ro
+
+  worker:
+    environment:
+      <<: *supabase_environment
+      DATUM_INTENT_REPO_URL: file:///demo-intent
+      DATUM_INTENT_REPO_BRANCH: main
+      DATUM_K8S_MODE: recorded
+      DATUM_K8S_SOURCE: /app/fixtures/k8s/deployments.json
+    volumes:
+      - ${DATUM_APP_SOURCE:?Staged source path required}:/app
+      - /home/ubuntu/datum/.supabase/ca.crt:/app/.env.supabase-ca.crt:ro
+      - /home/ubuntu/datum/demo-intent:/demo-intent:ro

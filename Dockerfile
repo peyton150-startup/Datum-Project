@@ -7,4 +7,4 @@ COPY pyproject.toml ./
 COPY datum ./datum
 RUN python -m pip install -e ".[dev]"
 COPY . .
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["gunicorn", "datum.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "60"]

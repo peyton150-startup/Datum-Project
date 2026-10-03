@@ -28,42 +28,50 @@ reconciliation runtime and use recorded discovery for the first protected demo.
 - Generated credentials are in the local Git-ignored `.env.supabase`. They
   have not been sent to the Ubuntu server. `.dockerignore` now also excludes
   `.env.*`, PEM files and key files from image build contexts.
+- Backend URL:
+  `https://instance-20260305-1808.chinchilla-kanyu.ts.net`. Tailscale Funnel is
+  enabled and proxies this URL to `127.0.0.1:8001` on the Ubuntu server.
+- `web/vercel.json` contains the user's requested `/api/:path*` rewrite to this
+  backend's `/api/:path*`. Frontend deployment to Vercel is authorized and in
+  progress; no successful deployment URL has been verified yet.
+- Backed up the Ubuntu deployment files, uncommitted changes and local database
+  under `/home/ubuntu/datum/deployment-backup-20261003` before the runtime switch.
 
-## Connection work remaining
+## Verified Supabase connection and migrations
 
 The Ubuntu server has no IPv6 default route, so use Supabase's session pooler
 on port 5432. Copy the exact host from this project's Connect dialog; the pooler
 cluster index cannot be inferred from the region. The pooled login is
 `datum_app.ptmctjexmsggnzojqmpx`, and the database is `postgres`.
 
-The local credential file has an explicit placeholder for the missing pooler
-host. Do not attempt migrations until it is replaced with the actual address.
-It requests `PGSSLMODE=verify-full`. A client probe with the system trust store
-failed certificate verification; download Supabase's server CA certificate
-from Database Settings and configure `PGSSLROOTCERT` to its mounted path.
-The dashboard browser still needs the user to sign in to obtain the exact
-host and CA certificate. The MCP connector itself remains authenticated.
+The authenticated project Connect dialog confirmed the host is
+`aws-0-us-east-1.pooler.supabase.com`. Downloaded the Supabase CA certificate
+from the dashboard-provided link into the Git-ignored `.env.supabase-ca.crt`.
+The connection environment requests `PGSSLMODE=verify-full` and points
+`PGSSLROOTCERT` to this certificate's container path.
+
+Verified a certificate-checked client connection as `datum_app` with current
+schema `datum`. Ran Django's migration executor from the reconciliation
+checkpoint: all 26 migrations applied, including
+`reconcile.0004_seed_comparison_schemas`. The ORM reports no pending migrations,
+both seeded kinds (`Deployment`, `ComputeInstance`), and both seeded comparison
+policies. The Psycopg client confirms TLS is in use.
 
 Django's existing `POSTGRES_*` settings and Psycopg/libpq's `PGSSL*` environment
 variables can express this connection without introducing a Supabase SDK or
 changing the ORM. Preserve encryption and certificate verification.
 
-Once those details are available:
+## Runtime and frontend work remaining
 
-1. Verify a connection as `datum_app`, the `datum` current schema and TLS.
-2. Run `python manage.py migrate --noinput` from the reviewed reconciliation
-   checkpoint, using the Supabase environment and the project's CA certificate.
-3. Verify Django's applied migration history and both seeded comparison policies
-   through the ORM. Do not replace Django migration execution with handwritten
-   application DDL or mark unapplied migrations as applied.
-4. Reconcile the server's existing deployment edits with the current code before
+1. Reconcile the server's existing deployment edits with the current code before
    switching the API and worker to Supabase. Preserve the current local database
    and deployment files until the new runtime is verified.
-5. Verify protected API/frontend access, a scheduled task and visible recorded
+2. Finish frontend checks and deploy `web/` to Vercel with the requested rewrite.
+3. Verify protected API/frontend access, a scheduled task and visible recorded
    drift on the hosted application.
 
-No Django migrations have been applied to Supabase yet. Neither the server's
-running containers nor its database settings have been changed this session.
+Supabase migrations are complete. The server's running containers still use
+local PostgreSQL; the Supabase runtime switch is not complete yet.
 
 Connection references:
 [Supabase endpoints](https://supabase.com/docs/guides/database/connecting-to-postgres),

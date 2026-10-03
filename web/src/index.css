@@ -1,3 +1,67 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-black font-mono text-slate-100;
+    /* Three star layers of different density, drifting at different speeds. */
+    background-image:
+      radial-gradient(1px 1px at 20px 30px, #fff, transparent),
+      radial-gradient(1px 1px at 90px 140px, #7dd3fc, transparent),
+      radial-gradient(2px 2px at 160px 80px, #fca5a5, transparent);
+    background-size: 200px 200px, 260px 260px, 340px 340px;
+    animation: starfield 30s linear infinite;
+  }
+}
+
+@layer components {
+  .font-arcade {
+    font-family: "Press Start 2P", ui-monospace, monospace;
+  }
+
+  .arcade-button {
+    @apply border-2 border-cyan-700 px-3 py-2 text-[10px] text-cyan-300 outline-none hover:border-cyan-300 focus-visible:border-white;
+    font-family: "Press Start 2P", ui-monospace, monospace;
+  }
+
+  .arcade-button-on {
+    @apply border-yellow-300 bg-yellow-300 text-black hover:border-yellow-300;
+  }
+
+  .blink {
+    animation: blink 1s steps(2, start) infinite;
+  }
+
+  .score-pop {
+    animation: score-pop 0.3s steps(3, end);
+  }
+
+  /* A resolve request in flight: the row is being shot at. */
+  .under-fire {
+    @apply border-red-500;
+    animation: under-fire 0.2s steps(2, start) infinite;
+  }
+}
+
+@keyframes starfield {
+  to { background-position: 0 200px, 0 520px, 0 1020px; }
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}
+
+@keyframes score-pop {
+  from { transform: scale(1.6); color: #fde047; }
+}
+
+@keyframes under-fire {
+  to { background-color: rgb(239 68 68 / 0.25); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body, .blink, .score-pop, .under-fire {
+    animation: none;
+  }
+}

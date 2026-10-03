@@ -1,0 +1,11 @@
+:80 {
+	route {
+		header Cache-Control "private, no-store"
+		basic_auth {
+			{$DATUM_DEMO_USERNAME} {$DATUM_DEMO_PASSWORD_HASH}
+		}
+		@untrusted_write expression `{http.request.method} in ['POST', 'PUT', 'PATCH', 'DELETE'] && {http.request.header.Origin} != 'https://datum-demo-seven.vercel.app' && {http.request.header.Origin} != 'https://instance-20260305-1808.chinchilla-kanyu.ts.net'`
+		respond @untrusted_write "Request origin is not allowed." 403
+		reverse_proxy app:8000
+	}
+}

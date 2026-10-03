@@ -3,6 +3,7 @@
 # `docker compose --env-file .env --env-file /home/ubuntu/datum/.supabase/connection.env`.
 services:
   app:
+    ports: !override []
     environment: &supabase_environment
       POSTGRES_DB: ${POSTGRES_DB:?Supabase database required}
       POSTGRES_USER: ${POSTGRES_USER:?Supabase login required}
@@ -31,3 +32,11 @@ services:
       - ${DATUM_APP_SOURCE:?Staged source path required}:/app
       - /home/ubuntu/datum/.supabase/ca.crt:/app/.env.supabase-ca.crt:ro
       - /home/ubuntu/datum/demo-intent:/demo-intent:ro
+
+  caddy:
+    env_file:
+      - path: /home/ubuntu/datum/.supabase/demo-access.env
+        format: raw
+    ports: !override ["127.0.0.1:8001:80"]
+    volumes:
+      - ${DATUM_APP_SOURCE:?Staged source path required}/deploy/Caddyfile.demo:/etc/caddy/Caddyfile:ro

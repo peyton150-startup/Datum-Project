@@ -97,3 +97,35 @@ WSGI are deployment scaffolding; reconciliation behavior is unchanged.
 Connection references:
 [Supabase endpoints](https://supabase.com/docs/guides/database/connecting-to-postgres),
 [certificate verification](https://supabase.com/docs/guides/platform/ssl-enforcement).
+
+## Approved access model
+
+The user selected one shared demo login for the website and API, with SSH access
+unchanged. `web/middleware.ts` checks the server-only `DATUM_DEMO_AUTH_SHA256`
+verifier before serving frontend assets or API rewrites. No login verifier or
+infrastructure credential uses a `VITE_*` name or enters the browser bundle.
+The original relative `/api` calls and exact `web/vercel.json` rewrite remain.
+
+Caddy independently authenticates requests before proxying to Gunicorn. The
+Compose overlay gives Caddy the existing loopback port 8001 and removes
+Gunicorn's host port, so the existing Funnel reaches the protected gateway
+without changing Tailscale configuration. State-changing requests also need an
+allowed Origin; the production Vercel hostname and the backend docs hostname
+are allowed. Reads remain available to authenticated command-line clients.
+
+The generated username and password are in the ignored local `.env.demo-access`.
+Caddy receives only its password hash in the private `demo-access.env`; Compose
+reads that file with `format: raw` to preserve dollar signs in bcrypt hashes.
+Vercel receives only the SHA-256 verifier as a Secret in Production and Preview.
+Browsers prompt for demo credentials; Ubuntu SSH continues using the existing
+SSH key. No SSH daemon, Oracle firewall, Django secret key, database credential,
+or Trellis service change is part of this gate.
+
+Verification before publishing: frontend lint/type-check/build and all 22 tests
+passed; runtime npm audit reported zero vulnerabilities. An isolated Caddy
+container returned 401 for missing or wrong credentials, 200 for authenticated
+reads, 403 for untrusted write origins, and passed a trusted write through to
+Django. The independent two-stage gpt-6-sol boundary review approved the gate;
+its four scope-and-fit sections are posted on PR #90. No merge has occurred.
+The gate makes direct public access to the unprotected Gunicorn port
+unavailable, rather than relying on callers visiting only the Vercel hostname.
